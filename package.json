@@ -1,0 +1,25 @@
+{
+  "name": "cx-process-agents",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Навчальний прототип AS-IS → BPMN (зріз 1: каркас довіри, деморежим)",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --import tsx src/main.ts",
+    "demo": "node --disable-warning=ExperimentalWarning --import tsx src/main.ts --seed-demo",
+    "test": "node --import tsx --test \"tests/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "playwright-core": "^1.63.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
