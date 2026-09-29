@@ -242,11 +242,13 @@ test('Демо-кейс: позначено сценарієм, питання Q
   // пройти сценарій, як це зробить користувачка
   const q = card.critical_open_questions[0]!;
   const v3 = answerQuestion(db, human, id, { baseVersionId: card.head.id, questionId: q.id, answer: 'Керівник повідомляє клієнта листом про відхилення винятку, після чого заявку закривають.' });
+  // після уточнення перехід S5 (відхилено) ще «невідомо» — система це помічає, а не вважає питання вичерпаним
+  assert.ok(submissionBlockers(db, id).some((b) => b.code === 'UNKNOWN_QUESTION_CLOSED' && b.ref === 'S5'));
   const v4 = saveAnalystVersion(db, human, id, {
     baseVersionId: v3.id,
     fields: {
       steps_text: buildCard(db, id, 'demo').editable.steps_text
-        .replace('S5 | Керівник відділу | Вирішує, погодити чи відхилити виняток | Рішення щодо винятку | S4 (погоджено); END (відхилено)',
+        .replace('S5 | Керівник відділу | Вирішує, погодити чи відхилити виняток | Рішення щодо винятку | S4 (погоджено); ? (відхилено)',
           'S5 | Керівник відділу | Вирішує, погодити чи відхилити виняток | Рішення щодо винятку | S4 (погоджено); S6 (відхилено)') +
         '\nS6 | Керівник відділу | Повідомляє клієнта листом про відхилення | Клієнта поінформовано | END',
       problems_text: buildCard(db, id, 'demo').editable.problems_text,

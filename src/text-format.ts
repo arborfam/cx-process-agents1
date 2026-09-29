@@ -1,10 +1,10 @@
 import { DomainError } from './errors.ts';
-import type { Problem, Step } from './schema.ts';
+import { UNKNOWN, type Problem, type Step } from './schema.ts';
 
 /**
  * Прості текстові формати для форми редагування (аналітикиня не пише JSON).
  *  Крок:      ID | Роль | Дія | Результат | Наступні
- *  Наступні:  «S4 (погоджено); END (відхилено)» — ID кроку або END, умова в дужках
+ *  Наступні:  «S4 (погоджено); END (відхилено)» — ID кроку, END (кінець) або ? (невідомо), умова в дужках
  *  Проблема:  ID | Симптом | Наслідок
  * Рядок без ID (на одне поле менше) отримує новий ID. Поля, яких немає у форматі
  * (умова входу, вхідний артефакт, джерела), беруться з попередньої версії кроку.
@@ -26,13 +26,14 @@ export function parseNext(text: string): { to: string; condition: string }[] {
   return items.map((item) => {
     const m = /^([^\s(]+)\s*(?:\((.*)\))?$/.exec(item);
     if (!m) throw new DomainError('VALIDATION', `Не вдалося розібрати перехід: «${item}»`, 400);
-    const to = m[1]!.toLowerCase() === 'кінець' ? 'END' : m[1]!;
+    const raw = m[1]!.toLowerCase();
+    const to = raw === 'кінець' ? 'END' : raw === '?' || raw === 'невідомо' ? UNKNOWN : m[1]!;
     return { to, condition: (m[2] ?? '').trim() };
   });
 }
 
 function nextToText(next: Step['next']): string {
-  return next.map((n) => (n.condition ? `${n.to} (${n.condition})` : n.to)).join('; ');
+  return next.map((n) => { const t = n.to === UNKNOWN ? '?' : n.to; return n.condition ? `${t} (${n.condition})` : t; }).join('; ');
 }
 
 export function stepsToText(steps: Step[]): string {

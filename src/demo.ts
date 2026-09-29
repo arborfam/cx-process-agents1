@@ -1,6 +1,6 @@
 import { all, tx, type DB } from './db.ts';
 import { audit, createCase, insertVersion, addSource, headVersion, type Actor } from './domain.ts';
-import { emptyContent, type Content } from './schema.ts';
+import { UNKNOWN, emptyContent, type Content } from './schema.ts';
 import { setHeadForSeed } from './seed-internal.ts';
 
 /**
@@ -35,7 +35,7 @@ function demoContent(reqId: string, trId: string): Content {
   c.boundaries = {
     trigger: 'Клієнт повідомляє про бажання змінити умови обслуговування',
     input: 'Запит клієнта (пошта або форма)',
-    completion: 'Зміну внесено в систему АБО заявку відхилено (наслідки відхилення не з’ясовано)',
+    completion: 'Зміну внесено в систему. Що відбувається після відхилення винятку — невідомо (питання Q1)',
     result: 'Оновлені умови обслуговування клієнта',
   };
   c.roles = ['Менеджерка з клієнтами', 'Оператор back-office', 'Керівник відділу'];
@@ -44,7 +44,7 @@ function demoContent(reqId: string, trId: string): Content {
     { id: 'S2', role: 'Менеджерка з клієнтами', action: 'Перевіряє повноту заявки', entry_condition: '', input_artifact: 'Заявка в CRM', result: 'Заявка перевірена', next: [{ to: 'S3', condition: 'заявка повна' }, { to: 'S1', condition: 'не вистачає документів (повернення клієнту на доповнення)' }], source_ids: [trId] },
     { id: 'S3', role: 'Оператор back-office', action: 'Оцінює, чи зміна стандартна', entry_condition: '', input_artifact: 'Повна заявка', result: 'Визначено тип зміни', next: [{ to: 'S4', condition: 'зміна стандартна' }, { to: 'S5', condition: 'потрібен виняток' }], source_ids: [trId] },
     { id: 'S4', role: 'Оператор back-office', action: 'Вносить зміну в систему', entry_condition: '', input_artifact: '', result: 'Умови оновлено', next: [{ to: 'END', condition: '' }], source_ids: [trId] },
-    { id: 'S5', role: 'Керівник відділу', action: 'Вирішує, погодити чи відхилити виняток', entry_condition: 'Оператор передав заявку', input_artifact: '', result: 'Рішення щодо винятку', next: [{ to: 'S4', condition: 'погоджено' }, { to: 'END', condition: 'відхилено' }], source_ids: [trId] },
+    { id: 'S5', role: 'Керівник відділу', action: 'Вирішує, погодити чи відхилити виняток', entry_condition: 'Оператор передав заявку', input_artifact: '', result: 'Рішення щодо винятку', next: [{ to: 'S4', condition: 'погоджено' }, { to: UNKNOWN, condition: 'відхилено' }], source_ids: [trId] },
   ];
   c.problems = [
     { id: 'P1', symptom: 'Клієнти скаржаться на тривале очікування', cause: '', impact: 'Невдоволення клієнтів; тривалість не виміряно (метрик немає)', impact_is_estimate: true },
@@ -59,7 +59,7 @@ function demoContent(reqId: string, trId: string): Content {
     { id: 'H1', author: 'analyst', text: 'Затримки виникають головно на кроці розгляду винятків', status: 'open', evidence_for: [], evidence_against: [], check_method: 'Запитати оператора й керівника про типовий час розгляду; побачити приклад заявки', history: [] },
   ];
   c.questions = [
-    { id: 'Q1', text: 'Що відбувається із заявкою після відхилення винятку: хто й як повідомляє клієнта, чи завершується на цьому процес?', critical: true, impact: 'Без цього неможливо коректно описати завершення процесу й гілку «відхилено»', addressee: 'Керівник відділу або оператор back-office', status: 'open', answer: '', closed_by_source_id: null, origin: 'demo_script', criticality_note: '' },
+    { id: 'Q1', text: 'Що відбувається із заявкою після відхилення винятку: хто й як повідомляє клієнта, чи завершується на цьому процес?', critical: true, impact: 'Без цього неможливо коректно описати завершення процесу й гілку «відхилено»', addressee: 'Керівник відділу або оператор back-office', status: 'open', answer: '', closed_by_source_id: null, origin: 'demo_script', criticality_note: '', affects_transitions: [{ step_id: 'S5', condition: 'відхилено' }] },
     { id: 'Q2', text: 'Який приблизний час очікування клієнта на кожному кроці?', critical: false, impact: 'Допоможе оцінити вплив проблеми P1', addressee: 'Оператор back-office', status: 'open', answer: '', closed_by_source_id: null, origin: 'demo_script', criticality_note: '' },
   ];
   return c;

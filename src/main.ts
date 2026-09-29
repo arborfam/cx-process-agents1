@@ -32,7 +32,10 @@ try {
     console.log('══════════════════════════════════════════════════════════════');
     console.log(' ДЕМОРЕЖИМ — не AI. Перевіряється програмна логіка.');
     console.log(` База кейсів: ${cfg.dbPath}`);
-    console.log(` Відкрийте: http://localhost:${port}/login?code=${code}`);
+    console.log(' Відкрийте в браузері це посилання (скопіюйте весь рядок нижче):');
+    console.log('');
+    console.log(`   http://localhost:${port}/login?code=${code}`);
+    console.log('');
     console.log(' Зупинити: Ctrl+C. Дані збережуться й будуть доступні після перезапуску.');
     console.log('══════════════════════════════════════════════════════════════');
   });

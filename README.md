@@ -14,7 +14,7 @@ GitHub-репозиторій — папка проєкту з історією 
 
 ## Стан реалізації
 
-Зріз 1 (деморежим, без AI) реалізовано: `npm install`, `npm test`, `npm run demo`. Як пройти сценарій самостійно — docs/demo-guide.md; результати перевірок — docs/slice-1-report.md; знімки — docs/demo/.
+Зріз 1 (деморежим, без AI) реалізовано: `npm install`, `npm test`, `npm run demo`. Запуск на Windows — docs/windows-start.md; як пройти сценарій самостійно — docs/demo-guide.md; результати перевірок — docs/slice-1-report.md; знімки — docs/demo/.
 
 ## Файли
 

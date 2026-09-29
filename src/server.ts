@@ -66,6 +66,15 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(data);
 }
 
+function pickAffects(raw: unknown): { step_id: string; condition: string }[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw new DomainError('VALIDATION', 'affects має бути списком', 400);
+  return raw.map((a) => {
+    const o = (a ?? {}) as Record<string, unknown>;
+    return { step_id: str(o.step_id, 'affects.step_id'), condition: str(o.condition, 'affects.condition', false) };
+  });
+}
+
 function pickFields(raw: unknown): EditFields {
   if (raw === undefined) return {};
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new DomainError('VALIDATION', 'fields має бути об’єктом', 400);
@@ -150,6 +159,7 @@ export function createApp(opts: ServerOptions): Server {
           const v = addQuestion(db, human, caseId, {
             baseVersionId: str(b.base_version_id, 'base_version_id'), text: str(b.text, 'text'),
             critical: b.critical === true, impact: str(b.impact, 'impact', false), addressee: str(b.addressee, 'addressee', false),
+            affects: pickAffects(b.affects),
           });
           return json(res, 201, { version_id: v.id });
         }

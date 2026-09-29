@@ -66,6 +66,8 @@ const Question = z
     closed_by_source_id: z.string().nullable(),
     origin: z.enum(['analyst', 'demo_script', 'agent']),
     criticality_note: z.string(),
+    /** Переходи, про які це питання: доки воно відкрите, такий перехід має бути «невідомим», а не фактом. */
+    affects_transitions: z.array(z.object({ step_id: z.string(), condition: z.string() }).strict()).optional(),
   })
   .strict();
 
@@ -85,6 +87,9 @@ export const ContentSchema = z
     conflicts: z.array(Conflict),
   })
   .strict();
+
+/** Спеціальна ціль переходу: «що далі — невідомо». Не є кроком і не є завершенням. */
+export const UNKNOWN = 'UNKNOWN';
 
 export type Content = z.infer<typeof ContentSchema>;
 export type Step = z.infer<typeof Step>;

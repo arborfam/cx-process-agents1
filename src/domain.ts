@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { all, one, run, tx, type DB } from './db.ts';
 import { DomainError } from './errors.ts';
 import { canonical, sha256 } from './hash.ts';
-import { CLAIM_TYPE_LABEL, ContentSchema, emptyContent, parseContent, type Content, type Question, type Step } from './schema.ts';
+import { CLAIM_TYPE_LABEL, ContentSchema, UNKNOWN, emptyContent, parseContent, type Content, type Question, type Step } from './schema.ts';
 import { parseProblems, parseRoles, parseSteps, problemsToText, rolesToText, stepsToText } from './text-format.ts';
 
 // ───────────────────────── типи ─────────────────────────
@@ -300,6 +300,21 @@ export function protectAnalystEdits(
         note: 'Питання закривається лише за наявності джерела відповіді.' });
     }
   }
+  // «Невідоме не стає фактом»: доки питання про перехід відкрите, агент не може підмінити «невідомо» встановленим переходом.
+  for (const bq of base.questions) {
+    if (bq.status !== 'open') continue;
+    const rq = result.questions.find((q) => q.id === bq.id);
+    if (!rq || rq.status !== 'open') continue;
+    for (const a of bq.affects_transitions ?? []) {
+      const bt = base.steps.find((s) => s.id === a.step_id)?.next.find((n) => n.condition === a.condition);
+      const rt = result.steps.find((s) => s.id === a.step_id)?.next.find((n) => n.condition === a.condition);
+      if (bt && bt.to === UNKNOWN && rt && rt.to !== UNKNOWN) {
+        conflicts.push({ key: `transition:${a.step_id}:${a.condition}`, kept: 'невідомо', proposed: rt.to,
+          note: `Питання ${bq.id} відкрите: невідомий перехід не може стати встановленим без відповіді.` });
+        rt.to = UNKNOWN;
+      }
+    }
+  }
   result.conflicts = conflicts;
   return { content: result, conflicts };
 }
@@ -459,17 +474,25 @@ function nextId(prefix: string, existing: string[]): string {
 /** Питання ставить аналітик явно (у зрізі 1 виявлення питань агентом немає). */
 export function addQuestion(
   db: DB, actor: Actor, caseId: string,
-  input: { baseVersionId: string; text: string; critical: boolean; impact: string; addressee?: string },
+  input: { baseVersionId: string; text: string; critical: boolean; impact: string; addressee?: string; affects?: { step_id: string; condition: string }[] },
 ): VersionRow {
   requireHuman(actor, 'постановка питання');
   if (!input.text.trim()) throw new DomainError('VALIDATION', 'Текст питання порожній', 400);
   return tx(db, () => {
     const head = assertBase(db, caseId, input.baseVersionId);
     const c = versionContent(head);
+    const affects = input.affects ?? [];
+    for (const a of affects) {
+      const tr = c.steps.find((s) => s.id === a.step_id)?.next.find((n) => n.condition === a.condition);
+      if (!tr) throw new DomainError('VALIDATION', `У кроці ${a.step_id} немає переходу ${condText(a.condition)}`, 400);
+      // Питання про перехід одразу робить його «невідомим»: інакше опис би стверджував факт, який ще не з’ясовано.
+      tr.to = UNKNOWN;
+    }
     c.questions.push({
       id: nextId('Q', c.questions.map((q) => q.id)), text: input.text.trim(), critical: input.critical,
       impact: input.impact.trim(), addressee: (input.addressee ?? '').trim(), status: 'open', answer: '',
       closed_by_source_id: null, origin: 'analyst', criticality_note: '',
+      ...(affects.length ? { affects_transitions: affects.map((a) => ({ step_id: a.step_id, condition: a.condition })) } : {}),
     });
     return commitAnalystVersion(db, actor, caseId, head, c, JSON.parse(head.covered_json) as string[],
       `Додано ${input.critical ? 'критичне ' : ''}питання`);
@@ -569,7 +592,7 @@ export function submissionBlockers(db: DB, caseId: string): Blocker[] {
       out.push({ code: 'STEP_NO_NEXT', severity: 'critical', ref: s.id, message: `Крок ${s.id}: не вказано наступного кроку (або END).` });
     }
     for (const n of s.next) {
-      if (n.to !== 'END' && !stepIds.has(n.to)) {
+      if (n.to !== 'END' && n.to !== UNKNOWN && !stepIds.has(n.to)) {
         out.push({ code: 'STEP_BAD_NEXT', severity: 'critical', ref: s.id, message: `Крок ${s.id}: перехід до неіснуючого кроку «${n.to}».` });
       }
     }
@@ -581,10 +604,81 @@ export function submissionBlockers(db: DB, caseId: string): Blocker[] {
     if (!p.impact.trim()) out.push({ code: 'PROBLEM_NO_IMPACT', severity: 'critical', ref: p.id,
       message: `Проблема ${p.id}: не описано вплив (якщо метрики немає — вкажіть це словами).` });
   }
+  out.push(...transitionIssues(c));
   if (c.conflicts.length > 0) {
     out.push({ code: 'CONFLICTS_PRESENT', severity: 'warning', message: `Є конфлікти між правками аналітика й агента: ${c.conflicts.length}. Перегляньте обидва варіанти.` });
   }
   return out;
+}
+
+// ───────────────────── невизначені переходи ─────────────────────
+
+const condText = (cond: string): string => (cond ? `«${cond}»` : '(без умови)');
+
+/** Питання, що стосуються переходу (крок, умова). */
+export function questionsAffecting(c: Content, stepId: string, condition: string): Question[] {
+  return c.questions.filter((q) => (q.affects_transitions ?? []).some((a) => a.step_id === stepId && a.condition === condition));
+}
+
+/**
+ * Правила «невідоме не стає фактом». Усі порушення критичні (це прогалини у ході процесу):
+ *  • перехід «невідомо» без питання, з закритим питанням, або з відкритим питанням (залишається прогалиною);
+ *  • відкрите питання про перехід, який поданий як встановлений (наприклад, END) — суперечність;
+ *  • відкрите питання посилається на перехід, якого в описі немає.
+ */
+export function transitionIssues(c: Content): Blocker[] {
+  const out: Blocker[] = [];
+  for (const s of c.steps) {
+    for (const n of s.next) {
+      const linked = questionsAffecting(c, s.id, n.condition);
+      const open = linked.filter((q) => q.status === 'open');
+      if (n.to === UNKNOWN) {
+        if (linked.length === 0) {
+          out.push({ code: 'UNKNOWN_WITHOUT_QUESTION', severity: 'critical', ref: s.id,
+            message: `Крок ${s.id}: перехід ${condText(n.condition)} позначено «невідомо», але немає питання, яке б це з’ясовувало. Додайте питання.` });
+        } else if (open.length === 0) {
+          out.push({ code: 'UNKNOWN_QUESTION_CLOSED', severity: 'critical', ref: s.id,
+            message: `Крок ${s.id}: перехід ${condText(n.condition)} досі «невідомо», хоча питання ${linked.map((q) => q.id).join(', ')} закрито. Оновіть крок відповідно до уточнення.` });
+        } else {
+          out.push({ code: 'UNRESOLVED_TRANSITION', severity: 'critical', ref: s.id,
+            message: `Крок ${s.id}: перехід ${condText(n.condition)} невизначений — див. питання ${open.map((q) => q.id).join(', ')}.` });
+        }
+      } else if (open.length > 0) {
+        out.push({ code: 'CONTRADICTION', severity: 'critical', ref: open[0]!.id,
+          message: `Суперечність: питання ${open.map((q) => q.id).join(', ')} про перехід ${condText(n.condition)} кроку ${s.id} відкрите, але перехід поданий як встановлений (→ ${n.to}). Невідоме не можна записувати як факт.` });
+      }
+    }
+  }
+  for (const q of c.questions) {
+    if (q.status !== 'open') continue;
+    for (const a of q.affects_transitions ?? []) {
+      const exists = c.steps.some((s) => s.id === a.step_id && s.next.some((n) => n.condition === a.condition));
+      if (!exists) {
+        out.push({ code: 'QUESTION_LINK_BROKEN', severity: 'critical', ref: q.id,
+          message: `Питання ${q.id} стосується переходу ${condText(a.condition)} кроку ${a.step_id}, якого в описі немає (змінено умову чи крок?).` });
+      }
+    }
+  }
+  return out;
+}
+
+export interface UnknownTransition {
+  step_id: string;
+  step_action: string;
+  condition: string;
+  question_ids: string[];
+  questions: { id: string; text: string; status: string }[];
+}
+
+export function unknownTransitions(c: Content): UnknownTransition[] {
+  const res: UnknownTransition[] = [];
+  for (const s of c.steps) for (const n of s.next) {
+    if (n.to !== UNKNOWN) continue;
+    const qs = questionsAffecting(c, s.id, n.condition);
+    res.push({ step_id: s.id, step_action: s.action, condition: n.condition, question_ids: qs.map((q) => q.id),
+      questions: qs.map((q) => ({ id: q.id, text: q.text, status: q.status })) });
+  }
+  return res;
 }
 
 export const criticalBlockers = (bs: Blocker[]): Blocker[] => bs.filter((b) => b.severity === 'critical');
@@ -687,6 +781,7 @@ export function bpmnGuard(db: DB, caseId: string): GuardResult {
     }
     const open = versionContent(approved).questions.filter((q) => q.status === 'open' && q.critical);
     for (const q of open) fail('CRITICAL_QUESTION', `У погодженій версії є відкрите критичне питання ${q.id}.`);
+    for (const issue of transitionIssues(versionContent(approved))) fail(issue.code, issue.message);
   }
   const active = one<{ id: string }>(db, `SELECT id FROM run WHERE case_id = ? AND agent = 'bpmn' AND technical_state IN ('queued','running')`, caseId);
   if (active) fail('RUN_ACTIVE', 'Для цього кейсу вже є активний запуск BPMN.');
@@ -719,40 +814,182 @@ export function requestBpmnStart(db: DB, actor: Actor, caseId: string, mode: str
 
 // ───────────────────────── картка для UI ─────────────────────────
 
-export function diffVersions(prev: Content | null, cur: Content, prevCovered: string[], curCovered: string[], sourceTitle: (id: string) => string): string[] {
+export interface ChangeItem {
+  label: 'Джерело' | 'Питання' | 'Крок' | 'Межі' | 'Суть' | 'Контекст' | 'Ролі' | 'Проблема' | 'Гіпотеза' | 'Твердження' | 'Конфлікт';
+  text: string;
+}
+
+const clip = (t: string, n = 80): string => (t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t);
+
+/** Коротка змістовна різниця: «було … → стало …», лише змінений фрагмент із невеликим контекстом. */
+export function delta(a: string, b: string): string {
+  if (a === b) return '';
+  if (!a.trim()) return `додано «${clip(b)}»`;
+  if (!b.trim()) return `видалено «${clip(a)}»`;
+  if (a.length <= 80 && b.length <= 80) return `було «${a}», стало «${b}»`;
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  let j = 0;
+  while (j < a.length - i && j < b.length - i && a[a.length - 1 - j] === b[b.length - 1 - j]) j++;
+  const start = Math.max(0, i - 20);
+  const pre = start > 0 ? '…' : '';
+  const fa = a.slice(start, a.length - j);
+  const fb = b.slice(start, b.length - j);
+  return `було «${pre}${clip(fa, 90)}», стало «${pre}${clip(fb, 90)}»`;
+}
+
+const trTarget = (c: Content, stepId: string, n: { to: string; condition: string }): string => {
+  if (n.to === 'END') return 'кінець процесу';
+  if (n.to === UNKNOWN) {
+    const ids = questionsAffecting(c, stepId, n.condition).map((q) => q.id);
+    return `НЕВІДОМО${ids.length ? ` (питання ${ids.join(', ')})` : ''}`;
+  }
+  return `крок ${n.to}`;
+};
+
+function diffTransitions(pc: Content, cc: Content, ps: Step, cs: Step): string[] {
+  const key = (n: { condition: string }) => (n.condition ? `«${n.condition}»` : '(без умови)');
+  const pm = new Map(ps.next.map((n) => [key(n), n]));
+  const cm = new Map(cs.next.map((n) => [key(n), n]));
   const out: string[] = [];
-  if (!prev) return ['Перша версія'];
-  for (const id of curCovered) if (!prevCovered.includes(id)) out.push(`Враховано нове джерело: «${sourceTitle(id)}»`);
-  if (prev.summary !== cur.summary) out.push('Змінено суть процесу');
-  if (prev.business_context !== cur.business_context) out.push('Змінено бізнес-контекст');
-  const BOUNDARY_LABEL = { trigger: 'тригер', input: 'вхід', completion: 'фактичне завершення', result: 'результат' } as const;
-  for (const k of ['trigger', 'input', 'completion', 'result'] as const) {
-    if (prev.boundaries[k] !== cur.boundaries[k]) out.push(`Змінено межу процесу: ${BOUNDARY_LABEL[k]}`);
+  for (const [k, n] of cm) {
+    const o = pm.get(k);
+    if (!o) out.push(`новий перехід ${k} → ${trTarget(cc, cs.id, n)}`);
+    else if (o.to !== n.to) out.push(`перехід ${k}: ${trTarget(pc, ps.id, o)} → ${trTarget(cc, cs.id, n)}`);
   }
-  if (canonical(prev.roles) !== canonical(cur.roles)) out.push('Змінено список ролей');
-  const ps = new Map(prev.steps.map((s) => [s.id, s]));
-  const cs = new Map(cur.steps.map((s) => [s.id, s]));
-  for (const [id, s] of cs) {
-    if (!ps.has(id)) out.push(`Додано крок ${id}: ${s.action}`);
-    else if (canonical(ps.get(id)) !== canonical(s)) out.push(`Змінено крок ${id}: ${s.action}`);
-  }
-  for (const [id, s] of ps) if (!cs.has(id)) out.push(`Видалено крок ${id}: ${s.action}`);
-  const pp = new Map(prev.problems.map((p) => [p.id, p]));
-  for (const p of cur.problems) {
-    if (!pp.has(p.id)) out.push(`Додано проблему ${p.id}: ${p.symptom}`);
-    else if (canonical(pp.get(p.id)) !== canonical(p)) out.push(`Змінено проблему ${p.id}`);
-  }
+  for (const [k, o] of pm) if (!cm.has(k)) out.push(`видалено перехід ${k} (було → ${trTarget(pc, ps.id, o)})`);
+  return out;
+}
+
+export function diffVersions(
+  prev: Content | null, cur: Content, prevCovered: string[], curCovered: string[], sourceTitle: (id: string) => string,
+): ChangeItem[] {
+  const out: ChangeItem[] = [];
+  if (!prev) return [{ label: 'Суть', text: 'Перша версія' }];
+  for (const id of curCovered) if (!prevCovered.includes(id)) out.push({ label: 'Джерело', text: `Враховано нове джерело «${sourceTitle(id)}»` });
+
+  // 1) питання — найважливіші для рішення
   const pq = new Map(prev.questions.map((q) => [q.id, q]));
   for (const q of cur.questions) {
     const o = pq.get(q.id);
-    if (!o) out.push(`Нове ${q.critical ? 'критичне ' : ''}питання ${q.id}`);
+    if (!o) {
+      out.push({ label: 'Питання', text: `Нове ${q.critical ? 'критичне ' : ''}питання ${q.id}: «${clip(q.text)}»${q.impact ? ` (вплив: ${clip(q.impact, 60)})` : ''}` });
+      continue;
+    }
+    if (o.status === 'open' && q.status === 'closed') out.push({ label: 'Питання', text: `Закрито ${q.id}: «${clip(q.text, 60)}» — відповідь: «${clip(q.answer)}»` });
+    if (o.critical !== q.critical) out.push({ label: 'Питання', text: `${q.id} тепер ${q.critical ? 'критичне' : 'НЕкритичне'}${q.criticality_note ? ` — пояснення: «${clip(q.criticality_note)}»` : ''}` });
+    if (o.text !== q.text) out.push({ label: 'Питання', text: `Змінено формулювання ${q.id}: ${delta(o.text, q.text)}` });
+  }
+  for (const o of prev.questions) if (!cur.questions.some((q) => q.id === o.id)) out.push({ label: 'Питання', text: `Видалено питання ${o.id}: «${clip(o.text)}»` });
+
+  // 2) кроки
+  const ps = new Map(prev.steps.map((x) => [x.id, x]));
+  const cs = new Map(cur.steps.map((x) => [x.id, x]));
+  for (const [id, x] of cs) {
+    const o = ps.get(id);
+    if (!o) {
+      out.push({ label: 'Крок', text: `Додано ${id} (${x.role}): «${clip(x.action, 60)}» → результат «${clip(x.result, 40)}»; далі: ${x.next.map((n) => `${n.condition ? n.condition + ' → ' : ''}${trTarget(cur, id, n)}`).join('; ')}` });
+      continue;
+    }
+    const parts: string[] = [];
+    if (o.role !== x.role) parts.push(`роль: ${o.role} → ${x.role}`);
+    if (o.action !== x.action) parts.push(`дія: ${delta(o.action, x.action)}`);
+    if (o.result !== x.result) parts.push(`результат: ${delta(o.result, x.result)}`);
+    if (o.entry_condition !== x.entry_condition) parts.push(`умова входу: ${delta(o.entry_condition, x.entry_condition)}`);
+    parts.push(...diffTransitions(prev, cur, o, x));
+    if (parts.length) out.push({ label: 'Крок', text: `${id}: ${parts.join('; ')}` });
+  }
+  for (const [id, o] of ps) if (!cs.has(id)) out.push({ label: 'Крок', text: `Видалено ${id}: «${clip(o.action, 60)}»` });
+
+  // 3) межі, суть, контекст, ролі
+  const BL = { trigger: 'тригер', input: 'вхід', completion: 'фактичне завершення', result: 'результат' } as const;
+  for (const k of ['trigger', 'input', 'completion', 'result'] as const) {
+    if (prev.boundaries[k] !== cur.boundaries[k]) out.push({ label: 'Межі', text: `${BL[k]}: ${delta(prev.boundaries[k], cur.boundaries[k])}` });
+  }
+  if (prev.summary !== cur.summary) out.push({ label: 'Суть', text: delta(prev.summary, cur.summary) });
+  if (prev.business_context !== cur.business_context) out.push({ label: 'Контекст', text: delta(prev.business_context, cur.business_context) });
+  const addedRoles = cur.roles.filter((r) => !prev.roles.includes(r));
+  const removedRoles = prev.roles.filter((r) => !cur.roles.includes(r));
+  if (addedRoles.length) out.push({ label: 'Ролі', text: `Додано: ${addedRoles.join(', ')}` });
+  if (removedRoles.length) out.push({ label: 'Ролі', text: `Видалено: ${removedRoles.join(', ')}` });
+
+  // 4) проблеми, гіпотези, твердження
+  const pp = new Map(prev.problems.map((x) => [x.id, x]));
+  for (const x of cur.problems) {
+    const o = pp.get(x.id);
+    if (!o) out.push({ label: 'Проблема', text: `Нова ${x.id}: «${clip(x.symptom, 60)}»; вплив: «${clip(x.impact, 60)}»` });
     else {
-      if (o.status === 'open' && q.status === 'closed') out.push(`Закрито питання ${q.id}`);
-      if (o.critical !== q.critical) out.push(`Змінено критичність питання ${q.id}: ${q.critical ? 'критичне' : 'некритичне'}`);
+      const parts: string[] = [];
+      if (o.symptom !== x.symptom) parts.push(`симптом: ${delta(o.symptom, x.symptom)}`);
+      if (o.cause !== x.cause) parts.push(`причина: ${delta(o.cause, x.cause)}`);
+      if (o.impact !== x.impact) parts.push(`вплив: ${delta(o.impact, x.impact)}`);
+      if (parts.length) out.push({ label: 'Проблема', text: `${x.id}: ${parts.join('; ')}` });
     }
   }
-  if (cur.conflicts.length > prev.conflicts.length) out.push('З’явилися конфлікти правок (див. розділ «Конфлікти»)');
+  const ph = new Map(prev.hypotheses.map((x) => [x.id, x]));
+  const HS = { open: 'відкрита', supported: 'підтримана', refuted: 'спростована', confirmed: 'підтверджена' } as const;
+  for (const x of cur.hypotheses) {
+    const o = ph.get(x.id);
+    if (!o) out.push({ label: 'Гіпотеза', text: `Нова ${x.id}: «${clip(x.text)}»` });
+    else if (o.status !== x.status) out.push({ label: 'Гіпотеза', text: `${x.id}: ${HS[o.status]} → ${HS[x.status]}` });
+  }
+  const pcl = new Map(prev.claims.map((x) => [x.id, x]));
+  for (const x of cur.claims) {
+    const o = pcl.get(x.id);
+    if (!o) out.push({ label: 'Твердження', text: `Нове ${x.id} (${CLAIM_TYPE_LABEL[x.type]}): «${clip(x.text)}»` });
+    else if (o.type !== x.type) out.push({ label: 'Твердження', text: `${x.id}: тип ${CLAIM_TYPE_LABEL[o.type]} → ${CLAIM_TYPE_LABEL[x.type]}` });
+  }
+  if (cur.conflicts.length > prev.conflicts.length) {
+    for (const cf of cur.conflicts.slice(prev.conflicts.length)) out.push({ label: 'Конфлікт', text: `${cf.key}: збережено «${clip(cf.kept, 50)}», агент пропонував «${clip(cf.proposed, 50)}»` });
+  }
   return out;
+}
+
+// ───────────────── огляд стану чернетки (окремо від змістових прогалин) ─────────────────
+
+const GAP_CODES = new Set(['CRITICAL_QUESTION', 'UNRESOLVED_TRANSITION', 'UNKNOWN_WITHOUT_QUESTION', 'UNKNOWN_QUESTION_CLOSED', 'CONTRADICTION', 'QUESTION_LINK_BROKEN']);
+const STRUCTURE_CODES = new Set(['BOUNDARY_MISSING', 'NO_ROLES', 'NO_STEPS', 'STEP_INCOMPLETE', 'STEP_UNKNOWN_ROLE', 'STEP_NO_NEXT', 'STEP_BAD_NEXT', 'STEP_NO_CONDITION', 'PROBLEM_NO_IMPACT']);
+
+/** Критичні змістові прогалини: чого про процес ще не з’ясовано або де опис суперечить сам собі. */
+export function criticalGaps(blockers: Blocker[]): Blocker[] {
+  return blockers.filter((b) => b.severity === 'critical' && GAP_CODES.has(b.code));
+}
+
+export interface ReviewCheck {
+  key: string;
+  label: string;
+  status: 'ok' | 'fail' | 'warn';
+  status_text: 'Пройдено' | 'Не пройдено' | 'Увага';
+  detail: string;
+}
+
+/** Статус перевірки чернетки: що вже пройдено, а що ні, перш ніж передавати на погодження. */
+export function draftReview(
+  blockers: Blocker[], opts: { accepted: boolean; integrityOk: boolean; readable: number; covered: number },
+): { checks: ReviewCheck[]; ready: boolean; ready_text: string } {
+  const mk = (key: string, label: string, status: ReviewCheck['status'], detail: string): ReviewCheck => ({
+    key, label, status, detail, status_text: status === 'ok' ? 'Пройдено' : status === 'fail' ? 'Не пройдено' : 'Увага',
+  });
+  const by = (f: (b: Blocker) => boolean) => blockers.filter(f);
+  const structure = by((b) => STRUCTURE_CODES.has(b.code));
+  const gaps = criticalGaps(blockers);
+  const unreadCrit = by((b) => b.code === 'UNREAD_SOURCE' && b.severity === 'critical');
+  const unreadWarn = by((b) => b.code === 'UNREAD_SOURCE' && b.severity === 'warning');
+  const uncovered = by((b) => b.code === 'UNCOVERED_SOURCE');
+  const conflicts = by((b) => b.code === 'CONFLICTS_PRESENT');
+  const checks: ReviewCheck[] = [
+    mk('accepted', 'Робочу версію прийнято аналітиком', opts.accepted ? 'ok' : 'fail', opts.accepted ? 'Так (це не погодження AS-IS)' : 'Ні — прийняття ще не відбулося'),
+    mk('sources', 'Усі прочитані джерела враховано у версії', uncovered.length ? 'fail' : 'ok', `${opts.covered} з ${opts.readable}${uncovered.length ? ' — не враховано: ' + uncovered.map((b) => b.message.replace(/^Джерело /, '').replace(/ не враховано в цій версії\.$/, '')).join(', ') : ''}`),
+    mk('reading', 'Файли прочитано', unreadCrit.length ? 'fail' : unreadWarn.length ? 'warn' : 'ok',
+      unreadCrit.length ? `Не прочитано обов’язкових: ${unreadCrit.length}` : unreadWarn.length ? `Не прочитано необов’язкових: ${unreadWarn.length}` : 'Усе прочитано'),
+    mk('structure', 'Структурна повнота: межі, ролі, кроки, переходи, вплив проблем', structure.length ? 'fail' : 'ok',
+      structure.length ? structure.slice(0, 3).map((b) => b.message).join(' · ') + (structure.length > 3 ? ` · …ще ${structure.length - 3}` : '') : 'Пропусків не виявлено'),
+    mk('gaps', 'Критичних прогалин немає', gaps.length ? 'fail' : 'ok', gaps.length ? `Відкрито прогалин: ${gaps.length} (див. блок «Критичні прогалини»)` : 'Немає'),
+    mk('integrity', 'Цілісність версії (хеш збігається зі змістом)', opts.integrityOk ? 'ok' : 'fail', opts.integrityOk ? 'Так' : 'Порушена: не використовуйте цю версію'),
+    mk('conflicts', 'Конфлікти між правками аналітика й агента', conflicts.length ? 'warn' : 'ok', conflicts.length ? conflicts[0]!.message : 'Немає'),
+  ];
+  const ready = checks.every((c) => c.status !== 'fail');
+  return { checks, ready, ready_text: ready ? 'Чернетка готова до передачі на погодження' : 'Чернетка ще не готова до передачі на погодження' };
 }
 
 export interface NextAction {
@@ -800,6 +1037,7 @@ export function buildCard(db: DB, caseId: string, mode: string) {
   );
   const blockers = submissionBlockers(db, caseId);
   const accepted = isAccepted(db, head.id);
+  const integrityOk = verifyVersionIntegrity(db, head.id);
   const bpmn = bpmnGuard(db, caseId);
   const covered = new Set(JSON.parse(head.covered_json) as string[]);
   const criticalOpen = content.questions.filter((q) => q.status === 'open' && q.critical);
@@ -821,11 +1059,18 @@ export function buildCard(db: DB, caseId: string, mode: string) {
     case: { id: c.id, title: c.title, state: c.state, state_label: STATE_LABEL[c.state], is_demo_script: c.is_demo_script === 1 },
     head: {
       id: head.id, number: head.number, created_by: head.created_by, actor_name: head.actor_name, mode: head.mode,
-      created_at: head.created_at, accepted, integrity_ok: verifyVersionIntegrity(db, head.id), note: head.note,
+      created_at: head.created_at, accepted, integrity_ok: integrityOk, note: head.note,
       hash: head.content_hash, content,
     },
     changes,
     blockers,
+    gaps: criticalGaps(blockers),
+    unknown_transitions: unknownTransitions(content),
+    review: draftReview(blockers, {
+      accepted, integrityOk,
+      readable: sources.filter((x) => x.read_status === 'ok').length,
+      covered: sources.filter((x) => x.read_status === 'ok' && covered.has(x.id)).length,
+    }),
     critical_open_questions: criticalOpen,
     other_open_questions_count: content.questions.filter((q) => q.status === 'open' && !q.critical).length,
     next_action: computeNextAction(c.state, blockers, accepted, bpmn),

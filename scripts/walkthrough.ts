@@ -42,7 +42,7 @@ try {
   await shot(page, '01-список-кейсів');
 
   await page.getByRole('link', { name: /ДЕМО: Зміна умов/ }).click();
-  await page.waitForSelector('text=Блокери погодження');
+  await page.waitForSelector('text=Критичні прогалини');
   await shot(page, '02-картка-з-критичним-блокером');
 
   // спроба: кнопка наступної дії відкриває питання
@@ -58,17 +58,18 @@ try {
   await tab(page, 'Питання');
   await page.locator('textarea').first().fill('Керівник відділу повідомляє клієнта листом про відхилення винятку, після чого заявку закривають.');
   await page.getByRole('button', { name: /Закрити питання уточненням/ }).first().click();
-  await page.waitForSelector('text=Критичних блокерів немає').catch(() => {});
+  await page.waitForSelector('text=Критичні прогалини: 1');
   await shot(page, '05-після-уточнення-нова-версія');
 
   // правка кроків: відхилення веде до нового кроку S6
   await tab(page, 'Редагувати');
   const steps = page.locator('textarea[name=steps]');
   let text = await steps.inputValue();
-  text = text.replace('S4 (погоджено); END (відхилено)', 'S4 (погоджено); S6 (відхилено)') + '\nS6 | Керівник відділу | Повідомляє клієнта листом про відхилення | Клієнта поінформовано | END';
+  text = text.replace('S4 (погоджено); ? (відхилено)', 'S4 (погоджено); S6 (відхилено)') + '\nS6 | Керівник відділу | Повідомляє клієнта листом про відхилення | Клієнта поінформовано | END';
   await steps.fill(text);
   await page.getByRole('button', { name: /Зберегти як нову версію/ }).click();
   await page.waitForSelector('text=Версія 4');
+  await page.waitForSelector('text=Критичних прогалин немає');
   await shot(page, '06-після-правки-кроків');
 
   await page.getByRole('button', { name: 'Прийняти робочу версію' }).click();
@@ -97,6 +98,21 @@ try {
   await shot(page, '11-нове-джерело-повертає-до-дослідження');
   await tab(page, 'Історія');
   await shot(page, '12-історія-погодження-скасовано');
+
+  // невідоме не стає фактом: питання про перехід робить його невідомим, а подання його як факту — суперечність
+  await tab(page, 'Питання');
+  await page.locator('form input[name=text]').fill('Чи завжди заявка після S1 одразу йде на перевірку повноти?');
+  await page.locator('select[name=transition]').selectOption({ index: 1 });
+  await page.getByRole('button', { name: 'Додати питання' }).click();
+  await page.waitForSelector('text=Невизначений перехід');
+  await tab(page, 'Кроки');
+  await shot(page, '13-питання-про-перехід-робить-його-невідомим');
+  await tab(page, 'Редагувати');
+  const steps2 = page.locator('textarea[name=steps]');
+  await steps2.fill((await steps2.inputValue()).replace(/\| \?\n/, '| S2\n'));
+  await page.getByRole('button', { name: /Зберегти як нову версію/ }).click();
+  await page.waitForSelector('text=Суперечність');
+  await shot(page, '14-невідоме-подано-як-факт-суперечність');
 } finally {
   await browser.close();
   await app.stop();
