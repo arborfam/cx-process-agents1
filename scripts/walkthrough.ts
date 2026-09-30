@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import assert from 'node:assert/strict';
 import { chromium, type Page } from 'playwright-core';
 
 const OUT = 'docs/demo';
@@ -43,7 +44,21 @@ try {
 
   await page.getByRole('link', { name: /ДЕМО: Зміна умов/ }).click();
   await page.waitForSelector('text=Критичні прогалини');
+  // ── перевірка структури картки (не лише знімок) ──
+  const order = await page.evaluate(() => [...document.querySelectorAll('[data-block]')].map((e) => (e as HTMLElement).dataset.block));
+  assert.deepEqual(order, ['essence', 'asis', 'gaps', 'changes', 'review'], 'порядок блоків: Суть → опис AS-IS → прогалини й дія → зміни → перевірки');
+  const tabNames = await page.locator('[role=tab]').allInnerTexts();
+  assert.ok(tabNames[0]!.startsWith('Бізнес-контекст і межі'), 'перша вкладка — «Бізнес-контекст і межі»: ' + tabNames[0]);
+  assert.ok(tabNames[1]!.startsWith('Кроки процесу'), 'друга вкладка — «Кроки процесу»: ' + tabNames[1]);
+  const selected = await page.locator('[role=tab][aria-selected=true]').innerText();
+  assert.ok(selected.startsWith('Бізнес-контекст і межі'), 'за замовчуванням відкрита перша вкладка: ' + selected);
+  assert.ok(await page.locator('#panel').innerText().then((t) => t.includes('Навіщо існує процес') && t.includes('Тригер') && t.includes('Фактичне завершення')), 'у першій вкладці — навіщо процес, тригер, межі, завершення');
+  assert.equal(await page.locator('[data-block=review] details').evaluate((e) => (e as HTMLDetailsElement).open), false, 'перевірки готовності за замовчуванням згорнуті');
+  console.log('перевірка структури картки: ок');
   await shot(page, '02-картка-з-критичним-блокером');
+  await tab(page, 'Кроки процесу');
+  await shot(page, '02b-вкладка-кроки-процесу');
+  await tab(page, 'Бізнес-контекст');
 
   // спроба: кнопка наступної дії відкриває питання
   await page.getByRole('button', { name: /Закрити критичні питання/ }).click();

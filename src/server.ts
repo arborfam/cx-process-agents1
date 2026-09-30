@@ -83,6 +83,10 @@ function pickFields(raw: unknown): EditFields {
   for (const k of ['summary', 'business_context', 'roles_text', 'steps_text', 'problems_text'] as const) {
     if (r[k] !== undefined) out[k] = str(r[k], k);
   }
+  if (r.entry_step_id !== undefined) {
+    if (r.entry_step_id !== null && typeof r.entry_step_id !== 'string') throw new DomainError('VALIDATION', 'entry_step_id має бути текстом або null', 400);
+    out.entry_step_id = r.entry_step_id as string | null;
+  }
   if (r.boundaries !== undefined) {
     const bd = r.boundaries as Record<string, unknown>;
     out.boundaries = {};

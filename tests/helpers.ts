@@ -24,6 +24,7 @@ export const COMPLETE_FIELDS: EditFields = {
   business_context: 'Навчальний синтетичний приклад.',
   boundaries: { trigger: 'Запит клієнта', input: 'Заявка', completion: 'Умови оновлено', result: 'Оновлений договір' },
   roles_text: 'Менеджер\nОператор',
+  entry_step_id: 'S1',
   steps_text: [
     'S1 | Менеджер | Приймає запит | Заявка в CRM | S2',
     'S2 | Оператор | Вносить зміну | Умови оновлено | END',

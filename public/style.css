@@ -56,3 +56,17 @@ mark { background: #ffe066; color: #111; padding: 0 2px; border-radius: 3px; }
 .steps li { margin: 6px 0; }
 .small { font-size: .88rem; }
 @media (max-width: 600px) { .wrap { padding: 10px; } th, td { padding: 4px; } }
+
+.notset { color: var(--warn); font-style: italic; }
+.kv { display: grid; grid-template-columns: minmax(9rem, 14rem) 1fr; gap: 4px 12px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+.kv .k { font-weight: 600; font-size: .92rem; color: var(--muted); }
+.kv .v { min-width: 0; overflow-wrap: anywhere; }
+.ctx h3 { margin: 14px 0 4px; }
+.ctx h3:first-child { margin-top: 0; }
+.nextaction { border-top: 1px solid rgba(0,0,0,.18); margin-top: 12px; padding-top: 8px; }
+.nextaction h3 { margin-top: 4px; }
+.entry-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; align-items: center; }
+.entry-form select { width: auto; max-width: 100%; }
+.review-sum { margin: 0 0 6px; }
+details > summary { cursor: pointer; }
+@media (max-width: 600px) { .kv { grid-template-columns: 1fr; } }

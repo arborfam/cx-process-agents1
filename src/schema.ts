@@ -79,6 +79,8 @@ export const ContentSchema = z
     business_context: z.string(),
     boundaries: z.object({ trigger: z.string(), input: z.string(), completion: z.string(), result: z.string() }).strict(),
     roles: z.array(z.string()),
+    /** Явний початковий крок (D27). Необов’язкове поле: старі версії його не мають і не переписуються. Ніколи не виводиться з порядку кроків. */
+    entry_step_id: z.string().nullable().optional(),
     steps: z.array(Step),
     problems: z.array(Problem),
     claims: z.array(Claim),

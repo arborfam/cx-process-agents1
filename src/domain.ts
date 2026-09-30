@@ -223,6 +223,7 @@ function contentKeys(c: Content): Map<string, string> {
   m.set('business_context', c.business_context);
   for (const k of ['trigger', 'input', 'completion', 'result'] as const) m.set(`boundaries.${k}`, c.boundaries[k]);
   m.set('roles', canonical(c.roles));
+  m.set('entry_step_id', c.entry_step_id ?? '');
   for (const s of c.steps) m.set(`step:${s.id}`, canonical(s));
   for (const p of c.problems) m.set(`problem:${p.id}`, canonical(p));
   return m;
@@ -236,7 +237,7 @@ export function changedKeys(a: Content, b: Content): string[] {
 }
 
 function pretty(v: string | undefined): string {
-  return v === undefined ? '(немає)' : v;
+  return v === undefined || v === '' ? '(немає)' : v;
 }
 
 /**
@@ -269,6 +270,10 @@ export function protectAnalystEdits(
       const f = key.slice('boundaries.'.length) as keyof Content['boundaries'];
       result.boundaries[f] = base.boundaries[f];
     } else if (key === 'roles') result.roles = [...base.roles];
+    else if (key === 'entry_step_id') {
+      if (base.entry_step_id === undefined) delete result.entry_step_id;
+      else result.entry_step_id = base.entry_step_id;
+    }
     else if (key.startsWith('step:')) {
       const id = key.slice(5);
       const baseIdx = base.steps.findIndex((s) => s.id === id);
@@ -405,6 +410,8 @@ export interface EditFields {
   roles_text?: string;
   steps_text?: string;
   problems_text?: string;
+  /** Явний початковий крок; null або порожній рядок — зняти. Ніколи не підставляється автоматично. */
+  entry_step_id?: string | null;
 }
 
 function assertBase(db: DB, caseId: string, baseVersionId: string): VersionRow {
@@ -452,6 +459,14 @@ export function saveAnalystVersion(
     if (f.roles_text !== undefined) next.roles = parseRoles(f.roles_text);
     if (f.steps_text !== undefined) next.steps = parseSteps(f.steps_text, prev.steps);
     if (f.problems_text !== undefined) next.problems = parseProblems(f.problems_text, prev.problems);
+    if (f.entry_step_id !== undefined) {
+      const e = f.entry_step_id === null ? '' : f.entry_step_id.trim();
+      if (e && !next.steps.some((st) => st.id === e)) {
+        throw new DomainError('VALIDATION', `Початковий крок «${e}» не існує серед кроків процесу. Спершу додайте крок, потім призначте його початковим.`, 400);
+      }
+      if (e) next.entry_step_id = e;
+      else if (prev.entry_step_id !== undefined) next.entry_step_id = null;   // явне зняття; для старих записів без поля нічого не дописуємо
+    }
 
     let covered: string[] = JSON.parse(head.covered_json) as string[];
     if (input.coverAllSources) {
@@ -605,6 +620,7 @@ export function submissionBlockers(db: DB, caseId: string): Blocker[] {
       message: `Проблема ${p.id}: не описано вплив (якщо метрики немає — вкажіть це словами).` });
   }
   out.push(...transitionIssues(c));
+  out.push(...flowIssues(c));
   if (c.conflicts.length > 0) {
     out.push({ code: 'CONFLICTS_PRESENT', severity: 'warning', message: `Є конфлікти між правками аналітика й агента: ${c.conflicts.length}. Перегляньте обидва варіанти.` });
   }
@@ -680,6 +696,93 @@ export function unknownTransitions(c: Content): UnknownTransition[] {
   }
   return res;
 }
+
+// ───────────────────── початковий крок, досяжність і вихід до завершення (D27) ─────────────────────
+
+const clipTxt = (t: string, n = 38): string => (t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t);
+
+/**
+ * Структурні правила потоку v1. Початковий крок ЗАВЖДИ береться з явного поля `entry_step_id`,
+ * порядок кроків у списку не використовується ніде.
+ *  • ENTRY_MISSING / ENTRY_BAD_REF — початковий крок не задано або він не існує;
+ *  • STEP_UNREACHABLE — кроки, до яких не веде жоден шлях від початкового;
+ *  • STEP_NO_EXIT — кроки, з яких неможливо дійти до завершення (END), зокрема замкнений цикл без виходу.
+ * Цикли з виходом дозволені. Перехід «невідомо» тут вважається можливим виходом, щоб не дублювати
+ * прогалину, яку вже показує правило невизначених переходів (D20).
+ */
+export function flowIssues(c: Content): Blocker[] {
+  const out: Blocker[] = [];
+  if (c.steps.length === 0) return out; // «немає кроків» повідомляє окреме правило
+  const byId = new Map(c.steps.map((s) => [s.id, s]));
+  const label = (id: string): string => `${id} («${clipTxt(byId.get(id)?.action ?? '')}»)`;
+  const list = (ids: string[]): string => ids.map(label).join(', ');
+  const entry = c.entry_step_id ?? null;
+  if (!entry) {
+    out.push({ code: 'ENTRY_MISSING', severity: 'critical',
+      message: c.entry_step_id === undefined
+        ? 'Початковий крок не визначено: запис створено до появи цього поля. Оберіть вручну, з якого кроку процес починається після тригера. Система не вибирає його за порядком рядків.'
+        : 'Початковий крок не визначено: оберіть, з якого кроку процес починається після тригера.' });
+    return out;
+  }
+  if (!byId.has(entry)) {
+    out.push({ code: 'ENTRY_BAD_REF', severity: 'critical', ref: entry,
+      message: `Початковий крок «${entry}» не існує серед кроків процесу (його могли видалити чи перейменувати). Оберіть інший початковий крок.` });
+    return out;
+  }
+  const adj = new Map<string, string[]>();
+  const exits = new Set<string>();
+  for (const s of c.steps) {
+    const to: string[] = [];
+    for (const n of s.next) {
+      if (n.to === 'END' || n.to === UNKNOWN) exits.add(s.id);
+      else if (byId.has(n.to)) to.push(n.to);
+    }
+    adj.set(s.id, to);
+  }
+  // досяжність від початкового кроку
+  const reach = new Set<string>([entry]);
+  const queue = [entry];
+  while (queue.length) {
+    const x = queue.shift()!;
+    for (const t of adj.get(x) ?? []) if (!reach.has(t)) { reach.add(t); queue.push(t); }
+  }
+  const unreachable = c.steps.map((s) => s.id).filter((id) => !reach.has(id));
+  if (unreachable.length) {
+    out.push({ code: 'STEP_UNREACHABLE', severity: 'critical', ref: unreachable.join(','),
+      message: `Недосяжні кроки: ${list(unreachable)}. Від початкового кроку ${label(entry)} немає жодного шляху до ${unreachable.length > 1 ? 'них' : 'нього'}: у ${unreachable.length > 1 ? 'ці кроки' : 'цей крок'} не веде жоден перехід із досяжних кроків. Додайте перехід або видаліть крок.` });
+  }
+  // чи можна з кроку дійти до завершення: зворотний обхід від кроків із виходом
+  const rev = new Map<string, string[]>();
+  for (const [from, tos] of adj) for (const t of tos) rev.set(t, [...(rev.get(t) ?? []), from]);
+  const canExit = new Set<string>(exits);
+  const q2 = [...exits];
+  while (q2.length) {
+    const x = q2.shift()!;
+    for (const p of rev.get(x) ?? []) if (!canExit.has(p)) { canExit.add(p); q2.push(p); }
+  }
+  // крок без жодного переходу повідомляє правило STEP_NO_NEXT — тут не дублюємо
+  const stuck = c.steps.map((s) => s.id).filter((id) => reach.has(id) && !canExit.has(id) && (byId.get(id)!.next.length > 0));
+  if (stuck.length) {
+    const stuckSet = new Set(stuck);
+    let cycle: string[] | null = null;
+    const seen = new Map<string, number>();
+    const path: string[] = [];
+    let cur: string | undefined = stuck[0];
+    while (cur !== undefined && !seen.has(cur)) {
+      seen.set(cur, path.length);
+      path.push(cur);
+      cur = (adj.get(cur) ?? []).find((t) => stuckSet.has(t));
+    }
+    if (cur !== undefined) cycle = [...path.slice(seen.get(cur)!), cur];
+    out.push({ code: 'STEP_NO_EXIT', severity: 'critical', ref: stuck.join(','),
+      message: cycle
+        ? `Замкнений цикл без виходу: ${cycle.join(' → ')}. З кроків ${list(stuck)} неможливо дійти до завершення процесу (END): жоден перехід не веде за межі циклу. Додайте вихід із циклу.`
+        : `З кроків ${list(stuck)} неможливо дійти до завершення процесу (END): усі шляхи з них ведуть у кроки без виходу. Додайте перехід до завершення.` });
+  }
+  return out;
+}
+
+export const FLOW_CODES = new Set(['ENTRY_MISSING', 'ENTRY_BAD_REF', 'STEP_UNREACHABLE', 'STEP_NO_EXIT']);
 
 export const criticalBlockers = (bs: Blocker[]): Blocker[] => bs.filter((b) => b.severity === 'critical');
 
@@ -782,6 +885,7 @@ export function bpmnGuard(db: DB, caseId: string): GuardResult {
     const open = versionContent(approved).questions.filter((q) => q.status === 'open' && q.critical);
     for (const q of open) fail('CRITICAL_QUESTION', `У погодженій версії є відкрите критичне питання ${q.id}.`);
     for (const issue of transitionIssues(versionContent(approved))) fail(issue.code, issue.message);
+    for (const issue of flowIssues(versionContent(approved))) fail(issue.code, issue.message);
   }
   const active = one<{ id: string }>(db, `SELECT id FROM run WHERE case_id = ? AND agent = 'bpmn' AND technical_state IN ('queued','running')`, caseId);
   if (active) fail('RUN_ACTIVE', 'Для цього кейсу вже є активний запуск BPMN.');
@@ -815,7 +919,7 @@ export function requestBpmnStart(db: DB, actor: Actor, caseId: string, mode: str
 // ───────────────────────── картка для UI ─────────────────────────
 
 export interface ChangeItem {
-  label: 'Джерело' | 'Питання' | 'Крок' | 'Межі' | 'Суть' | 'Контекст' | 'Ролі' | 'Проблема' | 'Гіпотеза' | 'Твердження' | 'Конфлікт';
+  label: 'Джерело' | 'Питання' | 'Початок' | 'Крок' | 'Межі' | 'Суть' | 'Контекст' | 'Ролі' | 'Проблема' | 'Гіпотеза' | 'Твердження' | 'Конфлікт';
   text: string;
 }
 
@@ -882,7 +986,11 @@ export function diffVersions(
   }
   for (const o of prev.questions) if (!cur.questions.some((q) => q.id === o.id)) out.push({ label: 'Питання', text: `Видалено питання ${o.id}: «${clip(o.text)}»` });
 
-  // 2) кроки
+  // 2) початковий крок і кроки
+  if ((prev.entry_step_id ?? '') !== (cur.entry_step_id ?? '')) {
+    const nm = (c: Content): string => (c.entry_step_id ? `${c.entry_step_id} («${clip(c.steps.find((x) => x.id === c.entry_step_id)?.action ?? '', 50)}»)` : 'не задано');
+    out.push({ label: 'Початок', text: `Початковий крок: було ${nm(prev)}, стало ${nm(cur)}` });
+  }
   const ps = new Map(prev.steps.map((x) => [x.id, x]));
   const cs = new Map(cur.steps.map((x) => [x.id, x]));
   for (const [id, x] of cs) {
@@ -947,7 +1055,7 @@ export function diffVersions(
 
 // ───────────────── огляд стану чернетки (окремо від змістових прогалин) ─────────────────
 
-const GAP_CODES = new Set(['CRITICAL_QUESTION', 'UNRESOLVED_TRANSITION', 'UNKNOWN_WITHOUT_QUESTION', 'UNKNOWN_QUESTION_CLOSED', 'CONTRADICTION', 'QUESTION_LINK_BROKEN']);
+const GAP_CODES = new Set(['CRITICAL_QUESTION', 'UNRESOLVED_TRANSITION', 'UNKNOWN_WITHOUT_QUESTION', 'UNKNOWN_QUESTION_CLOSED', 'CONTRADICTION', 'QUESTION_LINK_BROKEN', 'ENTRY_MISSING', 'ENTRY_BAD_REF', 'STEP_UNREACHABLE', 'STEP_NO_EXIT']);
 const STRUCTURE_CODES = new Set(['BOUNDARY_MISSING', 'NO_ROLES', 'NO_STEPS', 'STEP_INCOMPLETE', 'STEP_UNKNOWN_ROLE', 'STEP_NO_NEXT', 'STEP_BAD_NEXT', 'STEP_NO_CONDITION', 'PROBLEM_NO_IMPACT']);
 
 /** Критичні змістові прогалини: чого про процес ще не з’ясовано або де опис суперечить сам собі. */
@@ -1013,9 +1121,23 @@ function computeNextAction(state: CaseState, blockers: Blocker[], accepted: bool
       hint: 'Це ще не погодження AS-IS — лише ваша позначка, що чернетка вас влаштовує.' };
     return { key: 'submit', enabled: true, label: 'Передати на погодження', hint: 'Після цього версію можна буде погодити.' };
   }
-  if (state === 'pending_approval') return { key: 'approve', enabled: true, label: 'Погодити цю версію AS-IS',
-    hint: 'Погодження прив’язується до цієї незмінної версії. Якщо є сумніви — поверніть на доопрацювання.' };
+  if (state === 'pending_approval') {
+    if (crit.length) return { key: 'resolve_blockers', enabled: true, label: `Усунути блокери (${crit.length})`,
+      hint: 'Цю версію не можна погодити, доки є блокери. Правка створить нову версію й поверне кейс до дослідження.' };
+    return { key: 'approve', enabled: true, label: 'Погодити цю версію AS-IS',
+      hint: 'Погодження прив’язується до цієї незмінної версії. Якщо є сумніви — поверніть на доопрацювання.' };
+  }
   if (state === 'approved') {
+    if (bpmn.reasons.some((r) => r.code === 'ENTRY_MISSING' || r.code === 'ENTRY_BAD_REF')) {
+      return { key: 'clarify_entry', enabled: true, label: 'Уточнити початковий крок',
+        hint: 'У погодженому описі немає (або хибний) початковий крок. Погоджений пакет не змінюється: ви задаєте крок вручну, створюється нова версія, і для неї потрібне нове погодження.',
+        disabledReason: bpmn.reasons.map((r) => r.message).join(' ') };
+    }
+    if (bpmn.reasons.some((r) => FLOW_CODES.has(r.code) || r.code.includes('TRANSITION') || r.code.startsWith('UNKNOWN'))) {
+      return { key: 'fix_flow', enabled: true, label: 'Виправити опис потоку (потрібна нова версія)',
+        hint: 'Погоджений опис не дозволяє побудувати коректний потік. Виправлення створює нову версію й потребує нового погодження.',
+        disabledReason: bpmn.reasons.map((r) => r.message).join(' ') };
+    }
     return { key: 'start_bpmn', enabled: bpmn.ok, label: 'Дозволити створення BPMN',
       hint: 'У зрізі 1 перевіряється лише дозвіл сервера; побудова схеми з’явиться у зрізі 3.',
       disabledReason: bpmn.ok ? undefined : bpmn.reasons.map((r) => r.message).join(' ') };
@@ -1090,7 +1212,13 @@ export function buildCard(db: DB, caseId: string, mode: string) {
          FROM approval a LEFT JOIN approval_revocation r ON r.approval_id = a.id WHERE a.case_id = ? ORDER BY a.created_at DESC`, caseId),
     runs: all(db, 'SELECT * FROM run WHERE case_id = ? ORDER BY started_at DESC LIMIT 20', caseId),
     audit: all(db, 'SELECT at, actor, action, details_json FROM audit_log WHERE case_id = ? ORDER BY id DESC LIMIT 40', caseId),
+    entry: {
+      id: content.entry_step_id ?? null,
+      defined: !!content.entry_step_id && content.steps.some((x) => x.id === content.entry_step_id),
+      legacy: content.entry_step_id === undefined,
+    },
     editable: {
+      entry_step_id: content.entry_step_id ?? '',
       summary: content.summary,
       business_context: content.business_context,
       boundaries: content.boundaries,
