@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DB } from './db.ts';
-import { DEMO_BANNER } from './config.ts';
+import { DEMO_BANNER, type ModelConfig } from './config.ts';
 import { DomainError } from './errors.ts';
 import { sha256 } from './hash.ts';
 import {
@@ -12,6 +12,11 @@ import {
   type Actor, type EditFields,
 } from './domain.ts';
 import { seedDemoCase } from './demo.ts';
+import { redact } from './ai/redact.ts';
+import { beginAnalystRun, executeAnalystRun, type RunOptions } from './runs.ts';
+import { budgetLeftUsd, spentUsd, type ModelPolicy } from './ai/budget.ts';
+import type { AnalystClient, InstructionInfo } from './ai/types.ts';
+import { addExplicitClarification, advanceScenario, createScenarioCase, scenarioInfo, TOTAL_STAGES } from './scenarios.ts';
 
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
@@ -21,6 +26,10 @@ export interface ServerOptions {
   mode: 'demo' | 'real';
   /** Код доступу людини. Той, хто його знає, — «людина» (може погоджувати). Агенти його не мають. */
   accessCode: string;
+  /** Підключення моделі. Немає — аналіз недоступний (з поясненням), на демо мовчки не перемикаємось. */
+  analyst?: { client: AnalystClient; policy?: ModelPolicy; instruction?: InstructionInfo };
+  /** Параметри моделі для показу (без ключа). */
+  modelInfo?: Pick<ModelConfig, 'model' | 'effort' | 'budgetTotalUsd' | 'budgetPerRunUsd'>;
 }
 
 export function sessionToken(accessCode: string): string {
@@ -102,6 +111,24 @@ export function createApp(opts: ServerOptions): Server {
   const token = sessionToken(opts.accessCode);
   const human: Actor = { kind: 'human', name: 'Аналітикиня' };
 
+  function aiState() {
+    const a = opts.analyst;
+    if (!a) {
+      return {
+        available: false, kind: 'none',
+        reason: mode === 'demo'
+          ? 'Застосунок працює в деморежимі: справжню модель не підключено. Щоб увімкнути, налаштуйте ключ і модель (docs/model-setup.md) та запустіть у режимі real.'
+          : 'Модель не підключено.',
+      };
+    }
+    const p = a.policy;
+    return {
+      available: true, kind: a.client.mode === 'real' ? 'real' : 'scripted_demo', reason: null,
+      model: a.client.model, effort: opts.modelInfo?.effort ?? null,
+      budget: p ? { total_usd: p.budgetTotalUsd, spent_usd: spentUsd(db), left_usd: budgetLeftUsd(db, p), per_run_usd: p.budgetPerRunUsd, pricing_verified_at: p.pricingVerifiedAt } : null,
+    };
+  }
+
   async function handleApi(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
     // Людиною вважається лише той, хто має сесійний cookie (отримується за кодом доступу).
     if (readCookie(req, 'cx_session') !== token) {
@@ -115,7 +142,16 @@ export function createApp(opts: ServerOptions): Server {
     }
     let m: RegExpExecArray | null;
 
-    if (method === 'GET' && path === '/api/config') return json(res, 200, { mode, banner: mode === 'demo' ? DEMO_BANNER : null });
+    if (method === 'GET' && path === '/api/config') return json(res, 200, { mode, banner: mode === 'demo' ? DEMO_BANNER : null, ai: aiState() });
+    if (method === 'GET' && path === '/api/scenarios') {
+      return json(res, 200, { scenarios: [{ id: 'cx-preparation', title: 'Підготовка CX до продуктових змін', stages: TOTAL_STAGES, variants: ['positive', 'negative'] }] });
+    }
+    if (method === 'POST' && path === '/api/scenarios/cx-preparation') {
+      const b = await readBody(req);
+      const variant = b.variant === 'negative' ? 'negative' : b.variant === 'positive' ? 'positive' : null;
+      if (!variant) throw new DomainError('VALIDATION', 'variant має бути positive або negative', 400);
+      return json(res, 201, { case: createScenarioCase(db, human, variant, mode) });
+    }
     if (method === 'GET' && path === '/api/cases') return json(res, 200, { cases: listCases(db) });
     if (method === 'POST' && path === '/api/cases') {
       const b = await readBody(req);
@@ -123,7 +159,10 @@ export function createApp(opts: ServerOptions): Server {
     }
     if (method === 'POST' && path === '/api/demo/seed') return json(res, 201, { case_id: seedDemoCase(db, mode) });
 
-    if ((m = /^\/api\/cases\/([\w-]+)$/.exec(path)) && method === 'GET') return json(res, 200, buildCard(db, m[1]!, mode));
+    if ((m = /^\/api\/cases\/([\w-]+)$/.exec(path)) && method === 'GET') {
+      const card = buildCard(db, m[1]!, mode);
+      return json(res, 200, { ...card, scenario: scenarioInfo(db, getCase(db, m[1]!)), ai: aiState() });
+    }
 
     if ((m = /^\/api\/cases\/([\w-]+)\/sources\/([\w-]+)$/.exec(path)) && method === 'GET') {
       const s = listSources(db, m[1]!).find((x) => x.id === m![2]);
@@ -193,6 +232,26 @@ export function createApp(opts: ServerOptions): Server {
         case 'return':
           returnToResearch(db, human, caseId, str(b.reason, 'reason'));
           return json(res, 200, { ok: true });
+        case 'scenario/next': {
+          const r = advanceScenario(db, human, caseId);
+          return json(res, 201, r);
+        }
+        case 'scenario/clarify': {
+          const r = addExplicitClarification(db, human, caseId);
+          return json(res, 201, r);
+        }
+        case 'analyze': {
+          if (!opts.analyst) {
+            throw new DomainError('AI_UNAVAILABLE', aiState().reason ?? 'Аналіз моделлю недоступний', 409);
+          }
+          if (getCase(db, caseId).state !== 'research') {
+            throw new DomainError('BAD_STATE', 'Аналіз запускається лише на стадії «Дослідження». Спершу поверніть кейс на доопрацювання.', 409);
+          }
+          const ro: RunOptions = { policy: opts.analyst.policy, instruction: opts.analyst.instruction };
+          const ctx = beginAnalystRun(db, caseId, opts.analyst.client, ro);
+          void executeAnalystRun(db, ctx, opts.analyst.client, ro).catch((e) => console.error('Помилка фонового запуску:', e instanceof Error ? e.message : 'невідома'));
+          return json(res, 202, { run_id: ctx.runId, note: 'Аналіз запущено. Поточну версію не буде змінено, доки результат не пройде перевірки.' });
+        }
         case 'bpmn/start': {
           // Тіло запиту свідомо ігнорується: вхід агента 2 сервер бере з бази за чинним погодженням.
           const r = requestBpmnStart(db, human, caseId, mode);
@@ -243,7 +302,7 @@ export function createApp(opts: ServerOptions): Server {
         } else if (e instanceof Error && e.name === 'ZodError') {
           json(res, 400, { error: { code: 'VALIDATION', message: 'Некоректні дані: ' + e.message.slice(0, 300) } });
         } else {
-          console.error(e);
+          console.error(redact(e instanceof Error ? (e.stack ?? e.message) : String(e)));
           json(res, 500, { error: { code: 'INTERNAL', message: 'Внутрішня помилка. Дані не змінено.' } });
         }
       }

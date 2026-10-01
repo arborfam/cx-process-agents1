@@ -76,6 +76,10 @@ export function beginAnalystRun(db: DB, caseId: string, client: AnalystClient, o
       sources: readable.map((s) => ({ id: maps.label(s.id), title: s.title, kind: s.kind, origin: s.origin, text: s.content })),
     };
     if (client.mode === 'real') {
+      if (readable.some((s) => s.origin === 'real')) {
+        throw new DomainError('REAL_DATA_BLOCKED',
+          'У кейсі є джерела з позначкою «реальні дані». У цьому прототипі вони не надсилаються постачальнику моделі (рішення D18). Запуск не виконано.', 409);
+      }
       if (!opts.policy) throw new DomainError('AI_UNAVAILABLE', 'Для справжньої моделі не задано ліміти й ціни; запуск не виконано.', 409);
       try {
         preflight(db, caseId, opts.policy, instruction.text.length + buildUserMessage(input).length);
