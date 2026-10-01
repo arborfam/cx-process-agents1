@@ -88,6 +88,7 @@ export function verifyAgentOutput(raw: unknown, ctx: VerifyContext): VerifyResul
       const m = findQuote(provided.get(c.source_id)!, c.quote);
       if (m.kind === 'not_found') v.push({ code: 'QUOTE_NOT_FOUND', path, message: `цитати немає в джерелі ${c.source_id}: «${c.quote.slice(0, 80)}»` });
       else if (m.kind === 'normalized') warnings.push(`Цитата ${c.id} збігається з джерелом лише після нормалізації пробілів/лапок.`);
+      else if (m.kind === 'elided') warnings.push(`Цитата ${c.id} зі скороченням «…»: усі частини є в джерелі в тому самому порядку, але пропущене між ними перевірте вручну.`);
     }
   });
 

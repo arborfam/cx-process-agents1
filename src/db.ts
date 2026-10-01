@@ -140,6 +140,9 @@ const ADDED_COLUMNS: [string, string, string][] = [
   ['run', 'instruction_hash', 'TEXT'],
   ['run', 'scenario_stage', 'INTEGER'],
   ['run', 'violations_json', "TEXT NOT NULL DEFAULT '[]'"],
+  // Резерв бюджету: під час запуску — найгірша оцінка; для запуску з невідомою вартістю резерв лишається назавжди.
+  ['run', 'reserved_usd', 'REAL NOT NULL DEFAULT 0'],
+  ['run', 'cost_known', 'INTEGER NOT NULL DEFAULT 1'],
 ];
 
 export function migrate(db: DB): void {

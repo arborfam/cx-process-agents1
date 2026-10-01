@@ -1,4 +1,6 @@
-import { all, one, type DB } from '../db.ts';
+import { z } from 'zod';
+import { all, one, run, tx, type DB } from '../db.ts';
+import { ContentSchema } from '../schema.ts';
 import { DomainError } from '../errors.ts';
 import type { Effort, ModelConfig, Pricing } from '../config.ts';
 import type { Usage } from './types.ts';
@@ -27,9 +29,21 @@ export function makePolicy(cfg: ModelConfig, pricing: Pricing): ModelPolicy {
   };
 }
 
-/** Для кирилиці беремо запас: ~1.8 символа на токен (реально 1.8–2.5). Оцінка завищує вхід, щоб не недооцінити витрати. */
+/**
+ * ОЦІНКА, а не гарантована межа: для кирилиці беремо ~1.8 символа на токен і додаємо запас 25 %. Реальна токенізація
+ * може відрізнятись, тому фактична вартість береться з usage відповіді; якщо вона перевищила резерв, обліковується фактична.
+ * Вихід обмежено max_tokens (разом із міркуваннями) — це єдина жорстка межа. До входу входить УСЕ: інструкція,
+ * повідомлення з джерелами й схема відповіді (structured output додає схему до запиту; у text_json вона в тексті).
+ */
 export const CHARS_PER_TOKEN = 1.8;
-export const estimateInputTokens = (chars: number) => Math.ceil(chars / CHARS_PER_TOKEN);
+export const INPUT_MARGIN = 1.25;
+let schemaCharsCache: number | null = null;
+/** Розмір JSON-схеми відповіді в символах (береться з тієї самої схеми, що йде в API). */
+export function schemaChars(): number {
+  if (schemaCharsCache === null) schemaCharsCache = JSON.stringify(z.toJSONSchema(ContentSchema)).length;
+  return schemaCharsCache;
+}
+export const estimateInputTokens = (chars: number) => Math.ceil(((chars + schemaChars()) / CHARS_PER_TOKEN) * INPUT_MARGIN);
 
 export function worstCaseCostUsd(p: ModelPolicy, promptChars: number): number {
   return (estimateInputTokens(promptChars) * p.price.input + p.maxOutputTokens * p.price.output) / 1e6;
@@ -40,29 +54,60 @@ export function actualCostUsd(p: ModelPolicy, u: Usage): number {
   return (fresh * p.price.input + (u.cache_read_input_tokens ?? 0) * p.price.cache_read + u.output_tokens * p.price.output) / 1e6;
 }
 
-export function spentUsd(db: DB): number {
-  return one<{ s: number | null }>(db, `SELECT SUM(cost_usd) AS s FROM run WHERE mode = 'real'`)?.s ?? 0;
+/**
+ * Витрачено + зарезервовано. Для кожного запуску: відома вартість (cost_usd) + резерв (reserved_usd).
+ * Активний запуск тримає резерв найгіршого випадку; запуск із невідомою вартістю (cost_usd = NULL, cost_known = 0)
+ * тримає консервативний резерв назавжди — він зберігається в базі й переживає перезапуск.
+ */
+export function spentUsd(db: DB, excludeRunId?: string): number {
+  return one<{ s: number | null }>(db,
+    `SELECT SUM(COALESCE(cost_usd, 0) + reserved_usd) AS s FROM run WHERE mode = 'real' AND id <> ?`, excludeRunId ?? '')?.s ?? 0;
 }
 
 export function budgetLeftUsd(db: DB, p: ModelPolicy): number {
   return Math.max(0, p.budgetTotalUsd - spentUsd(db));
 }
 
-/** Перевірка до виклику (і до повторної спроби). Нічого не відправляє й не записує. */
-export function preflight(db: DB, caseId: string, p: ModelPolicy, promptChars: number, now = new Date(), retry?: { alreadyUsd: number }): { worstCaseUsd: number } {
+export function unknownCostRuns(db: DB): number {
+  return one<{ n: number }>(db, `SELECT COUNT(*) AS n FROM run WHERE mode = 'real' AND cost_known = 0`)?.n ?? 0;
+}
+
+function checkMoney(db: DB, p: ModelPolicy, worst: number, alreadyUsd: number, excludeRunId?: string): void {
+  if (alreadyUsd + worst > p.budgetPerRunUsd) {
+    throw new DomainError('BUDGET_PER_RUN', `Найгірша оцінка вартості запуску $${(alreadyUsd + worst).toFixed(2)} перевищує ліміт на запуск $${p.budgetPerRunUsd.toFixed(2)}. Запуск не виконано.`, 429);
+  }
+  const spent = spentUsd(db, excludeRunId);
+  if (spent + alreadyUsd + worst > p.budgetTotalUsd + 1e-12) {
+    throw new DomainError('BUDGET_TOTAL', `Запуск може коштувати до $${worst.toFixed(2)} (оцінка), а вільно $${Math.max(0, p.budgetTotalUsd - spent - alreadyUsd).toFixed(2)}: витрачено й зарезервовано $${spent.toFixed(2)} із $${p.budgetTotalUsd.toFixed(2)} (враховано активні запуски й запуски з невідомою вартістю). Запуск не виконано.`, 429);
+  }
+}
+
+/**
+ * Перевірка до першого виклику. Викликати ВСЕРЕДИНІ тієї самої транзакції, що створює запис запуску з резервом
+ * (beginAnalystRun), — тоді перевірка й резервування атомарні: паралельні запуски не можуть разом перевищити бюджет.
+ */
+export function preflight(db: DB, caseId: string, p: ModelPolicy, promptChars: number, now = new Date()): { worstCaseUsd: number } {
   if (promptChars > p.maxInputChars) {
     throw new DomainError('INPUT_TOO_LARGE', `Обсяг джерел (${promptChars} символів) перевищує ліміт ${p.maxInputChars}. Запуск не виконано, витрат немає.`, 413);
   }
-  if (!retry) checkRunCounts(db, caseId, p, now);
+  checkRunCounts(db, caseId, p, now);
   const worst = worstCaseCostUsd(p, promptChars);
-  if (worst + (retry?.alreadyUsd ?? 0) > p.budgetPerRunUsd) {
-    throw new DomainError('BUDGET_PER_RUN', `Найгірша оцінка вартості запуску $${worst.toFixed(2)} перевищує ліміт на запуск $${p.budgetPerRunUsd.toFixed(2)}. Запуск не виконано.`, 429);
-  }
-  const left = budgetLeftUsd(db, p);
-  if (worst > left) {
-    throw new DomainError('BUDGET_TOTAL', `Запуск може коштувати до $${worst.toFixed(2)}, а залишок бюджету $${left.toFixed(2)} (витрачено $${spentUsd(db).toFixed(2)} із $${p.budgetTotalUsd.toFixed(2)}). Запуск не виконано.`, 429);
-  }
+  checkMoney(db, p, worst, 0);
   return { worstCaseUsd: worst };
+}
+
+/**
+ * Резервування під повторну спробу (атомарно). known — відома вартість попередніх спроб, unknownReserve — резерв спроб
+ * із невідомою вартістю. Після успіху в записі запуску: cost_usd = known, reserved_usd = unknownReserve + найгірша оцінка нової спроби.
+ */
+export function reserveRetry(db: DB, runId: string, p: ModelPolicy, promptChars: number, known: number, unknownReserve: number): number {
+  return tx(db, () => {
+    if (promptChars > p.maxInputChars) throw new DomainError('INPUT_TOO_LARGE', 'Обсяг запиту перевищує ліміт.', 413);
+    const worst = worstCaseCostUsd(p, promptChars);
+    checkMoney(db, p, worst, known + unknownReserve, runId);
+    run(db, `UPDATE run SET cost_usd = ?, reserved_usd = ? WHERE id = ?`, known, unknownReserve + worst, runId);
+    return worst;
+  });
 }
 
 function checkRunCounts(db: DB, caseId: string, p: ModelPolicy, now: Date): void {

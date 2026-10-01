@@ -69,7 +69,7 @@ test('Пошук цитат: дослівно, після нормалізаці
   const t = 'Замовник: «Це лише моя пропозиція» — ось так.\nДруга   строка з апострофом: п’ять.';
   assert.equal(findQuote(t, 'Це лише моя пропозиція').kind, 'exact');
   assert.equal(findQuote(t, 'Друга строка з апострофом: п\'ять').kind, 'normalized');
-  assert.equal(findQuote(t, 'Замовник: «Це лише … ось так').kind, 'normalized');
+  assert.equal(findQuote(t, 'Замовник: «Це лише … ось так').kind, 'elided');
   assert.equal(findQuote(t, 'цього тут немає взагалі').kind, 'not_found');
   assert.equal(findQuote(t, '   ').kind, 'not_found');
 });

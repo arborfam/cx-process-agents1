@@ -193,6 +193,12 @@ async function renderCase(id) {
   if (card.runs[0] && card.runs[0].technical_state === 'running') state.poll = setTimeout(() => { if (state.caseId === id) route(); }, 2000);
 }
 
+function costText(r) {
+  if (r.mode !== 'real') return '';
+  if (r.technical_state === 'running') return ` · зарезервовано до $${(r.reserved_usd || 0).toFixed(2)} (оцінка)`;
+  if (r.cost_known === 0) return ` · вартість НЕВІДОМА, резерв $${(r.reserved_usd || 0).toFixed(2)} (не звільняється)`;
+  return r.cost_usd != null ? ` · $${r.cost_usd.toFixed(3)}` : '';
+}
 const latestRun = (card) => card.runs[0] || null;
 const isRunning = (card) => !!latestRun(card) && latestRun(card).technical_state === 'running';
 
@@ -222,7 +228,7 @@ function aiNote(card) {
   const parts = [];
   if (ai.kind === 'real') {
     parts.push('Тексти джерел цього кейсу буде надіслано постачальнику моделі (' + ai.model + '). Матеріали з позначкою «реальні» не надсилаються.');
-    if (ai.budget) parts.push(`Бюджет: витрачено $${ai.budget.spent_usd.toFixed(2)} із $${ai.budget.total_usd.toFixed(2)}; ліміт на запуск $${ai.budget.per_run_usd.toFixed(2)}.`);
+    if (ai.budget) parts.push(`Бюджет: витрачено й зарезервовано $${ai.budget.spent_usd.toFixed(2)} із $${ai.budget.total_usd.toFixed(2)} (резерв тримають активні запуски й запуски з невідомою вартістю${ai.budget.unknown_cost_runs ? ': ' + ai.budget.unknown_cost_runs : ''}); ліміт на запуск $${ai.budget.per_run_usd.toFixed(2)}. Вартість до запуску — оцінка, не гарантія.`);
   }
   parts.push('Результат не замінює вашу версію автоматично: його перевіряє програма, а ваші правки зберігаються.');
   return el('p', { class: 'small muted' }, parts.join(' '));
@@ -241,7 +247,7 @@ function runBox(card) {
     el('div', { class: 'small' }, el('strong', {}, 'Останній запуск аналізу: '), st, ' · ', r.mode === 'real' ? r.model : 'підставний клієнт (не AI)', ' · інструкція ' + r.instruction_version,
       r.duration_ms != null ? ` · ${(r.duration_ms / 1000).toFixed(1)} с` : '',
       usage.input_tokens != null ? ` · токени: ${usage.input_tokens} вх. / ${usage.output_tokens} вих.` : '',
-      r.cost_usd != null ? ` · $${r.cost_usd.toFixed(3)}` : '', r.attempts > 1 ? ` · спроб: ${r.attempts}` : ''),
+      costText(r), r.attempts > 1 ? ` · спроб: ${r.attempts}` : ''),
     r.technical_state === 'running' ? el('div', { class: 'small' }, 'Поточну версію не змінено; результат з’явиться після перевірки.') : null,
     r.error ? el('div', { class: 'small', style: 'color:var(--danger)' }, 'Помилка: ' + r.error + ' Поточну версію не змінено.') : null,
     w.length ? el('details', {}, el('summary', { class: 'small' }, 'Попередження перевірки відповіді (' + w.length + ')'), el('ul', { class: 'small' }, w.map((x) => el('li', {}, x)))) : null);
@@ -516,7 +522,7 @@ const PANELS = {
         el('td', {}, fmt(v.created_at)), el('td', {}, v.note), el('td', {}, (v.kind === 'proposal' ? 'пропозиція на застарілій основі; ' : '') + (v.accepted ? 'прийнята аналітиком' : '')))))),
     el('h3', {}, 'Погодження'), card.approvals_history.length ? el('ul', {}, card.approvals_history.map((a) => el('li', {},
       `Версія ${card.versions.find((v) => v.id === a.version_id)?.number ?? '?'} · ${a.approver} · ${fmt(a.created_at)} · `, a.revoked_reason ? `скасовано (${a.revoked_reason}, ${fmt(a.revoked_at)})` : 'чинне'))) : el('p', { class: 'muted' }, 'Погоджень ще не було.'),
-    el('h3', {}, 'Запуски'), card.runs.length ? el('ul', {}, card.runs.map((r) => el('li', {}, `${r.agent} · ${r.mode === 'real' ? 'справжня модель ' + r.model : 'підставний клієнт (не AI)'} · інструкція ${r.instruction_version}${r.instruction_hash ? ' (' + r.instruction_hash.slice(0, 8) + ')' : ''} · ${r.technical_state}${r.duration_ms != null ? ' · ' + (r.duration_ms / 1000).toFixed(1) + ' с' : ''}${r.cost_usd != null ? ' · $' + r.cost_usd.toFixed(3) : ''}${r.attempts > 1 ? ' · спроб: ' + r.attempts : ''}${r.note ? ' · ' + r.note : ''}${r.error ? ' · помилка: ' + r.error : ''}`))) : el('p', { class: 'muted' }, 'Запусків ще не було.'),
+    el('h3', {}, 'Запуски'), card.runs.length ? el('ul', {}, card.runs.map((r) => el('li', {}, `${r.agent} · ${r.mode === 'real' ? 'справжня модель ' + r.model : 'підставний клієнт (не AI)'} · інструкція ${r.instruction_version}${r.instruction_hash ? ' (' + r.instruction_hash.slice(0, 8) + ')' : ''} · ${r.technical_state}${r.duration_ms != null ? ' · ' + (r.duration_ms / 1000).toFixed(1) + ' с' : ''}${costText(r)}${r.attempts > 1 ? ' · спроб: ' + r.attempts : ''}${r.note ? ' · ' + r.note : ''}${r.error ? ' · помилка: ' + r.error : ''}`))) : el('p', { class: 'muted' }, 'Запусків ще не було.'),
     el('h3', {}, 'Журнал подій'), el('ul', { class: 'small' }, card.audit.slice(0, 15).map((a) => el('li', {}, `${fmt(a.at)} · ${a.actor} · ${a.action}`)))),
 };
 

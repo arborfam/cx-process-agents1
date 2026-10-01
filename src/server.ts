@@ -14,7 +14,7 @@ import {
 import { seedDemoCase } from './demo.ts';
 import { redact } from './ai/redact.ts';
 import { beginAnalystRun, executeAnalystRun, type RunOptions } from './runs.ts';
-import { budgetLeftUsd, spentUsd, type ModelPolicy } from './ai/budget.ts';
+import { budgetLeftUsd, spentUsd, unknownCostRuns, type ModelPolicy } from './ai/budget.ts';
 import type { AnalystClient, InstructionInfo } from './ai/types.ts';
 import { addExplicitClarification, advanceScenario, createScenarioCase, scenarioInfo, TOTAL_STAGES } from './scenarios.ts';
 
@@ -125,7 +125,7 @@ export function createApp(opts: ServerOptions): Server {
     return {
       available: true, kind: a.client.mode === 'real' ? 'real' : 'scripted_demo', reason: null,
       model: a.client.model, effort: opts.modelInfo?.effort ?? null,
-      budget: p ? { total_usd: p.budgetTotalUsd, spent_usd: spentUsd(db), left_usd: budgetLeftUsd(db, p), per_run_usd: p.budgetPerRunUsd, pricing_verified_at: p.pricingVerifiedAt } : null,
+      budget: p ? { total_usd: p.budgetTotalUsd, spent_usd: spentUsd(db), left_usd: budgetLeftUsd(db, p), unknown_cost_runs: unknownCostRuns(db), per_run_usd: p.budgetPerRunUsd, pricing_verified_at: p.pricingVerifiedAt } : null,
     };
   }
 

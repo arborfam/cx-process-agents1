@@ -10,8 +10,14 @@ export interface Usage {
 /** Помилка виклику моделі. Повідомлення завжди пройшло редагування (без ключів). */
 export type FailureKind = 'transient' | 'timeout' | 'auth' | 'bad_request' | 'refusal' | 'truncated' | 'invalid_json' | 'invalid_output' | 'other';
 
+/**
+ * Чи могла помилка бути оплаченою без відомого usage: 'none' — помилка до генерації (відповідь API 4xx),
+ * 'unknown' (за замовчуванням) — обрив, тайм-аут, мережа, 5xx: вартість невідома, резервуємо консервативно.
+ */
+export type Billing = 'none' | 'unknown';
+
 export class ModelFailure extends Error {
-  constructor(public readonly kind: FailureKind, message: string, public readonly usage?: Usage) {
+  constructor(public readonly kind: FailureKind, message: string, public readonly usage?: Usage, public readonly billing: Billing = 'unknown') {
     super(message);
     this.name = 'ModelFailure';
   }

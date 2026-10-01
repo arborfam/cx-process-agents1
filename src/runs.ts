@@ -5,7 +5,7 @@ import {
   type Actor, type VersionRow,
 } from './domain.ts';
 import { type Content } from './schema.ts';
-import { actualCostUsd, preflight, type ModelPolicy } from './ai/budget.ts';
+import { actualCostUsd, preflight, reserveRetry, type ModelPolicy } from './ai/budget.ts';
 import { idMaps } from './ai/idmap.ts';
 import { buildUserMessage, loadInstruction } from './ai/prompt.ts';
 import { redact } from './ai/redact.ts';
@@ -55,6 +55,8 @@ export interface RunCtx {
   sourceIds: string[];
   input: AnalystInput;
   startedMs: number;
+  /** Резерв першої спроби (найгірша оцінка), 0 для підставних клієнтів. */
+  reservedUsd: number;
 }
 
 /** Перевіряє дозволи й ліміти, фіксує запуск. Нічого не надсилає моделі. */
@@ -87,23 +89,24 @@ function beginInner(db: DB, caseId: string, client: AnalystClient, opts: RunOpti
       head_content: maps.toModel(versionContent(base)),
       sources: readable.map((s) => ({ id: maps.label(s.id), title: s.title, kind: s.kind, origin: s.origin, text: s.content })),
     };
+    let reservedUsd = 0;
     if (client.mode === 'real') {
       if (readable.some((s) => s.origin === 'real')) {
         throw new DomainError('REAL_DATA_BLOCKED',
           'У кейсі є джерела з позначкою «реальні дані». У цьому прототипі вони не надсилаються постачальнику моделі (рішення D18). Запуск не виконано.', 409);
       }
       if (!opts.policy) throw new DomainError('AI_UNAVAILABLE', 'Для справжньої моделі не задано ліміти й ціни; запуск не виконано.', 409);
-      preflight(db, caseId, opts.policy, instruction.text.length + buildUserMessage(input).length);
+      reservedUsd = preflight(db, caseId, opts.policy, instruction.text.length + buildUserMessage(input).length).worstCaseUsd;
     }
     const runId = `run_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
     const sourceIds = readable.map((s) => s.id);
     run(db,
       `INSERT INTO run (id, case_id, agent, instruction_version, instruction_hash, mode, model, base_version_id, input_source_ids_json,
-         technical_state, started_at, scenario_stage) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+         technical_state, started_at, scenario_stage, reserved_usd) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       runId, caseId, 'analyst', instruction.version, instruction.hash, client.mode, client.model, base.id, JSON.stringify(sourceIds), 'running',
-      new Date().toISOString(), c.scenario_id ? c.scenario_stage : null);
+      new Date().toISOString(), c.scenario_id ? c.scenario_stage : null, reservedUsd);
     audit(db, caseId, AGENT_SYSTEM_ACTOR, 'run_started', { run_id: runId, base_version_id: base.id, mode: client.mode, model: client.model, sources: sourceIds.length });
-    return { runId, caseId, base, sourceIds, input, startedMs: Date.now() };
+    return { runId, caseId, base, sourceIds, input, startedMs: Date.now(), reservedUsd };
   });
 }
 
@@ -115,28 +118,45 @@ export function startAnalystRun(db: DB, caseId: string, client: AnalystClient, o
 export interface RunMeta {
   usage?: Usage;
   attempts?: number;
-  costUsd?: number;
   durationMs?: number;
+  /** Лише для справжніх запусків. knownUsd — вартість спроб із відомим usage; unknownReserveUsd — резерв спроб без usage. */
+  cost?: { knownUsd: number; unknownReserveUsd: number };
 }
 
+/**
+ * Запис вартості: відома → cost_usd, резерв 0, cost_known=1. Невідома (є спроби без usage) → cost_usd = NULL,
+ * cost_known=0, reserved_usd = відоме + консервативний резерв (не зникає, переживає перезапуск).
+ */
 function writeMeta(db: DB, runId: string, m: RunMeta): void {
-  run(db, `UPDATE run SET usage_json = ?, attempts = ?, cost_usd = ?, duration_ms = ? WHERE id = ?`,
-    JSON.stringify(m.usage ?? {}), m.attempts ?? 1, m.costUsd ?? null, m.durationMs ?? null, runId);
+  const unknown = !!m.cost && m.cost.unknownReserveUsd > 0;
+  const cost = m.cost ? (unknown ? null : m.cost.knownUsd) : null;
+  const reserved = m.cost ? (unknown ? m.cost.knownUsd + m.cost.unknownReserveUsd : 0) : 0;
+  run(db, `UPDATE run SET usage_json = ?, attempts = ?, cost_usd = ?, reserved_usd = ?, cost_known = ?, duration_ms = ? WHERE id = ?`,
+    JSON.stringify(m.usage ?? {}), m.attempts ?? 1, cost, reserved, unknown ? 0 : 1, m.durationMs ?? null, runId);
 }
 
-export function failRun(db: DB, runId: string, error: string, meta: RunMeta = {}, violations: Violation[] = []): void {
+export function failRun(db: DB, runId: string, error: string, meta?: RunMeta, violations: Violation[] = []): void {
   const r = one<{ case_id: string }>(db, 'SELECT case_id FROM run WHERE id = ?', runId);
   const msg = redact(error).slice(0, 2000);
   run(db, `UPDATE run SET technical_state = 'error', finished_at = ?, error = ?, violations_json = ? WHERE id = ? AND technical_state = 'running'`,
     new Date().toISOString(), msg, JSON.stringify(violations), runId);
-  writeMeta(db, runId, meta);
+  if (meta) writeMeta(db, runId, meta);
   audit(db, r?.case_id ?? null, AGENT_SYSTEM_ACTOR, 'run_failed', { run_id: runId, error: msg.slice(0, 300) });
 }
 
-/** Запуски, що лишились у стані running після аварійного завершення застосунку, не можуть завершитись: позначаємо помилкою. */
+/**
+ * Запуски, що лишились у стані running після аварійного завершення, не можуть завершитись: позначаємо помилкою.
+ * Для справжньої моделі виклик міг бути оплачений, тому вартість — НЕВІДОМА: поточний резерв лишається (не звільняється).
+ */
 export function recoverStuckRuns(db: DB): number {
-  const stuck = all<{ id: string; case_id: string }>(db, `SELECT id, case_id FROM run WHERE technical_state = 'running'`);
-  for (const r of stuck) failRun(db, r.id, 'Запуск перервано перезапуском застосунку. Поточну версію не змінено; запустіть аналіз знову.');
+  const stuck = all<{ id: string; mode: string; cost_usd: number | null; reserved_usd: number }>(
+    db, `SELECT id, mode, cost_usd, reserved_usd FROM run WHERE technical_state = 'running'`);
+  for (const r of stuck) {
+    failRun(db, r.id, 'Запуск перервано перезапуском застосунку. Поточну версію не змінено; запустіть аналіз знову.');
+    if (r.mode === 'real') {
+      run(db, `UPDATE run SET cost_usd = NULL, reserved_usd = ?, cost_known = 0 WHERE id = ?`, (r.cost_usd ?? 0) + r.reserved_usd, r.id);
+    }
+  }
   return stuck.length;
 }
 
@@ -233,23 +253,26 @@ export type RunResult = { ok: true; runId: string; version: VersionRow } | { ok:
 export async function executeAnalystRun(db: DB, ctx: RunCtx, client: AnalystClient, opts: RunOptions = {}): Promise<RunResult> {
   const timeoutMs = opts.timeoutMs ?? opts.policy?.timeoutMs ?? 180_000;
   const maxAttempts = Math.max(1, Math.min(opts.maxAttempts ?? 2, 2));
+  const real = client.mode === 'real' && !!opts.policy;
   let usage: Usage = { ...ZERO };
   let attempts = 0;
   let lastError = 'невідома помилка';
   let lastViolations: Violation[] = [];
-  const meta = (): RunMeta => ({
-    usage, attempts, durationMs: Date.now() - ctx.startedMs,
-    costUsd: client.mode === 'real' && opts.policy ? actualCostUsd(opts.policy, usage) : undefined,
-  });
+  let known = 0;               // вартість спроб із відомим usage
+  let unknownReserve = 0;      // консервативний резерв спроб без usage
+  let attemptReserve = ctx.reservedUsd;
+  const meta = (): RunMeta => ({ usage, attempts, durationMs: Date.now() - ctx.startedMs, cost: real ? { knownUsd: known, unknownReserveUsd: unknownReserve } : undefined });
+  const settle = (u: Usage | undefined, billing: 'none' | 'unknown' | 'known') => {
+    if (!real) return;
+    if (u) known += actualCostUsd(opts.policy!, u);
+    else if (billing === 'unknown') unknownReserve += attemptReserve;
+  };
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    if (attempt > 1 && client.mode === 'real' && opts.policy) {
+    if (attempt > 1 && real) {
       try {
-        // перед повтором бюджет перевіряється з урахуванням уже витраченого цим запуском
-        const spent = actualCostUsd(opts.policy, usage);
-        run(db, `UPDATE run SET cost_usd = ? WHERE id = ?`, spent, ctx.runId);
         const chars = ctx.input.instruction.text.length + buildUserMessage(ctx.input).length;
-        preflight(db, ctx.caseId, opts.policy, chars, new Date(), { alreadyUsd: spent });
+        attemptReserve = reserveRetry(db, ctx.runId, opts.policy!, chars, known, unknownReserve);
       } catch (e) {
         lastError = (e instanceof Error ? e.message : String(e)) + ' Повторну спробу не виконано.';
         break;
@@ -266,6 +289,7 @@ export async function executeAnalystRun(db: DB, ctx: RunCtx, client: AnalystClie
       ]);
       clearTimeout(timer);
       usage = addUsage(usage, out.usage);
+      settle(out.usage, 'unknown'); // відповідь без usage — вартість невідома
       try {
         const version = completeAnalystRun(db, ctx.runId, out.output);
         writeMeta(db, ctx.runId, meta());
@@ -281,10 +305,12 @@ export async function executeAnalystRun(db: DB, ctx: RunCtx, client: AnalystClie
       clearTimeout(timer);
       if (e instanceof ModelFailure) {
         usage = addUsage(usage, e.usage);
+        settle(e.usage, e.billing);
         lastError = e.message;
         if (!e.retryable) break;
         retryNote = e.kind === 'invalid_json' ? ['Відповідь не була коректним JSON-об’єктом за схемою.'] : undefined;
       } else {
+        settle(undefined, 'unknown');
         lastError = redact(e instanceof Error ? e.message : String(e));
         break;
       }
