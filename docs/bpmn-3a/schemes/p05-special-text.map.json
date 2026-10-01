@@ -1,0 +1,103 @@
+{
+  "created_without_ai": true,
+  "package": "p05-special-text",
+  "map": [
+    {
+      "step_id": "S1",
+      "role": "Менеджер \"ключових\" клієнтів",
+      "action": "Реєструє скаргу: «затримка доставки» (замовлення №12-345/А)",
+      "bpmn_task_id": "Task_S1",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S1",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S2",
+          "flow_id": "Flow_S1_1",
+          "target_element_id": "Task_S2"
+        }
+      ]
+    },
+    {
+      "step_id": "S2",
+      "role": "Фахівець <L2>",
+      "action": "Перевіряє суму: якщо a < b && b > c — виділяє <b>жирним</b> у картці; знижка 100% - 15% ✅",
+      "bpmn_task_id": "Task_S2",
+      "lane_id": "Lane_2",
+      "gateway_id": "Gateway_S2",
+      "drawio_cell_id": "Task_S2",
+      "outgoing": [
+        {
+          "condition": "сума > 1000 грн",
+          "to": "S3",
+          "flow_id": "Flow_S2_1",
+          "target_element_id": "Task_S3"
+        },
+        {
+          "condition": "клієнт сказав \"ні\"",
+          "to": "S4",
+          "flow_id": "Flow_S2_2",
+          "target_element_id": "Task_S4"
+        },
+        {
+          "condition": "потрібне уточнення: 'так' чи 'ні'?",
+          "to": "S5",
+          "flow_id": "Flow_S2_3",
+          "target_element_id": "Task_S5"
+        }
+      ]
+    },
+    {
+      "step_id": "S3",
+      "role": "Аналітик & контролер якості",
+      "action": "Фахівець послідовно перевіряє всі вкладення до скарги: скановані копії договору, листування з клієнтом за останні дванадцять місяців, історію платежів та записи розмов із підтримкою, зіставляє дати й суми, виявляє розбіжності та складає докладний висновок для керівника напряму, зазначаючи джерело кожного твердження",
+      "bpmn_task_id": "Task_S3",
+      "lane_id": "Lane_1",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S3",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S5",
+          "flow_id": "Flow_S3_1",
+          "target_element_id": "Task_S5"
+        }
+      ]
+    },
+    {
+      "step_id": "S4",
+      "role": "Менеджер \"ключових\" клієнтів",
+      "action": "Пише клієнту:\nДякуємо за відповідь,\nми закриваємо звернення",
+      "bpmn_task_id": "Task_S4",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S4",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "END",
+          "flow_id": "Flow_S4_1",
+          "target_element_id": "End_S4_1"
+        }
+      ]
+    },
+    {
+      "step_id": "S5",
+      "role": "Фахівець <L2>",
+      "action": "Складає відповідь клієнту з урахуванням правил \"A & B\" і 'C'",
+      "bpmn_task_id": "Task_S5",
+      "lane_id": "Lane_2",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S5",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "END",
+          "flow_id": "Flow_S5_1",
+          "target_element_id": "End_S5_1"
+        }
+      ]
+    }
+  ]
+}

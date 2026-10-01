@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:cx="urn:cx-process-agents:as-is-binding" id="Definitions_1" targetNamespace="urn:cx-process-agents:as-is">
+  <bpmn:collaboration id="Collaboration_1">
+    <bpmn:participant id="Participant_1" name="Видача довідки" processRef="Process_1" />
+  </bpmn:collaboration>
+  <bpmn:process id="Process_1" isExecutable="false">
+    <bpmn:extensionElements>
+      <cx:asIsBinding versionId="TEST-P04-V1" contentHash="4df83ab8d59b9e13fc9f5c0f935d47c56db1f56832201ae28a6c611892c8c032" origin="test-fixture" generator="cx-bpmn-generator-3a" />
+    </bpmn:extensionElements>
+    <bpmn:laneSet id="LaneSet_1">
+      <bpmn:lane id="Lane_0" name="Співробітник HR">
+        <bpmn:flowNodeRef>StartEvent_1</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S2</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S3</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>End_S3_1</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_1" name="Бухгалтер">
+        <bpmn:flowNodeRef>Task_S1</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="StartEvent_1" name="Співробітник попросив довідку">
+      <bpmn:outgoing>Flow_start</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:task id="Task_S2" name="Приймає запит на довідку">
+      <bpmn:incoming>Flow_start</bpmn:incoming>
+      <bpmn:outgoing>Flow_S2_1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_S1" name="Підтверджує дані про заробітну плату">
+      <bpmn:incoming>Flow_S2_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_S1_1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_S3" name="Видає довідку співробітнику">
+      <bpmn:incoming>Flow_S1_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_S3_1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="End_S3_1">
+      <bpmn:incoming>Flow_S3_1</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_start" sourceRef="StartEvent_1" targetRef="Task_S2" />
+    <bpmn:sequenceFlow id="Flow_S2_1" sourceRef="Task_S2" targetRef="Task_S1" />
+    <bpmn:sequenceFlow id="Flow_S1_1" sourceRef="Task_S1" targetRef="Task_S3" />
+    <bpmn:sequenceFlow id="Flow_S3_1" sourceRef="Task_S3" targetRef="End_S3_1" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_Collaboration_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_Collaboration_1" bpmnElement="Collaboration_1">
+      <bpmndi:BPMNShape id="BPMNShape_Participant_1" bpmnElement="Participant_1" isHorizontal="true">
+        <dc:Bounds x="80" y="80" width="882" height="480" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Lane_0" bpmnElement="Lane_0" isHorizontal="true">
+        <dc:Bounds x="110" y="80" width="852" height="240" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Lane_1" bpmnElement="Lane_1" isHorizontal="true">
+        <dc:Bounds x="110" y="320" width="852" height="240" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_StartEvent_1" bpmnElement="StartEvent_1">
+        <dc:Bounds x="150" y="182" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="124" y="223" width="88" height="42" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S2" bpmnElement="Task_S2">
+        <dc:Bounds x="286" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S1" bpmnElement="Task_S1">
+        <dc:Bounds x="486" y="400" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S3" bpmnElement="Task_S3">
+        <dc:Bounds x="686" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_End_S3_1" bpmnElement="End_S3_1">
+        <dc:Bounds x="886" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_start" bpmnElement="Flow_start">
+        <di:waypoint x="186" y="200" />
+        <di:waypoint x="286" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S2_1" bpmnElement="Flow_S2_1">
+        <di:waypoint x="386" y="200" />
+        <di:waypoint x="536" y="200" />
+        <di:waypoint x="536" y="400" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S1_1" bpmnElement="Flow_S1_1">
+        <di:waypoint x="586" y="440" />
+        <di:waypoint x="736" y="440" />
+        <di:waypoint x="736" y="240" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S3_1" bpmnElement="Flow_S3_1">
+        <di:waypoint x="786" y="200" />
+        <di:waypoint x="886" y="200" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

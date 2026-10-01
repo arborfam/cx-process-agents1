@@ -1,0 +1,126 @@
+{
+  "created_without_ai": true,
+  "package": "p02-branch",
+  "map": [
+    {
+      "step_id": "S1",
+      "role": "Оператор",
+      "action": "Приймає заявку на повернення та перевіряє комплектність документів",
+      "bpmn_task_id": "Task_S1",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S1",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S2",
+          "flow_id": "Flow_S1_1",
+          "target_element_id": "Task_S2"
+        }
+      ]
+    },
+    {
+      "step_id": "S2",
+      "role": "Фінансовий спеціаліст",
+      "action": "Оцінює підстави для повернення коштів",
+      "bpmn_task_id": "Task_S2",
+      "lane_id": "Lane_1",
+      "gateway_id": "Gateway_S2",
+      "drawio_cell_id": "Task_S2",
+      "outgoing": [
+        {
+          "condition": "підстави підтверджено",
+          "to": "S3",
+          "flow_id": "Flow_S2_1",
+          "target_element_id": "Task_S3"
+        },
+        {
+          "condition": "підстав недостатньо",
+          "to": "S4",
+          "flow_id": "Flow_S2_2",
+          "target_element_id": "Task_S4"
+        },
+        {
+          "condition": "сума перевищує ліміт спеціаліста",
+          "to": "S5",
+          "flow_id": "Flow_S2_3",
+          "target_element_id": "Task_S5"
+        }
+      ]
+    },
+    {
+      "step_id": "S3",
+      "role": "Фінансовий спеціаліст",
+      "action": "Оформлює повернення коштів на картку клієнта",
+      "bpmn_task_id": "Task_S3",
+      "lane_id": "Lane_1",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S3",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S6",
+          "flow_id": "Flow_S3_1",
+          "target_element_id": "Task_S6"
+        }
+      ]
+    },
+    {
+      "step_id": "S4",
+      "role": "Оператор",
+      "action": "Повідомляє клієнта про відмову та її причини",
+      "bpmn_task_id": "Task_S4",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S4",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "END",
+          "flow_id": "Flow_S4_1",
+          "target_element_id": "End_S4_1"
+        }
+      ]
+    },
+    {
+      "step_id": "S5",
+      "role": "Керівник відділу",
+      "action": "Ухвалює рішення за заявкою",
+      "bpmn_task_id": "Task_S5",
+      "lane_id": "Lane_2",
+      "gateway_id": "Gateway_S5",
+      "drawio_cell_id": "Task_S5",
+      "outgoing": [
+        {
+          "condition": "повернення погоджено",
+          "to": "S3",
+          "flow_id": "Flow_S5_1",
+          "target_element_id": "Task_S3"
+        },
+        {
+          "condition": "у поверненні відмовлено",
+          "to": "S4",
+          "flow_id": "Flow_S5_2",
+          "target_element_id": "Task_S4"
+        }
+      ]
+    },
+    {
+      "step_id": "S6",
+      "role": "Оператор",
+      "action": "Повідомляє клієнта про здійснене повернення",
+      "bpmn_task_id": "Task_S6",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S6",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "END",
+          "flow_id": "Flow_S6_1",
+          "target_element_id": "End_S6_1"
+        }
+      ]
+    }
+  ]
+}

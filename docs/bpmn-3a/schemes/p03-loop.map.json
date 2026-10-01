@@ -1,0 +1,86 @@
+{
+  "created_without_ai": true,
+  "package": "p03-loop",
+  "map": [
+    {
+      "step_id": "S1",
+      "role": "Автор",
+      "action": "Готує проєкт повідомлення",
+      "bpmn_task_id": "Task_S1",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S1",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S2",
+          "flow_id": "Flow_S1_1",
+          "target_element_id": "Task_S2"
+        }
+      ]
+    },
+    {
+      "step_id": "S2",
+      "role": "Редактор",
+      "action": "Перевіряє стиль і тон повідомлення",
+      "bpmn_task_id": "Task_S2",
+      "lane_id": "Lane_1",
+      "gateway_id": "Gateway_S2",
+      "drawio_cell_id": "Task_S2",
+      "outgoing": [
+        {
+          "condition": "текст затверджено",
+          "to": "S3",
+          "flow_id": "Flow_S2_1",
+          "target_element_id": "Task_S3"
+        },
+        {
+          "condition": "потрібне доопрацювання",
+          "to": "S1",
+          "flow_id": "Flow_S2_2",
+          "target_element_id": "Task_S1"
+        }
+      ]
+    },
+    {
+      "step_id": "S3",
+      "role": "Юрист",
+      "action": "Перевіряє відповідність повідомлення вимогам закону",
+      "bpmn_task_id": "Task_S3",
+      "lane_id": "Lane_2",
+      "gateway_id": "Gateway_S3",
+      "drawio_cell_id": "Task_S3",
+      "outgoing": [
+        {
+          "condition": "зауважень немає",
+          "to": "S4",
+          "flow_id": "Flow_S3_1",
+          "target_element_id": "Task_S4"
+        },
+        {
+          "condition": "є юридичні зауваження",
+          "to": "S1",
+          "flow_id": "Flow_S3_2",
+          "target_element_id": "Task_S1"
+        }
+      ]
+    },
+    {
+      "step_id": "S4",
+      "role": "Автор",
+      "action": "Публікує повідомлення в особистому кабінеті клієнта",
+      "bpmn_task_id": "Task_S4",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S4",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "END",
+          "flow_id": "Flow_S4_1",
+          "target_element_id": "End_S4_1"
+        }
+      ]
+    }
+  ]
+}

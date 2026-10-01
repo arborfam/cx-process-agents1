@@ -1,0 +1,80 @@
+{
+  "id": "u01-unsupported-parallel-timer",
+  "title": "Паралельні гілки й таймер: непідтримувана нотація (D21)",
+  "created_without_ai": true,
+  "synthetic": true,
+  "what_it_tests": "Опис потребує паралельного виконання (крок S2) і очікування за часом (крок S4). Генератор v1 цього не підтримує: має повернути статус unsupported із назвою кроків, без файлу, без «наближеної» схеми, не змінивши погодження.",
+  "expect": {
+    "status": "unsupported",
+    "codes": [
+      "UNSUPPORTED_PARALLEL_BRANCHES",
+      "UNSUPPORTED_TIMER"
+    ]
+  },
+  "version_id": "TEST-U01-V1",
+  "pool_name": "Підключення послуги",
+  "trigger": "Клієнт замовив послугу",
+  "roles": [
+    "Менеджер",
+    "Технічний спеціаліст"
+  ],
+  "entry_step_id": "S1",
+  "steps": [
+    {
+      "id": "S1",
+      "role": "Менеджер",
+      "action": "Приймає замовлення",
+      "next": [
+        {
+          "to": "S2",
+          "condition": ""
+        }
+      ]
+    },
+    {
+      "id": "S2",
+      "role": "Технічний спеціаліст",
+      "action": "Одночасно налаштовує обладнання та створює обліковий запис клієнта",
+      "next": [
+        {
+          "to": "S3",
+          "condition": ""
+        }
+      ]
+    },
+    {
+      "id": "S3",
+      "role": "Менеджер",
+      "action": "Перевіряє готовність послуги",
+      "next": [
+        {
+          "to": "S4",
+          "condition": ""
+        }
+      ]
+    },
+    {
+      "id": "S4",
+      "role": "Менеджер",
+      "action": "Чекає три дні й телефонує клієнту",
+      "next": [
+        {
+          "to": "END",
+          "condition": ""
+        }
+      ]
+    }
+  ],
+  "unsupported_marks": [
+    {
+      "step_id": "S2",
+      "kind": "parallel_branches",
+      "detail": "два виконавчі потоки виконуються одночасно"
+    },
+    {
+      "step_id": "S4",
+      "kind": "timer",
+      "detail": "очікування три дні"
+    }
+  ]
+}

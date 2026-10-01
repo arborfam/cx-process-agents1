@@ -1,0 +1,61 @@
+{
+  "id": "b01-unknown-transition",
+  "title": "Невизначений перехід блокує побудову (K1)",
+  "created_without_ai": true,
+  "synthetic": true,
+  "what_it_tests": "Перехід кроку S2 за умовою «клієнт не відповів» позначено «невідомо», з відкритим питанням. Це невизначеність потоку (K1): схему не будуємо навіть якщо AS-IS погоджено.",
+  "expect": {
+    "status": "blocked",
+    "codes": [
+      "UNKNOWN_TRANSITION"
+    ]
+  },
+  "version_id": "TEST-B01-V1",
+  "pool_name": "Опитування клієнтів",
+  "trigger": "Завершено обслуговування",
+  "roles": [
+    "Оператор"
+  ],
+  "entry_step_id": "S1",
+  "steps": [
+    {
+      "id": "S1",
+      "role": "Оператор",
+      "action": "Телефонує клієнту для опитування",
+      "next": [
+        {
+          "to": "S2",
+          "condition": ""
+        }
+      ]
+    },
+    {
+      "id": "S2",
+      "role": "Оператор",
+      "action": "Фіксує результат дзвінка",
+      "next": [
+        {
+          "to": "END",
+          "condition": "клієнт відповів"
+        },
+        {
+          "to": "UNKNOWN",
+          "condition": "клієнт не відповів"
+        }
+      ]
+    }
+  ],
+  "open_questions": [
+    {
+      "id": "Q1",
+      "text": "Що робимо, якщо клієнт не відповів?",
+      "critical": false,
+      "affects": [
+        {
+          "step_id": "S2",
+          "condition": "клієнт не відповів"
+        }
+      ]
+    }
+  ]
+}

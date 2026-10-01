@@ -1,0 +1,263 @@
+{
+  "created_without_ai": true,
+  "package": "p07-large",
+  "map": [
+    {
+      "step_id": "S1",
+      "role": "Менеджер з продажів",
+      "action": "Збирає вимоги клієнта та реєструє угоду в CRM",
+      "bpmn_task_id": "Task_S1",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S1",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S2",
+          "flow_id": "Flow_S1_1",
+          "target_element_id": "Task_S2"
+        }
+      ]
+    },
+    {
+      "step_id": "S2",
+      "role": "Менеджер з продажів",
+      "action": "Готує комерційну пропозицію",
+      "bpmn_task_id": "Task_S2",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S2",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S3",
+          "flow_id": "Flow_S2_1",
+          "target_element_id": "Task_S3"
+        }
+      ]
+    },
+    {
+      "step_id": "S3",
+      "role": "Керівник продажів",
+      "action": "Погоджує знижку та умови пропозиції",
+      "bpmn_task_id": "Task_S3",
+      "lane_id": "Lane_1",
+      "gateway_id": "Gateway_S3",
+      "drawio_cell_id": "Task_S3",
+      "outgoing": [
+        {
+          "condition": "знижку погоджено",
+          "to": "S4",
+          "flow_id": "Flow_S3_1",
+          "target_element_id": "Task_S4"
+        },
+        {
+          "condition": "знижку не погоджено",
+          "to": "S2",
+          "flow_id": "Flow_S3_2",
+          "target_element_id": "Task_S2"
+        },
+        {
+          "condition": "клієнт зі стоп-листа",
+          "to": "S11",
+          "flow_id": "Flow_S3_3",
+          "target_element_id": "Task_S11"
+        }
+      ]
+    },
+    {
+      "step_id": "S4",
+      "role": "Менеджер з продажів",
+      "action": "Надсилає пропозицію клієнту та отримує відповідь",
+      "bpmn_task_id": "Task_S4",
+      "lane_id": "Lane_0",
+      "gateway_id": "Gateway_S4",
+      "drawio_cell_id": "Task_S4",
+      "outgoing": [
+        {
+          "condition": "клієнт згоден",
+          "to": "S5",
+          "flow_id": "Flow_S4_1",
+          "target_element_id": "Task_S5"
+        },
+        {
+          "condition": "клієнт просить змінити умови",
+          "to": "S2",
+          "flow_id": "Flow_S4_2",
+          "target_element_id": "Task_S2"
+        },
+        {
+          "condition": "клієнт відмовився",
+          "to": "END",
+          "flow_id": "Flow_S4_3",
+          "target_element_id": "End_S4_3"
+        }
+      ]
+    },
+    {
+      "step_id": "S5",
+      "role": "Юрист",
+      "action": "Складає договір і погоджує його з клієнтом",
+      "bpmn_task_id": "Task_S5",
+      "lane_id": "Lane_2",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S5",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S6",
+          "flow_id": "Flow_S5_1",
+          "target_element_id": "Task_S6"
+        }
+      ]
+    },
+    {
+      "step_id": "S6",
+      "role": "Юрист",
+      "action": "Перевіряє реквізити та повноваження підписанта",
+      "bpmn_task_id": "Task_S6",
+      "lane_id": "Lane_2",
+      "gateway_id": "Gateway_S6",
+      "drawio_cell_id": "Task_S6",
+      "outgoing": [
+        {
+          "condition": "дані коректні",
+          "to": "S7",
+          "flow_id": "Flow_S6_1",
+          "target_element_id": "Task_S7"
+        },
+        {
+          "condition": "знайдено помилки",
+          "to": "S5",
+          "flow_id": "Flow_S6_2",
+          "target_element_id": "Task_S5"
+        }
+      ]
+    },
+    {
+      "step_id": "S7",
+      "role": "Менеджер з продажів",
+      "action": "Підписує договір із клієнтом",
+      "bpmn_task_id": "Task_S7",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S7",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S8",
+          "flow_id": "Flow_S7_1",
+          "target_element_id": "Task_S8"
+        }
+      ]
+    },
+    {
+      "step_id": "S8",
+      "role": "Фінансовий спеціаліст",
+      "action": "Виставляє рахунок на передоплату",
+      "bpmn_task_id": "Task_S8",
+      "lane_id": "Lane_3",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S8",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S9",
+          "flow_id": "Flow_S8_1",
+          "target_element_id": "Task_S9"
+        }
+      ]
+    },
+    {
+      "step_id": "S9",
+      "role": "Фінансовий спеціаліст",
+      "action": "Перевіряє надходження передоплати",
+      "bpmn_task_id": "Task_S9",
+      "lane_id": "Lane_3",
+      "gateway_id": "Gateway_S9",
+      "drawio_cell_id": "Task_S9",
+      "outgoing": [
+        {
+          "condition": "кошти надійшли",
+          "to": "S10",
+          "flow_id": "Flow_S9_1",
+          "target_element_id": "Task_S10"
+        },
+        {
+          "condition": "кошти не надійшли протягом тижня",
+          "to": "S8",
+          "flow_id": "Flow_S9_2",
+          "target_element_id": "Task_S8"
+        }
+      ]
+    },
+    {
+      "step_id": "S10",
+      "role": "Менеджер з впровадження",
+      "action": "Налаштовує сервіс для клієнта",
+      "bpmn_task_id": "Task_S10",
+      "lane_id": "Lane_4",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S10",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S12",
+          "flow_id": "Flow_S10_1",
+          "target_element_id": "Task_S12"
+        }
+      ]
+    },
+    {
+      "step_id": "S11",
+      "role": "Керівник продажів",
+      "action": "Повідомляє менеджера про відмову в обслуговуванні",
+      "bpmn_task_id": "Task_S11",
+      "lane_id": "Lane_1",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S11",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "END",
+          "flow_id": "Flow_S11_1",
+          "target_element_id": "End_S11_1"
+        }
+      ]
+    },
+    {
+      "step_id": "S12",
+      "role": "Менеджер з впровадження",
+      "action": "Проводить навчання співробітників клієнта",
+      "bpmn_task_id": "Task_S12",
+      "lane_id": "Lane_4",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S12",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S13",
+          "flow_id": "Flow_S12_1",
+          "target_element_id": "Task_S13"
+        }
+      ]
+    },
+    {
+      "step_id": "S13",
+      "role": "Менеджер з впровадження",
+      "action": "Підтверджує запуск і передає клієнта в підтримку",
+      "bpmn_task_id": "Task_S13",
+      "lane_id": "Lane_4",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S13",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "END",
+          "flow_id": "Flow_S13_1",
+          "target_element_id": "End_S13_1"
+        }
+      ]
+    }
+  ]
+}

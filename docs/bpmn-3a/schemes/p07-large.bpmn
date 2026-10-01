@@ -1,0 +1,391 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:cx="urn:cx-process-agents:as-is-binding" id="Definitions_1" targetNamespace="urn:cx-process-agents:as-is">
+  <bpmn:collaboration id="Collaboration_1">
+    <bpmn:participant id="Participant_1" name="Онбординг корпоративного клієнта" processRef="Process_1" />
+  </bpmn:collaboration>
+  <bpmn:process id="Process_1" isExecutable="false">
+    <bpmn:extensionElements>
+      <cx:asIsBinding versionId="TEST-P07-V1" contentHash="4525205ba7e34295775f958236acf3d4cd261d097405c76e82be4230bf818e5c" origin="test-fixture" generator="cx-bpmn-generator-3a" />
+    </bpmn:extensionElements>
+    <bpmn:laneSet id="LaneSet_1">
+      <bpmn:lane id="Lane_0" name="Менеджер з продажів">
+        <bpmn:flowNodeRef>StartEvent_1</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S1</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S2</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S4</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Gateway_S4</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>End_S4_3</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S7</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_1" name="Керівник продажів">
+        <bpmn:flowNodeRef>Task_S3</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Gateway_S3</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S11</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>End_S11_1</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_2" name="Юрист">
+        <bpmn:flowNodeRef>Task_S5</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S6</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Gateway_S6</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_3" name="Фінансовий спеціаліст">
+        <bpmn:flowNodeRef>Task_S8</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S9</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Gateway_S9</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_4" name="Менеджер з впровадження">
+        <bpmn:flowNodeRef>Task_S10</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S12</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S13</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>End_S13_1</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="StartEvent_1" name="Корпоративний клієнт залишив заявку на сайті">
+      <bpmn:outgoing>Flow_start</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:task id="Task_S1" name="Збирає вимоги клієнта та реєструє угоду в CRM">
+      <bpmn:incoming>Flow_start</bpmn:incoming>
+      <bpmn:outgoing>Flow_S1_1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_S2" name="Готує комерційну пропозицію">
+      <bpmn:incoming>Flow_S1_1</bpmn:incoming>
+      <bpmn:incoming>Flow_S3_2</bpmn:incoming>
+      <bpmn:incoming>Flow_S4_2</bpmn:incoming>
+      <bpmn:outgoing>Flow_S2_1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_S3" name="Погоджує знижку та умови пропозиції">
+      <bpmn:incoming>Flow_S2_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_S3_g</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_S3">
+      <bpmn:incoming>Flow_S3_g</bpmn:incoming>
+      <bpmn:outgoing>Flow_S3_1</bpmn:outgoing>
+      <bpmn:outgoing>Flow_S3_2</bpmn:outgoing>
+      <bpmn:outgoing>Flow_S3_3</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_S4" name="Надсилає пропозицію клієнту та отримує відповідь">
+      <bpmn:incoming>Flow_S3_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_S4_g</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_S4">
+      <bpmn:incoming>Flow_S4_g</bpmn:incoming>
+      <bpmn:outgoing>Flow_S4_1</bpmn:outgoing>
+      <bpmn:outgoing>Flow_S4_2</bpmn:outgoing>
+      <bpmn:outgoing>Flow_S4_3</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:endEvent id="End_S4_3">
+      <bpmn:incoming>Flow_S4_3</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:task id="Task_S11" name="Повідомляє менеджера про відмову в обслуговуванні">
+      <bpmn:incoming>Flow_S3_3</bpmn:incoming>
+      <bpmn:outgoing>Flow_S11_1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="End_S11_1">
+      <bpmn:incoming>Flow_S11_1</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:task id="Task_S5" name="Складає договір і погоджує його з клієнтом">
+      <bpmn:incoming>Flow_S4_1</bpmn:incoming>
+      <bpmn:incoming>Flow_S6_2</bpmn:incoming>
+      <bpmn:outgoing>Flow_S5_1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_S6" name="Перевіряє реквізити та повноваження підписанта">
+      <bpmn:incoming>Flow_S5_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_S6_g</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_S6">
+      <bpmn:incoming>Flow_S6_g</bpmn:incoming>
+      <bpmn:outgoing>Flow_S6_1</bpmn:outgoing>
+      <bpmn:outgoing>Flow_S6_2</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_S7" name="Підписує договір із клієнтом">
+      <bpmn:incoming>Flow_S6_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_S7_1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_S8" name="Виставляє рахунок на передоплату">
+      <bpmn:incoming>Flow_S7_1</bpmn:incoming>
+      <bpmn:incoming>Flow_S9_2</bpmn:incoming>
+      <bpmn:outgoing>Flow_S8_1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_S9" name="Перевіряє надходження передоплати">
+      <bpmn:incoming>Flow_S8_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_S9_g</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_S9">
+      <bpmn:incoming>Flow_S9_g</bpmn:incoming>
+      <bpmn:outgoing>Flow_S9_1</bpmn:outgoing>
+      <bpmn:outgoing>Flow_S9_2</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_S10" name="Налаштовує сервіс для клієнта">
+      <bpmn:incoming>Flow_S9_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_S10_1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_S12" name="Проводить навчання співробітників клієнта">
+      <bpmn:incoming>Flow_S10_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_S12_1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_S13" name="Підтверджує запуск і передає клієнта в підтримку">
+      <bpmn:incoming>Flow_S12_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_S13_1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="End_S13_1">
+      <bpmn:incoming>Flow_S13_1</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_start" sourceRef="StartEvent_1" targetRef="Task_S1" />
+    <bpmn:sequenceFlow id="Flow_S1_1" sourceRef="Task_S1" targetRef="Task_S2" />
+    <bpmn:sequenceFlow id="Flow_S2_1" sourceRef="Task_S2" targetRef="Task_S3" />
+    <bpmn:sequenceFlow id="Flow_S3_g" sourceRef="Task_S3" targetRef="Gateway_S3" />
+    <bpmn:sequenceFlow id="Flow_S3_1" name="знижку погоджено" sourceRef="Gateway_S3" targetRef="Task_S4" />
+    <bpmn:sequenceFlow id="Flow_S3_2" name="знижку не погоджено" sourceRef="Gateway_S3" targetRef="Task_S2" />
+    <bpmn:sequenceFlow id="Flow_S3_3" name="клієнт зі стоп-листа" sourceRef="Gateway_S3" targetRef="Task_S11" />
+    <bpmn:sequenceFlow id="Flow_S4_g" sourceRef="Task_S4" targetRef="Gateway_S4" />
+    <bpmn:sequenceFlow id="Flow_S4_1" name="клієнт згоден" sourceRef="Gateway_S4" targetRef="Task_S5" />
+    <bpmn:sequenceFlow id="Flow_S4_2" name="клієнт просить змінити умови" sourceRef="Gateway_S4" targetRef="Task_S2" />
+    <bpmn:sequenceFlow id="Flow_S4_3" name="клієнт відмовився" sourceRef="Gateway_S4" targetRef="End_S4_3" />
+    <bpmn:sequenceFlow id="Flow_S11_1" sourceRef="Task_S11" targetRef="End_S11_1" />
+    <bpmn:sequenceFlow id="Flow_S5_1" sourceRef="Task_S5" targetRef="Task_S6" />
+    <bpmn:sequenceFlow id="Flow_S6_g" sourceRef="Task_S6" targetRef="Gateway_S6" />
+    <bpmn:sequenceFlow id="Flow_S6_1" name="дані коректні" sourceRef="Gateway_S6" targetRef="Task_S7" />
+    <bpmn:sequenceFlow id="Flow_S6_2" name="знайдено помилки" sourceRef="Gateway_S6" targetRef="Task_S5" />
+    <bpmn:sequenceFlow id="Flow_S7_1" sourceRef="Task_S7" targetRef="Task_S8" />
+    <bpmn:sequenceFlow id="Flow_S8_1" sourceRef="Task_S8" targetRef="Task_S9" />
+    <bpmn:sequenceFlow id="Flow_S9_g" sourceRef="Task_S9" targetRef="Gateway_S9" />
+    <bpmn:sequenceFlow id="Flow_S9_1" name="кошти надійшли" sourceRef="Gateway_S9" targetRef="Task_S10" />
+    <bpmn:sequenceFlow id="Flow_S9_2" name="кошти не надійшли протягом тижня" sourceRef="Gateway_S9" targetRef="Task_S8" />
+    <bpmn:sequenceFlow id="Flow_S10_1" sourceRef="Task_S10" targetRef="Task_S12" />
+    <bpmn:sequenceFlow id="Flow_S12_1" sourceRef="Task_S12" targetRef="Task_S13" />
+    <bpmn:sequenceFlow id="Flow_S13_1" sourceRef="Task_S13" targetRef="End_S13_1" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_Collaboration_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_Collaboration_1" bpmnElement="Collaboration_1">
+      <bpmndi:BPMNShape id="BPMNShape_Participant_1" bpmnElement="Participant_1" isHorizontal="true">
+        <dc:Bounds x="80" y="80" width="4582.8" height="1697.4" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Lane_0" bpmnElement="Lane_0" isHorizontal="true">
+        <dc:Bounds x="110" y="80" width="4552.8" height="409.4" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Lane_1" bpmnElement="Lane_1" isHorizontal="true">
+        <dc:Bounds x="110" y="489.4" width="4552.8" height="460" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Lane_2" bpmnElement="Lane_2" isHorizontal="true">
+        <dc:Bounds x="110" y="949.4" width="4552.8" height="276" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Lane_3" bpmnElement="Lane_3" isHorizontal="true">
+        <dc:Bounds x="110" y="1225.4" width="4552.8" height="276" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Lane_4" bpmnElement="Lane_4" isHorizontal="true">
+        <dc:Bounds x="110" y="1501.4" width="4552.8" height="276" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_StartEvent_1" bpmnElement="StartEvent_1">
+        <dc:Bounds x="173.2" y="200" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="147.2" y="241" width="88" height="70" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S1" bpmnElement="Task_S1">
+        <dc:Bounds x="356.4" y="172" width="140" height="92" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S2" bpmnElement="Task_S2">
+        <dc:Bounds x="636.4" y="172" width="140" height="92" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S3" bpmnElement="Task_S3">
+        <dc:Bounds x="916.4" y="581.4" width="140" height="92" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Gateway_S3" bpmnElement="Gateway_S3" isMarkerVisible="true">
+        <dc:Bounds x="1206.4" y="602.4" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S4" bpmnElement="Task_S4">
+        <dc:Bounds x="1406.4" y="172" width="140" height="92" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Gateway_S4" bpmnElement="Gateway_S4" isMarkerVisible="true">
+        <dc:Bounds x="1696.4" y="193" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_End_S4_3" bpmnElement="End_S4_3">
+        <dc:Bounds x="1948.4" y="358.7" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S11" bpmnElement="Task_S11">
+        <dc:Bounds x="1406.4" y="765.4" width="140" height="92" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_End_S11_1" bpmnElement="End_S11_1">
+        <dc:Bounds x="1703.4" y="793.4" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S5" bpmnElement="Task_S5">
+        <dc:Bounds x="1896.4" y="1041.4" width="140" height="92" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S6" bpmnElement="Task_S6">
+        <dc:Bounds x="2176.4" y="1041.4" width="140" height="92" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Gateway_S6" bpmnElement="Gateway_S6" isMarkerVisible="true">
+        <dc:Bounds x="2466.4" y="1062.4" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S7" bpmnElement="Task_S7">
+        <dc:Bounds x="2666.4" y="172" width="140" height="92" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S8" bpmnElement="Task_S8">
+        <dc:Bounds x="2946.4" y="1317.4" width="140" height="92" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S9" bpmnElement="Task_S9">
+        <dc:Bounds x="3226.4" y="1317.4" width="140" height="92" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Gateway_S9" bpmnElement="Gateway_S9" isMarkerVisible="true">
+        <dc:Bounds x="3516.4" y="1338.4" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S10" bpmnElement="Task_S10">
+        <dc:Bounds x="3716.4" y="1593.4" width="140" height="92" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S12" bpmnElement="Task_S12">
+        <dc:Bounds x="3996.4" y="1593.4" width="140" height="92" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S13" bpmnElement="Task_S13">
+        <dc:Bounds x="4276.4" y="1593.4" width="140" height="92" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_End_S13_1" bpmnElement="End_S13_1">
+        <dc:Bounds x="4563.6" y="1621.4" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_start" bpmnElement="Flow_start">
+        <di:waypoint x="209.2" y="218" />
+        <di:waypoint x="356.4" y="218" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S1_1" bpmnElement="Flow_S1_1">
+        <di:waypoint x="496.4" y="218" />
+        <di:waypoint x="636.4" y="218" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S2_1" bpmnElement="Flow_S2_1">
+        <di:waypoint x="706.4" y="264" />
+        <di:waypoint x="706.4" y="627.4" />
+        <di:waypoint x="916.4" y="627.4" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S3_g" bpmnElement="Flow_S3_g">
+        <di:waypoint x="1056.4" y="627.4" />
+        <di:waypoint x="1206.4" y="627.4" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S3_1" bpmnElement="Flow_S3_1">
+        <di:waypoint x="1256.4" y="627.4" />
+        <di:waypoint x="1476.4" y="627.4" />
+        <di:waypoint x="1476.4" y="264" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1333.63" y="586.4" width="67" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S4_g" bpmnElement="Flow_S4_g">
+        <di:waypoint x="1546.4" y="218" />
+        <di:waypoint x="1696.4" y="218" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S4_1" bpmnElement="Flow_S4_1">
+        <di:waypoint x="1746.4" y="218" />
+        <di:waypoint x="1784.4" y="218" />
+        <di:waypoint x="1784.4" y="246.75" />
+        <di:waypoint x="1844.6" y="246.75" />
+        <di:waypoint x="1844.6" y="1064.4" />
+        <di:waypoint x="1896.4" y="1064.4" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1764.2" y="259.75" width="46" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S5_1" bpmnElement="Flow_S5_1">
+        <di:waypoint x="2036.4" y="1087.4" />
+        <di:waypoint x="2176.4" y="1087.4" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S6_g" bpmnElement="Flow_S6_g">
+        <di:waypoint x="2316.4" y="1087.4" />
+        <di:waypoint x="2466.4" y="1087.4" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S6_1" bpmnElement="Flow_S6_1">
+        <di:waypoint x="2516.4" y="1087.4" />
+        <di:waypoint x="2736.4" y="1087.4" />
+        <di:waypoint x="2736.4" y="264" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2596.4" y="1046.4" width="60" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S7_1" bpmnElement="Flow_S7_1">
+        <di:waypoint x="2806.4" y="218" />
+        <di:waypoint x="3016.4" y="218" />
+        <di:waypoint x="3016.4" y="1317.4" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S8_1" bpmnElement="Flow_S8_1">
+        <di:waypoint x="3086.4" y="1363.4" />
+        <di:waypoint x="3226.4" y="1363.4" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S9_g" bpmnElement="Flow_S9_g">
+        <di:waypoint x="3366.4" y="1363.4" />
+        <di:waypoint x="3516.4" y="1363.4" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S9_1" bpmnElement="Flow_S9_1">
+        <di:waypoint x="3566.4" y="1363.4" />
+        <di:waypoint x="3786.4" y="1363.4" />
+        <di:waypoint x="3786.4" y="1593.4" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="3646.4" y="1322.4" width="60" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S10_1" bpmnElement="Flow_S10_1">
+        <di:waypoint x="3856.4" y="1639.4" />
+        <di:waypoint x="3996.4" y="1639.4" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S12_1" bpmnElement="Flow_S12_1">
+        <di:waypoint x="4136.4" y="1639.4" />
+        <di:waypoint x="4276.4" y="1639.4" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S13_1" bpmnElement="Flow_S13_1">
+        <di:waypoint x="4416.4" y="1639.4" />
+        <di:waypoint x="4563.6" y="1639.4" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S3_3" bpmnElement="Flow_S3_3">
+        <di:waypoint x="1231.4" y="652.4" />
+        <di:waypoint x="1231.4" y="811.4" />
+        <di:waypoint x="1406.4" y="811.4" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1244.4" y="738.51" width="74" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S4_3" bpmnElement="Flow_S4_3">
+        <di:waypoint x="1746.4" y="218" />
+        <di:waypoint x="1966.4" y="218" />
+        <di:waypoint x="1966.4" y="358.7" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1834.07" y="177" width="74" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S11_1" bpmnElement="Flow_S11_1">
+        <di:waypoint x="1546.4" y="811.4" />
+        <di:waypoint x="1703.4" y="811.4" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S3_2" bpmnElement="Flow_S3_2">
+        <di:waypoint x="1231.4" y="652.4" />
+        <di:waypoint x="1231.4" y="696.4" />
+        <di:waypoint x="706.4" y="696.4" />
+        <di:waypoint x="706.4" y="264" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="935.4" y="709.4" width="67" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S4_2" bpmnElement="Flow_S4_2">
+        <di:waypoint x="1721.4" y="243" />
+        <di:waypoint x="1721.4" y="287" />
+        <di:waypoint x="706.4" y="287" />
+        <di:waypoint x="706.4" y="264" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1187.4" y="218" width="53" height="56" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S6_2" bpmnElement="Flow_S6_2">
+        <di:waypoint x="2491.4" y="1112.4" />
+        <di:waypoint x="2491.4" y="1156.4" />
+        <di:waypoint x="1966.4" y="1156.4" />
+        <di:waypoint x="1966.4" y="1133.4" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2199.6" y="1169.4" width="60" height="28" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_Flow_S9_2" bpmnElement="Flow_S9_2">
+        <di:waypoint x="3541.4" y="1388.4" />
+        <di:waypoint x="3541.4" y="1432.4" />
+        <di:waypoint x="3016.4" y="1432.4" />
+        <di:waypoint x="3016.4" y="1409.4" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2927.3" y="1435.09" width="60" height="56" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

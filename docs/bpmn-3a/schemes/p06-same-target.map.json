@@ -1,0 +1,98 @@
+{
+  "created_without_ai": true,
+  "package": "p06-same-target",
+  "map": [
+    {
+      "step_id": "S1",
+      "role": "Менеджер",
+      "action": "Надсилає проєкт договору на погодження",
+      "bpmn_task_id": "Task_S1",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S1",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S2",
+          "flow_id": "Flow_S1_1",
+          "target_element_id": "Task_S2"
+        }
+      ]
+    },
+    {
+      "step_id": "S2",
+      "role": "Юрист",
+      "action": "Погоджує договір",
+      "bpmn_task_id": "Task_S2",
+      "lane_id": "Lane_1",
+      "gateway_id": "Gateway_S2",
+      "drawio_cell_id": "Task_S2",
+      "outgoing": [
+        {
+          "condition": "погоджено",
+          "to": "S3",
+          "flow_id": "Flow_S2_1",
+          "target_element_id": "Task_S3"
+        },
+        {
+          "condition": "погоджено умовно",
+          "to": "S3",
+          "flow_id": "Flow_S2_2",
+          "target_element_id": "Task_S3"
+        },
+        {
+          "condition": "відхилено",
+          "to": "S4",
+          "flow_id": "Flow_S2_3",
+          "target_element_id": "Task_S4"
+        },
+        {
+          "condition": "договір скасовано клієнтом",
+          "to": "END",
+          "flow_id": "Flow_S2_4",
+          "target_element_id": "End_S2_4"
+        },
+        {
+          "condition": "термін погодження минув",
+          "to": "END",
+          "flow_id": "Flow_S2_5",
+          "target_element_id": "End_S2_5"
+        }
+      ]
+    },
+    {
+      "step_id": "S3",
+      "role": "Менеджер",
+      "action": "Підписує договір із клієнтом",
+      "bpmn_task_id": "Task_S3",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S3",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "END",
+          "flow_id": "Flow_S3_1",
+          "target_element_id": "End_S3_1"
+        }
+      ]
+    },
+    {
+      "step_id": "S4",
+      "role": "Менеджер",
+      "action": "Переробляє договір за зауваженнями",
+      "bpmn_task_id": "Task_S4",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S4",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S1",
+          "flow_id": "Flow_S4_1",
+          "target_element_id": "Task_S1"
+        }
+      ]
+    }
+  ]
+}

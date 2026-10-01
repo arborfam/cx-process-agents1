@@ -1,0 +1,91 @@
+{
+  "created_without_ai": true,
+  "package": "p01-sequence",
+  "map": [
+    {
+      "step_id": "S1",
+      "role": "Оператор першої лінії",
+      "action": "Реєструє звернення клієнта в CRM",
+      "bpmn_task_id": "Task_S1",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S1",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S2",
+          "flow_id": "Flow_S1_1",
+          "target_element_id": "Task_S2"
+        }
+      ]
+    },
+    {
+      "step_id": "S2",
+      "role": "Оператор першої лінії",
+      "action": "Уточнює в клієнта суть проблеми",
+      "bpmn_task_id": "Task_S2",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S2",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S3",
+          "flow_id": "Flow_S2_1",
+          "target_element_id": "Task_S3"
+        }
+      ]
+    },
+    {
+      "step_id": "S3",
+      "role": "Спеціаліст другої лінії",
+      "action": "Діагностує причину та готує рішення",
+      "bpmn_task_id": "Task_S3",
+      "lane_id": "Lane_1",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S3",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S4",
+          "flow_id": "Flow_S3_1",
+          "target_element_id": "Task_S4"
+        }
+      ]
+    },
+    {
+      "step_id": "S4",
+      "role": "Оператор першої лінії",
+      "action": "Повідомляє клієнта про рішення",
+      "bpmn_task_id": "Task_S4",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S4",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "S5",
+          "flow_id": "Flow_S4_1",
+          "target_element_id": "Task_S5"
+        }
+      ]
+    },
+    {
+      "step_id": "S5",
+      "role": "Оператор першої лінії",
+      "action": "Закриває звернення в CRM",
+      "bpmn_task_id": "Task_S5",
+      "lane_id": "Lane_0",
+      "gateway_id": null,
+      "drawio_cell_id": "Task_S5",
+      "outgoing": [
+        {
+          "condition": "",
+          "to": "END",
+          "flow_id": "Flow_S5_1",
+          "target_element_id": "End_S5_1"
+        }
+      ]
+    }
+  ]
+}
