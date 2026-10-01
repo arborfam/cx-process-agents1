@@ -8,10 +8,10 @@
  *  • K2 — відомі некритичні обмеження: лише фіксуються й показуються, побудову не блокують.
  */
 import { UNKNOWN, type Content, type Step } from '../schema.ts';
-import { transitionIssues, unknownTransitions } from '../domain.ts';
+import { notationIssues, transitionIssues, unknownTransitions } from '../domain.ts';
 import { MAX_STEP_ID, STEP_ID_RE } from './ids.ts';
 import { MAX_LABEL_CHARS, TO_DEFINE_RE, textProblem } from './text.ts';
-import type { ApprovedPackage, Finding, UnsupportedKind } from './types.ts';
+import { poolNameOf, type ApprovedPackage, type Finding, type UnsupportedKind } from './types.ts';
 
 const clip = (t: string, n = 40): string => (t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t);
 const stepRef = (s: Pick<Step, 'id' | 'action'>): string => `${s.id} («${clip(s.action)}»)`;
@@ -69,7 +69,13 @@ export function analyzePackage(pkg: ApprovedPackage): Analysis {
       });
     }
   };
-  checkLabel(pkg.poolName, 'Назва пулу (кейсу)', []);
+  // назва процесу = напис на єдиному пулі (D62); назву кейсу не підставляємо ніколи
+  const poolName = poolNameOf(pkg);
+  if (!poolName.trim()) {
+    k1('PROCESS_NAME_MISSING', 'Назву процесу в погодженій версії не зазначено: вона потрібна для напису на пулі. Назву кейсу в схему не підставляємо. Потрібне явне уточнення: вкажіть назву процесу — буде створено нову версію, яку треба прийняти й погодити.');
+  } else {
+    checkLabel(poolName, 'Назва процесу (напис на пулі)', []);
+  }
   checkLabel(c.boundaries.trigger, 'Тригер процесу (назва початкової події)', []);
   if (c.boundaries.trigger.trim() === '') {
     knownLimits.push({ code: 'START_UNNAMED', class: 'K2', refs: [], message: 'Тригер процесу порожній: початкова подія на схемі буде без назви.' });
@@ -208,19 +214,18 @@ export function analyzePackage(pkg: ApprovedPackage): Analysis {
     }
   }
 
-  // ── непідтримувана нотація (D21): структурні позначки ──
-  const marks = pkg.unsupportedMarks ?? [];
-  const byKind = new Map<UnsupportedKind, string[]>();
-  for (const m of marks) {
-    if (!byId.has(m.step_id)) {
-      bad('UNSUPPORTED_MARK_BAD_REF', `Позначка непідтримуваної нотації посилається на неіснуючий крок «${clip(m.step_id)}».`, [m.step_id]);
-      continue;
-    }
-    byKind.set(m.kind, [...(byKind.get(m.kind) ?? []), m.step_id]);
+  // ── непідтримувана нотація (D21, D61): лише ПІДТВЕРДЖЕНІ людиною вимоги зі змісту версії ──
+  // Непідтверджена пропозиція агента не є встановленим фактом, але блокує (потрібне рішення); відхилена — ігнорується.
+  for (const i of notationIssues(c)) {
+    if (i.code === 'PENDING_NOTATION_PROPOSAL') k1(i.code, i.message, i.ref ? [i.ref] : []);
+    else bad(i.code, i.message, i.ref ? [i.ref] : []);
   }
+  const confirmed = (c.notation_requirements ?? []).filter((r) => r.status === 'confirmed' && byId.has(r.step_id));
+  const byKind = new Map<UnsupportedKind, string[]>();
+  for (const r of confirmed) byKind.set(r.kind, [...(byKind.get(r.kind) ?? []), r.step_id]);
   for (const [kind, ids] of byKind) {
     const info = KIND_LABEL[kind];
-    const detail = marks.filter((m) => m.kind === kind && m.detail.trim()).map((m) => `${m.step_id}: ${m.detail.trim()}`).join('; ');
+    const detail = confirmed.filter((r) => r.kind === kind).map((r) => `${r.step_id}: ${r.detail.trim()}${r.evidence_quote.trim() ? ` (джерело: «${clip(r.evidence_quote.trim(), 100)}»)` : ''}`).join('; ');
     unsupported.push({
       code: `UNSUPPORTED_${kind.toUpperCase()}`, class: 'UNSUPPORTED', refs: ids,
       message: `Потрібна нотація «${info.title}» — ${info.element}. Кроки: ${ids.map((id) => (byId.get(id) ? stepRef(byId.get(id)!) : id)).join(', ')}.${detail ? ` Що в описі: ${detail}.` : ''} Цю нотацію генератор v1 не підтримує.`,

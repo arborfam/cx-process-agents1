@@ -64,7 +64,7 @@ function runOriginal(pkg: ApprovedPackage): Run {
   try {
     const csv = join(dir, 'in.csv'), sem = join(dir, 'sem.bpmn'), out = join(dir, 'out.bpmn');
     writeFileSync(csv, toCsv(pkg), 'utf8');
-    const a = spawnSync('python3', [join(ORIG, 'table_to_bpmn.py'), csv, sem, pkg.poolName], { encoding: 'utf8' });
+    const a = spawnSync('python3', [join(ORIG, 'table_to_bpmn.py'), csv, sem, pkg.content.process_name!], { encoding: 'utf8' });
     assert.equal(a.status, 0, `table_to_bpmn.py: ${a.stderr}`);
     const b = spawnSync(process.execPath, [join(ORIG, 'layout_step.mjs'), sem, out], { encoding: 'utf8' });
     assert.equal(b.status, 0, `layout_step.mjs: ${b.stderr.slice(0, 500)}`);

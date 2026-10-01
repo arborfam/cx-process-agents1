@@ -4,7 +4,7 @@
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <object label="Погодження договору" cx_version_id="TEST-P06-V1" cx_content_hash="a22816793fc5b833efc5ba86f88f5fd88f68a70586b60015c11b7e4585d77128" cx_origin="test-fixture" cx_generator="cx-bpmn-generator-3a" id="Participant_1">
+        <object label="Погодження договору" cx_version_id="TEST-P06-V1" cx_content_hash="667a91fc5510c46f5415dce7416406f14082055203d9d0883a665634fb11c44f" cx_origin="test-fixture" cx_generator="cx-bpmn-generator-3a" id="Participant_1">
           <mxCell style="swimlane;html=0;childLayout=stackLayout;horizontal=0;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;collapsible=0;swimlaneFillColor=#ffffff;whiteSpace=wrap;fontStyle=0;fontSize=12;" vertex="1" parent="1"><mxGeometry x="80" y="80" width="1032" height="872" as="geometry" /></mxCell>
         </object>
         <mxCell id="Lane_0" value="Менеджер" style="swimlane;html=0;startSize=30;horizontal=0;collapsible=0;swimlaneLine=1;swimlaneFillColor=#ffffff;fillColor=none;whiteSpace=wrap;fontStyle=0;fontSize=12;" vertex="1" parent="Participant_1"><mxGeometry x="30" y="0" width="1002" height="400" as="geometry" /></mxCell>

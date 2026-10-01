@@ -4,8 +4,8 @@
  * Хеш тестового пакета = SHA-256 канонічного змісту (джерел немає, тож це не хеш справжньої версії).
  */
 import { canonical, sha256 } from '../hash.ts';
-import { emptyContent, type Content } from '../schema.ts';
-import type { ApprovedPackage, UnsupportedMark } from './types.ts';
+import { emptyContent, type Content, type NotationKindT } from '../schema.ts';
+import type { ApprovedPackage } from './types.ts';
 
 export interface FixtureStep {
   id: string;
@@ -24,7 +24,8 @@ export interface Fixture {
   /** Очікуваний результат ЗАДАНИЙ ДО запуску (acceptance: очікування встановлюються заздалегідь). */
   expect: { status: 'ok' | 'blocked' | 'unsupported'; codes?: string[] };
   version_id: string;
-  pool_name: string;
+  /** Назва процесу (D62): напис на пулі; входить у зміст версії й хеш. */
+  process_name: string;
   trigger: string;
   roles: string[];
   entry_step_id: string | null;
@@ -33,7 +34,8 @@ export interface Fixture {
   open_questions?: { id: string; text: string; critical: boolean; affects?: { step_id: string; condition: string }[] }[];
   hypotheses?: { id: string; text: string }[];
   estimates?: string[];
-  unsupported_marks?: UnsupportedMark[];
+  /** Вимоги до нотації (D61); за замовчуванням — підтверджені людиною (origin «analyst»). */
+  notation_requirements?: { step_id: string; kind: NotationKindT; detail: string; status?: 'proposed' | 'confirmed' | 'rejected'; origin?: 'analyst' | 'agent'; evidence_quote?: string }[];
 }
 
 export function fixtureToContent(fx: Fixture): Content {
@@ -43,6 +45,16 @@ export function fixtureToContent(fx: Fixture): Content {
   c.boundaries = { trigger: fx.trigger, input: 'Тестовий вхід', completion: 'Тестове завершення', result: 'Тестовий результат' };
   c.roles = [...fx.roles];
   c.entry_step_id = fx.entry_step_id;
+  if (fx.process_name.trim() !== '') c.process_name = fx.process_name;
+  if (fx.notation_requirements?.length) {
+    c.notation_requirements = fx.notation_requirements.map((r, i) => {
+      const status = r.status ?? 'confirmed';
+      return {
+        id: `N${i + 1}`, kind: r.kind, step_id: r.step_id, detail: r.detail, origin: r.origin ?? 'analyst', status,
+        evidence_source_id: '', evidence_quote: r.evidence_quote ?? '', decided_by: status === 'proposed' ? '' : 'тестовий пакет (вручну)', decision_note: '',
+      };
+    });
+  }
   c.steps = fx.steps.map((s) => ({
     id: s.id, role: s.role, action: s.action, entry_condition: '', input_artifact: '',
     result: `Результат кроку ${s.id} (тестовий)`, next: s.next.map((n) => ({ to: n.to, condition: n.condition })), source_ids: [],
@@ -64,10 +76,8 @@ export function fixtureToPackage(fx: Fixture): ApprovedPackage {
   const pkg: ApprovedPackage = {
     versionId: fx.version_id,
     contentHash: sha256(canonical({ content, covered: [] })),
-    poolName: fx.pool_name,
     content,
     origin: 'test-fixture',
   };
-  if (fx.unsupported_marks?.length) pkg.unsupportedMarks = fx.unsupported_marks;
   return pkg;
 }

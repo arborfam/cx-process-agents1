@@ -5,7 +5,7 @@
   </bpmn:collaboration>
   <bpmn:process id="Process_1" isExecutable="false">
     <bpmn:extensionElements>
-      <cx:asIsBinding versionId="TEST-P01-V1" contentHash="768747f7580008e09a53904d25dc5c55ff0808a136e4a4b6bccf1300303faf07" origin="test-fixture" generator="cx-bpmn-generator-3a" />
+      <cx:asIsBinding versionId="TEST-P01-V1" contentHash="c085628747ef830d6bedc7389f06921920aa967b0f669283547ce58d1c56e2f3" origin="test-fixture" generator="cx-bpmn-generator-3a" />
     </bpmn:extensionElements>
     <bpmn:laneSet id="LaneSet_1">
       <bpmn:lane id="Lane_0" name="Оператор першої лінії">

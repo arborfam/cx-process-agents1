@@ -11,7 +11,7 @@
  */
 import { escapeAttr } from './xml.ts';
 import { GENERATOR_NAME, ID, NS } from './ids.ts';
-import type { ApprovedPackage } from './types.ts';
+import { poolNameOf, type ApprovedPackage } from './types.ts';
 
 export interface SemanticBuild {
   xml: string;
@@ -96,7 +96,7 @@ export function buildSemantic(pkg: ApprovedPackage): SemanticBuild {
   out.push('<?xml version="1.0" encoding="UTF-8"?>');
   w(0, `<bpmn:definitions xmlns:bpmn="${NS.bpmn}" xmlns:bpmndi="${NS.bpmndi}" xmlns:dc="${NS.dc}" xmlns:di="${NS.di}" xmlns:cx="${NS.cx}"${a('id', ID.definitions)}${a('targetNamespace', 'urn:cx-process-agents:as-is')}>`);
   w(1, `<bpmn:collaboration${a('id', ID.collaboration)}>`);
-  w(2, `<bpmn:participant${a('id', ID.participant)}${a('name', pkg.poolName)}${a('processRef', ID.process)} />`);
+  w(2, `<bpmn:participant${a('id', ID.participant)}${a('name', poolNameOf(pkg))}${a('processRef', ID.process)} />`);
   w(1, '</bpmn:collaboration>');
   w(1, `<bpmn:process${a('id', ID.process)}${a('isExecutable', 'false')}>`);
   w(2, '<bpmn:extensionElements>');

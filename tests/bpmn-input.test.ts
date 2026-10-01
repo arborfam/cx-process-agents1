@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { generateBpmn } from '../src/bpmn/generate.ts';
 import { UNKNOWN } from '../src/schema.ts';
 import type { ApprovedPackage } from '../src/bpmn/types.ts';
+import type { NotationKindT, NotationRequirementT } from '../src/schema.ts';
 import { clonePkg, generateOk, pkgOf } from './bpmn-helpers.ts';
 
 const base = (): ApprovedPackage => clonePkg(pkgOf('p02-branch'));
@@ -26,6 +27,12 @@ async function expectBlocked(p: ApprovedPackage, code: string, mention?: string)
 
 const step = (p: ApprovedPackage, id: string) => p.content.steps.find((s) => s.id === id)!;
 
+/** Вимога до нотації для тестів: за замовчуванням підтверджена людиною. */
+const req = (id: string, kind: NotationKindT, stepId: string, detail: string, status: 'proposed' | 'confirmed' | 'rejected' = 'confirmed'): NotationRequirementT => ({
+  id, kind, step_id: stepId, detail, origin: status === 'proposed' ? 'agent' : 'analyst', status,
+  evidence_source_id: '', evidence_quote: '', decided_by: status === 'proposed' ? '' : 'Аналітикиня', decision_note: '',
+});
+
 const NEGATIVE: { name: string; code: string; mention?: string; mutate: (p: ApprovedPackage) => void }[] = [
   { name: 'повторний ID кроку', code: 'DUPLICATE_STEP_ID', mention: 'S3', mutate: (p) => { p.content.steps.push({ ...step(p, 'S3') }); } },
   { name: 'перехід на неіснуючий крок', code: 'STEP_BAD_NEXT', mention: 'S99', mutate: (p) => { step(p, 'S1').next = [{ to: 'S99', condition: '' }]; } },
@@ -39,7 +46,7 @@ const NEGATIVE: { name: string; code: string; mention?: string; mutate: (p: Appr
   { name: 'керівний символ U+000B у дії', code: 'INVALID_TEXT', mention: 'U+000B', mutate: (p) => { step(p, 'S1').action = 'Приймає\u000bзаявку'; } },
   { name: 'керівний символ U+0000 в умові', code: 'INVALID_TEXT', mention: 'U+0000', mutate: (p) => { step(p, 'S2').next[0]!.condition = 'підстави\u0000підтверджено'; } },
   { name: 'табуляція в назві ролі', code: 'INVALID_TEXT', mention: 'табуляції', mutate: (p) => { p.content.roles[0] = 'Опера\tтор'; step(p, 'S1').role = 'Опера\tтор'; step(p, 'S4').role = 'Опера\tтор'; step(p, 'S6').role = 'Опера\tтор'; } },
-  { name: 'повернення каретки в назві пулу', code: 'INVALID_TEXT', mention: 'каретки', mutate: (p) => { p.poolName = 'Пул\rз переносом'; } },
+  { name: 'повернення каретки в назві пулу', code: 'INVALID_TEXT', mention: 'каретки', mutate: (p) => { p.content.process_name = 'Пул\rз переносом'; } },
   { name: 'зарезервований ID кроку END', code: 'RESERVED_STEP_ID', mutate: (p) => { step(p, 'S6').id = 'END'; step(p, 'S3').next = [{ to: 'END', condition: '' }]; } },
   { name: 'ID кроку з недозволеними символами', code: 'BAD_STEP_ID', mutate: (p) => { step(p, 'S4').id = 'S 4"<'; step(p, 'S2').next[1]!.to = 'S 4"<'; step(p, 'S5').next[1]!.to = 'S 4"<'; } },
   { name: 'порожня дія', code: 'EMPTY_TEXT', mention: 'S1', mutate: (p) => { step(p, 'S1').action = '   '; } },
@@ -78,7 +85,7 @@ test('відхилення входу не потребує ані моделі,
 test('КОРЕКТНІ входи зберігаються без втрат: лапки та спецсимволи у дії, ролі, умові, назві пулу, тригері', async () => {
   const p = base();
   const q = '«ялинки» "подвійні" \'одинарні\' & < > a<b && c>d <b>x</b> 100% ✅ №1';
-  p.poolName = `Пул ${q}`;
+  p.content.process_name = `Пул ${q}`;
   p.content.boundaries.trigger = `Тригер ${q}`;
   p.content.roles = p.content.roles.map((r) => `${r} ${q}`);
   for (const s of p.content.steps) {
@@ -154,12 +161,12 @@ test('unsupported: надто довгий підпис — відмова з п
 
 test('unsupported: позначка на неіснуючий крок — відхилений вхід; усі види нотації мають конкретне пояснення', async () => {
   const p = base();
-  p.unsupportedMarks = [{ step_id: 'S99', kind: 'timer', detail: '' }];
-  await expectBlocked(p, 'UNSUPPORTED_MARK_BAD_REF', 'S99');
+  p.content.notation_requirements = [req('N1', 'timer', 'S99', '')];
+  await expectBlocked(p, 'NOTATION_BAD_STEP', 'S99');
   const kinds = ['parallel_branches', 'timer', 'message', 'subprocess', 'boundary_event', 'data_object', 'multiple_entry', 'other'] as const;
   for (const kind of kinds) {
     const q = base();
-    q.unsupportedMarks = [{ step_id: 'S1', kind, detail: 'тест' }];
+    q.content.notation_requirements = [req('N1', kind, 'S1', 'тест')];
     const r = await generateBpmn(q);
     assert.equal(r.status, 'unsupported', kind);
     if (r.status === 'unsupported') assert.ok(r.findings[0]!.message.includes('S1') && r.explanation.includes('Варіанти'));
@@ -189,4 +196,72 @@ test('чому табуляція відхиляється на вході: ле
   walk(parseXml(laid.xml), (e) => { if (attr(e, 'id') === 'Task_S1') name = attr(e, 'name')!; });
   assert.equal(name, 'Перший другий', 'розбір за правилами XML замінив табуляцію пробілом');
   assert.equal((await generateBpmn(p)).status, 'blocked', 'тому генератор відхиляє такий текст заздалегідь');
+});
+
+// ───────────── D61: вимоги до нотації у змісті версії ─────────────
+
+test('D61: ПІДТВЕРДЖЕНА вимога зі змісту версії дає unsupported без виклику моделі; пояснення містить опис і цитату', async () => {
+  const p = base();
+  p.content.notation_requirements = [{ ...req('N1', 'parallel_branches', 'S2', 'оцінка й перевірка виконуються одночасно'), evidence_source_id: 'src', evidence_quote: 'Одночасно перевіряють і оцінюють' }];
+  const r = await generateBpmn(p);
+  assert.equal(r.status, 'unsupported');
+  if (r.status !== 'unsupported') return;
+  assert.equal('bpmn' in r, false);
+  assert.ok(r.findings[0]!.message.includes('S2') && r.findings[0]!.message.includes('оцінка й перевірка виконуються одночасно'));
+  assert.ok(r.findings[0]!.message.includes('Одночасно перевіряють і оцінюють'), 'цитата джерела в поясненні');
+  assert.ok(r.explanation.includes('не змінено'), 'погодження AS-IS лишається чинним');
+});
+
+test('D61: НЕпідтверджена пропозиція агента не стає встановленим фактом, але й не ігнорується: блокує до рішення людини', async () => {
+  const p = base();
+  p.content.notation_requirements = [req('N1', 'timer', 'S2', 'очікування три дні', 'proposed')];
+  await expectBlocked(p, 'PENDING_NOTATION_PROPOSAL', 'N1');
+  const r = await generateBpmn(p);
+  assert.equal(r.status, 'blocked', 'не unsupported: вимога ще не встановлена');
+});
+
+test('D61: відхилена пропозиція ігнорується (схема будується); немає поля чи порожній список = «не зазначено», а не «особливостей немає»', async () => {
+  const p = base();
+  p.content.notation_requirements = [req('N1', 'timer', 'S2', 'очікування', 'rejected')];
+  const ok = await generateOk(p);
+  assert.ok(ok.map.length > 0);
+  const q = base();
+  q.content.notation_requirements = [];
+  assert.equal((await generateBpmn(q)).status, 'ok');
+  // «не зазначено» ніде не перетворюється на твердження «особливостей немає»: у відомих обмеженнях схеми немає такого запевнення
+  assert.ok(!ok.knownLimits.some((l) => /особливостей немає|нотац.* не потрібн/i.test(l.message)));
+  assert.ok(ok.knownLimits.some((l) => l.code === 'FIELDS_NOT_ON_DIAGRAM'));
+});
+
+test('D61: вимоги можна задати лише через зміст версії — окремого входу «позначки» в генератора немає', () => {
+  const p = base() as unknown as Record<string, unknown>;
+  assert.equal('unsupportedMarks' in p, false);
+});
+
+// ───────────── D62: назва процесу = напис на пулі; назви кейсу немає ─────────────
+
+test('D62: немає назви процесу — побудови немає, потрібне явне уточнення (нова версія й погодження), без підстановки', async () => {
+  for (const name of [undefined, '', '   ']) {
+    const p = base();
+    if (name === undefined) delete p.content.process_name; else p.content.process_name = name;
+    const r = await generateBpmn(p);
+    assert.equal(r.status, 'blocked', JSON.stringify(name));
+    if (r.status !== 'blocked') continue;
+    const f = r.findings.find((x) => x.code === 'PROCESS_NAME_MISSING')!;
+    assert.ok(f, 'є знахідка PROCESS_NAME_MISSING');
+    assert.ok(/не підставляємо/.test(f.message) && /нову версію/.test(f.message) && /погодити/.test(f.message), f.message);
+    assert.equal('bpmn' in r, false);
+  }
+});
+
+test('D62: напис на пулі — рівно назва процесу зі змісту (дослівно, зі спецсимволами), у .bpmn і .drawio; зміна назви ламає звірку', async () => {
+  const p = base();
+  p.content.process_name = 'Процес «Повернення» & <тест> "лапки"';
+  const r = await generateOk(p);
+  const { readBpmn } = await import('../src/bpmn/read.ts');
+  assert.equal(readBpmn(r.bpmn).model!.participant!.name, p.content.process_name);
+  const { verifyBpmn } = await import('../src/bpmn/verify.ts');
+  const other = base();
+  other.content.process_name = 'Інша назва процесу';
+  assert.ok(verifyBpmn(r.bpmn, other).report.errors.some((e) => e.code === 'POOL_NAME_MISMATCH'));
 });

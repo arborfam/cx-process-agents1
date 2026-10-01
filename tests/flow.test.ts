@@ -18,7 +18,7 @@ import { freshDb, human, startTestServer } from './helpers.ts';
 const BASE: EditFields = {
   summary: 'Синтетичний процес', business_context: 'Контекст (синтетичний)',
   boundaries: { trigger: 'Тригер', input: 'Вхід', completion: 'Завершення', result: 'Результат' },
-  roles_text: 'Роль', problems_text: 'P1 | Довго | Клієнти чекають (метрик немає)',
+  roles_text: 'Роль', problems_text: 'P1 | Довго | Клієнти чекають (метрик немає)', process_name: 'Тестовий процес',
 };
 const step = (id: string, action: string, next: string) => `${id} | Роль | ${action} | результат ${id} | ${next}`;
 

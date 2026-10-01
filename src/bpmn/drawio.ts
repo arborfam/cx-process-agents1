@@ -14,7 +14,7 @@ import { collapse, diffEdges, type GFlow, type GNode } from './graph.ts';
 import { expectedTransitions } from './verify.ts';
 import { checkCellStyle, EDGE_STYLE_FIXED, GRAPH_MODEL_ATTRS, POOL_STYLE, LANE_STYLE, START_STYLE, END_STYLE, GATEWAY_STYLE, TASK_STYLE, vertexStyleOf, type CellKind } from './drawio-style.ts';
 import type { BpmnModel, Rect } from './read.ts';
-import type { ApprovedPackage, DrawioExport, Issue, StepMapRow } from './types.ts';
+import { poolNameOf, type ApprovedPackage, type DrawioExport, type Issue, type StepMapRow } from './types.ts';
 
 
 const n2 = (v: number): string => String(Math.round(v * 100) / 100);
@@ -44,7 +44,7 @@ export function exportDrawio(model: BpmnModel, pkg: ApprovedPackage, _map: StepM
   out.push('      <root>');
   out.push('        <mxCell id="0" />');
   out.push('        <mxCell id="1" parent="0" />');
-  out.push(`        <object label="${escapeAttr(pkg.poolName)}" cx_version_id="${escapeAttr(pkg.versionId)}" cx_content_hash="${escapeAttr(pkg.contentHash)}" cx_origin="${escapeAttr(pkg.origin)}" cx_generator="${escapeAttr(GENERATOR_NAME)}" id="${escapeAttr(model.participant.id)}">`);
+  out.push(`        <object label="${escapeAttr(poolNameOf(pkg))}" cx_version_id="${escapeAttr(pkg.versionId)}" cx_content_hash="${escapeAttr(pkg.contentHash)}" cx_origin="${escapeAttr(pkg.origin)}" cx_generator="${escapeAttr(GENERATOR_NAME)}" id="${escapeAttr(model.participant.id)}">`);
   out.push(`          <mxCell style="${POOL_STYLE}" vertex="1" parent="1"><mxGeometry x="${n2(pool.x)}" y="${n2(pool.y)}" width="${n2(pool.w)}" height="${n2(pool.h)}" as="geometry" /></mxCell>`);
   out.push('        </object>');
 
@@ -252,7 +252,7 @@ export function verifyDrawio(xml: string, pkg: ApprovedPackage, bpmn: BpmnModel)
     if (p.get('cx_version_id') !== pkg.versionId) issues.push(err('DRAWIO_BINDING_MISMATCH', 'ID версії в .drawio відсутній або не збігається з погодженою.'));
     if (p.get('cx_content_hash') !== pkg.contentHash) issues.push(err('DRAWIO_BINDING_MISMATCH', 'Хеш версії в .drawio відсутній або не збігається з погодженим.'));
     if (p.get('cx_origin') !== pkg.origin) issues.push(err('DRAWIO_BINDING_MISMATCH', 'Позначка походження в .drawio не збігається з пакетом.'));
-    if (pool.value !== pkg.poolName) issues.push(err('DRAWIO_LABEL_MISMATCH', `Назва пулу в .drawio «${pool.value}» не збігається з очікуваною «${pkg.poolName}».`, [poolId]));
+    if (pool.value !== poolNameOf(pkg)) issues.push(err('DRAWIO_LABEL_MISMATCH', `Назва пулу в .drawio «${pool.value}» не збігається з назвою процесу «${poolNameOf(pkg)}».`, [poolId]));
   }
 
   // множини ID: усе, що є у перевіреному .bpmn, має бути в .drawio, і нічого зайвого

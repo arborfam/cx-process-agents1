@@ -4,7 +4,7 @@
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <object label="Обробка скарги «Клієнт &amp; Ко» (&lt;тест&gt; &quot;лапки&quot; 'апостроф')" cx_version_id="TEST-P05-V1" cx_content_hash="8981418d604f013627a3e15a1a90e6e3731f3c1e238c722515b974835efc5179" cx_origin="test-fixture" cx_generator="cx-bpmn-generator-3a" id="Participant_1">
+        <object label="Обробка скарги «Клієнт &amp; Ко» (&lt;тест&gt; &quot;лапки&quot; 'апостроф')" cx_version_id="TEST-P05-V1" cx_content_hash="f6b1149a19fc9649c6f0be9e3b90768e71c071254ef4e884b4a7c35f876fdaea" cx_origin="test-fixture" cx_generator="cx-bpmn-generator-3a" id="Participant_1">
           <mxCell style="swimlane;html=0;childLayout=stackLayout;horizontal=0;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;collapsible=0;swimlaneFillColor=#ffffff;whiteSpace=wrap;fontStyle=0;fontSize=12;" vertex="1" parent="1"><mxGeometry x="80" y="80" width="3155.2" height="1980" as="geometry" /></mxCell>
         </object>
         <mxCell id="Lane_0" value="Менеджер &quot;ключових&quot; клієнтів" style="swimlane;html=0;startSize=30;horizontal=0;collapsible=0;swimlaneLine=1;swimlaneFillColor=#ffffff;fillColor=none;whiteSpace=wrap;fontStyle=0;fontSize=12;" vertex="1" parent="Participant_1"><mxGeometry x="30" y="0" width="3125.2" height="900" as="geometry" /></mxCell>

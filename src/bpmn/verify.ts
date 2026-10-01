@@ -9,7 +9,7 @@ import { readBpmn, type BpmnModel, type FlowNode } from './read.ts';
 import { checkGeometry } from './geometry.ts';
 import { collapse, diffEdges, edgeKey, type Edge, type GNode } from './graph.ts';
 import { TO_DEFINE_RE } from './text.ts';
-import type { ApprovedPackage, Issue, StepMapRow, VerifyReport } from './types.ts';
+import { poolNameOf, type ApprovedPackage, type Issue, type StepMapRow, type VerifyReport } from './types.ts';
 
 const clip = (t: string, n = 50): string => (t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t);
 const q = (t: string | undefined): string => (t === undefined ? '(немає)' : `«${clip(t)}»`);
@@ -68,7 +68,7 @@ export function verifyBpmn(xml: string, pkg: ApprovedPackage): VerifyOutcome {
   if (!m.participant) errors.push(err('STRUCTURE', 'У файлі немає учасника (пулу).'));
   else {
     if (m.participant.processRef !== m.processId) errors.push(err('STRUCTURE', 'Пул посилається не на процес зі схеми.'));
-    if ((m.participant.name ?? '') !== pkg.poolName) errors.push(err('POOL_NAME_MISMATCH', `Назва пулу у файлі ${q(m.participant.name)} не збігається з очікуваною ${q(pkg.poolName)}.`));
+    if ((m.participant.name ?? '') !== poolNameOf(pkg)) errors.push(err('POOL_NAME_MISMATCH', `Назва пулу у файлі ${q(m.participant.name)} не збігається з назвою процесу у версії ${q(poolNameOf(pkg))}.`));
   }
   const seenIds = new Set<string>();
   for (const id of m.allIds) {
@@ -282,7 +282,7 @@ export function verifyBpmn(xml: string, pkg: ApprovedPackage): VerifyOutcome {
     nameOf,
     actionOfTask: (id) => stepById.get(id.slice(TASK_PREFIX.length))?.action,
     roleOfLane: (id) => m.lanes.find((l) => l.id === id)?.name,
-    poolName: pkg.poolName,
+    poolName: poolNameOf(pkg),
   });
   for (const i of geo) (i.severity === 'error' ? errors : warnings).push(i);
 

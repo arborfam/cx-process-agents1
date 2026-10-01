@@ -38,5 +38,6 @@ export function makeProcess(i: number): ApprovedPackage {
     };
   });
   // роль кожного кроку має існувати — гарантовано; кожна роль без кроків дозволена
-  return { versionId: `PAR-${i}`, contentHash: sha256(canonical({ content: c, i })), poolName: `Пул П${i}`, content: c, origin: 'test-fixture' };
+  c.process_name = `Пул П${i}`;
+  return { versionId: `PAR-${i}`, contentHash: sha256(canonical({ content: c, i })), content: c, origin: 'test-fixture' };
 }

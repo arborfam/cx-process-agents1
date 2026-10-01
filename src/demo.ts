@@ -42,6 +42,7 @@ function demoContent(reqId: string, trId: string): Content {
   };
   c.roles = ['Менеджерка з клієнтами', 'Оператор back-office', 'Керівник відділу'];
   c.entry_step_id = 'S1';
+  c.process_name = 'Зміна умов обслуговування (демо)';
   c.steps = [
     { id: 'S1', role: 'Менеджерка з клієнтами', action: 'Створює заявку в CRM за запитом клієнта', entry_condition: 'Клієнт повідомив про зміну умов', input_artifact: 'Запит клієнта', result: 'Заявка в CRM', next: [{ to: 'S2', condition: '' }], source_ids: [trId] },
     { id: 'S2', role: 'Менеджерка з клієнтами', action: 'Перевіряє повноту заявки', entry_condition: '', input_artifact: 'Заявка в CRM', result: 'Заявка перевірена', next: [{ to: 'S3', condition: 'заявка повна' }, { to: 'S1', condition: 'не вистачає документів (повернення клієнту на доповнення)' }], source_ids: [trId] },

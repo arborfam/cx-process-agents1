@@ -12,7 +12,7 @@ import { layoutProcess, LayoutError } from 'bpmn-auto-layout';
 import { NS } from './ids.ts';
 import { parseXml, serialize, attr, elementChildren, type XmlElement } from './xml.ts';
 import { neededTaskHeight, textWidth } from './text.ts';
-import type { ApprovedPackage, Issue } from './types.ts';
+import { poolNameOf, type ApprovedPackage, type Issue } from './types.ts';
 
 export interface LayoutOutcome {
   ok: boolean;
@@ -151,7 +151,7 @@ export async function layoutAndScale(semanticXml: string, pkg: ApprovedPackage):
     sy = Math.max(sy, need / s.b.rect.h);
   }
   const poolH = pool.b.rect.h;
-  sy = Math.max(sy, (textWidth(pkg.poolName) / 2 + 24) / poolH);
+  sy = Math.max(sy, (textWidth(poolNameOf(pkg)) / 2 + 24) / poolH);
   sx = Math.max(1, r2(sx));
   sy = Math.max(1, r2(Math.ceil(sy * 20) / 20));
 

@@ -4,7 +4,7 @@
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <object label="Розгляд заявки на повернення коштів" cx_version_id="TEST-P02-V1" cx_content_hash="8ce88acff5de65d6078799c66b164e5aa574dfebffba0aaa2f1f8ff2f98ab5d7" cx_origin="test-fixture" cx_generator="cx-bpmn-generator-3a" id="Participant_1">
+        <object label="Розгляд заявки на повернення коштів" cx_version_id="TEST-P02-V1" cx_content_hash="7c4822f7031ae31155d819bf90a13603f6dd5ab5d87cd28ef00e88ca98ad3f1a" cx_origin="test-fixture" cx_generator="cx-bpmn-generator-3a" id="Participant_1">
           <mxCell style="swimlane;html=0;childLayout=stackLayout;horizontal=0;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;collapsible=0;swimlaneFillColor=#ffffff;whiteSpace=wrap;fontStyle=0;fontSize=12;" vertex="1" parent="1"><mxGeometry x="80" y="80" width="2202.8" height="1012" as="geometry" /></mxCell>
         </object>
         <mxCell id="Lane_0" value="Оператор" style="swimlane;html=0;startSize=30;horizontal=0;collapsible=0;swimlaneLine=1;swimlaneFillColor=#ffffff;fillColor=none;whiteSpace=wrap;fontStyle=0;fontSize=12;" vertex="1" parent="Participant_1"><mxGeometry x="30" y="0" width="2172.8" height="460" as="geometry" /></mxCell>

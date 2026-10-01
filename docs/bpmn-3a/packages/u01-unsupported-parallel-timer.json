@@ -12,7 +12,7 @@
     ]
   },
   "version_id": "TEST-U01-V1",
-  "pool_name": "Підключення послуги",
+  "process_name": "Підключення послуги",
   "trigger": "Клієнт замовив послугу",
   "roles": [
     "Менеджер",
@@ -65,16 +65,18 @@
       ]
     }
   ],
-  "unsupported_marks": [
+  "notation_requirements": [
     {
       "step_id": "S2",
       "kind": "parallel_branches",
-      "detail": "два виконавчі потоки виконуються одночасно"
+      "detail": "два виконавчі потоки виконуються одночасно",
+      "status": "confirmed"
     },
     {
       "step_id": "S4",
       "kind": "timer",
-      "detail": "очікування три дні"
+      "detail": "очікування три дні",
+      "status": "confirmed"
     }
   ]
 }

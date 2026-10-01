@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { all, one } from '../src/db.ts';
 import { sha256 } from '../src/hash.ts';
 import {
-  acceptDraft, approve, bpmnGuard, buildCard, getCase, headVersion, listSources, saveAnalystVersion, submissionBlockers,
+  acceptDraft, approve, bpmnGuard, buildCard, currentApproval, getCase, headVersion, listSources, saveAnalystVersion, submissionBlockers,
   submitForApproval, versionContent,
 } from '../src/domain.ts';
 import { runAnalyst, ScriptedDemoClient } from '../src/runs.ts';
@@ -253,6 +253,15 @@ test('Негативний сценарій: невизначена гілка �
   acceptDraft(db, human, neg.id, v6.id);
   submitForApproval(db, human, neg.id);
   approve(db, human, neg.id, { versionId: v6.id, checklistConfirmed: true });
+  // D62: назву процесу задає людина, агент її не заповнює; без неї дозвіл BPMN не надається і назву кейсу не підставлено
+  assert.equal(versionContent(v6).process_name, undefined, 'агент не вигадав назву процесу');
+  assert.deepEqual(bpmnGuard(db, neg.id).reasons.map((r) => r.code), ['PROCESS_NAME_MISSING']);
+  // явне уточнення людиною → нова версія → прийняття → погодження → лише тоді дозвіл
+  const v7 = saveAnalystVersion(db, human, neg.id, { baseVersionId: v6.id, fields: { process_name: 'Підготовка CX до продуктових змін' } });
+  assert.equal(currentApproval(db, neg.id), undefined, 'погодження v6 втратило чинність (вона лишається в історії)');
+  acceptDraft(db, human, neg.id, v7.id);
+  submitForApproval(db, human, neg.id);
+  approve(db, human, neg.id, { versionId: v7.id, checklistConfirmed: true });
   assert.equal(bpmnGuard(db, neg.id).ok, true, 'після прийняття й погодження людиною дозвіл є');
 });
 

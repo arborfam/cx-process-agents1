@@ -114,7 +114,9 @@ async function renderCase(id) {
 
   // 1) Суть
   const essence = el('div', { class: 'card', 'data-block': 'essence' }, el('h2', {}, 'Суть'),
-    el('p', {}, content.summary || el('span', { class: 'notset' }, 'Суть процесу ще не сформульовано.')));
+    el('p', {}, content.summary || el('span', { class: 'notset' }, 'Суть процесу ще не сформульовано.')),
+    el('p', { class: 'small' }, el('strong', {}, 'Назва процесу (напис на схемі): '),
+      card.process_name.defined ? card.process_name.value : el('span', { class: 'notset' }, 'не зазначено — потрібна перед побудовою схеми (назва кейсу в схему не підставляється)')));
 
   // 2) Предметний опис AS-IS із вкладками (перша — «Бізнес-контекст і межі», друга — «Кроки процесу»)
   const asis = el('div', { class: 'card', id: 'details', 'data-block': 'asis' }, el('h2', {}, 'Опис процесу AS-IS'), el('div', { id: 'tabs' }), el('div', { id: 'panel' }));
@@ -128,7 +130,7 @@ async function renderCase(id) {
     const isFlow = g.code === 'STEP_UNREACHABLE' || g.code === 'STEP_NO_EXIT';
     const qid = g.code === 'CONTRADICTION' || g.code === 'QUESTION_LINK_BROKEN' ? g.ref : isTr ? (card.unknown_transitions.find((u) => u.step_id === g.ref)?.question_ids[0]) : null;
     const title = isQ ? 'Критичне питання ' : isTr ? 'Невизначений перехід. ' : g.code === 'CONTRADICTION' ? 'Суперечність. '
-      : isEntry ? 'Початковий крок. ' : g.code === 'STEP_UNREACHABLE' ? 'Недосяжні кроки. ' : g.code === 'STEP_NO_EXIT' ? 'Немає виходу до завершення. ' : g.code === 'PENDING_STEP_PROPOSAL' ? 'Пропозиція агента без рішення. ' : 'Прогалина. ';
+      : isEntry ? 'Початковий крок. ' : g.code === 'STEP_UNREACHABLE' ? 'Недосяжні кроки. ' : g.code === 'STEP_NO_EXIT' ? 'Немає виходу до завершення. ' : g.code === 'PENDING_STEP_PROPOSAL' ? 'Пропозиція агента без рішення. ' : g.code === 'PENDING_NOTATION_PROPOSAL' ? 'Пропозиція щодо нотації без рішення. ' : g.code === 'NOTATION_BAD_STEP' ? 'Вимога до нотації без кроку. ' : 'Прогалина. ';
     return el('div', { class: 'blocker' },
       el('strong', {}, title),
       isQ ? `${q ? q.id + ': ' + q.text : g.message}` : g.message,
@@ -136,6 +138,7 @@ async function renderCase(id) {
       (isQ || qid) ? el('button', { class: 'link', onclick: () => goToQuestion(isQ ? g.ref : qid) }, 'Перейти до питання ' + (isQ ? g.ref : qid)) : null,
       isTr && !qid ? el('button', { class: 'link', onclick: () => showTab('steps') }, 'Показати крок ' + g.ref) : null,
       isFlow || g.code === 'PENDING_STEP_PROPOSAL' ? el('button', { class: 'link', onclick: () => showTab('steps') }, g.code === 'PENDING_STEP_PROPOSAL' ? 'Перейти до пропозиції' : 'Показати кроки процесу') : null,
+      g.code === 'PENDING_NOTATION_PROPOSAL' || g.code === 'NOTATION_BAD_STEP' ? el('button', { class: 'link', onclick: () => showTab('context') }, 'Перейти до вимог до нотації') : null,
       isEntry ? entryForm(card) : null);
   };
   const questionGap = (it) => el('div', { class: 'blocker' },
@@ -173,7 +176,7 @@ async function renderCase(id) {
   const cnt = { ok: 0, fail: 0, warn: 0 };
   card.review.checks.forEach((c) => { cnt[c.status]++; });
   const SHORT = { accepted: 'прийняття версії аналітиком', sources: 'врахування джерел', reading: 'читання файлів', structure: 'структурна повнота',
-    gaps: 'критичні прогалини', integrity: 'цілісність версії', conflicts: 'конфлікти правок' };
+    gaps: 'критичні прогалини', integrity: 'цілісність версії', conflicts: 'конфлікти правок', process_name: 'назва процесу', notation: 'пропозиції щодо нотації' };
   const failedNames = card.review.checks.filter((c) => c.status === 'fail').map((c) => SHORT[c.key] || c.key);
   const review = el('div', { class: 'card', 'data-block': 'review' },
     el('h2', {}, 'Перевірки готовності'),
@@ -321,6 +324,7 @@ async function nextAction(card) {
   else if (k === 'submit') { await act(() => api('POST', `/api/cases/${card.case.id}/submit`, {}), 'Передано на погодження'); await refresh(); }
   else if (k === 'approve') approveDialog(card);
   else if (k === 'clarify_entry') { const sel = document.getElementById('entry-select'); if (sel) { sel.scrollIntoView({ block: 'center' }); sel.focus(); } else showTab('edit'); }
+  else if (k === 'clarify_process_name') { showTab('edit'); setTimeout(() => { const i = document.getElementById('process-name-input'); if (i) { i.scrollIntoView({ block: 'center' }); i.focus(); } }, 50); }
   else if (k === 'fix_flow') showTab('edit');
   else if (k === 'start_bpmn') {
     const r = await act(() => api('POST', `/api/cases/${card.case.id}/bpmn/start`, {}));
@@ -346,8 +350,12 @@ function approveDialog(card) {
     await refresh();
   } }, 'Погодити версію ' + card.head.number);
   boxes.forEach((b) => b.addEventListener('change', () => { btn.disabled = !boxes.every((x) => x.checked); }));
+  const reqs = (card.notation_requirements || []).filter((r) => r.status !== 'rejected');
   openDialog(el('h2', {}, 'Погодження AS-IS: версія ' + card.head.number),
     el('p', {}, 'Це рішення людини. Агент не може його прийняти. Позначте кожен пункт:'),
+    el('div', { class: 'warnbox', 'data-block': 'approve-facts' },
+      el('div', {}, el('strong', {}, 'Назва процесу (напис на схемі): '), card.process_name.defined ? card.process_name.value : el('strong', { style: 'color:var(--danger)' }, 'не зазначено — схему без неї не побудувати')),
+      el('div', {}, el('strong', {}, 'Вимоги до нотації: '), reqs.length ? reqs.map((r) => el('div', { class: 'small' }, `${r.id} · ${r.kind_label} · крок ${r.step_id} · ${r.status === 'confirmed' ? 'підтверджено' : 'ОЧІКУЄ РІШЕННЯ'}: ${r.detail}`)) : el('span', { class: 'notset' }, 'не зазначено (це не означає, що особливостей немає)'))),
     items.map((t, i) => el('label', { class: 'inline' }, boxes[i], t)),
     el('div', { class: 'actions' }, btn, el('button', { onclick: () => dlg.close() }, 'Скасувати')));
 }
@@ -396,6 +404,8 @@ const PANELS = {
       el('div', { class: 'v' }, text && text.trim() ? text : el('span', { class: 'notset' }, missing || 'Не з’ясовано')));
     const entryStep = c.steps.find((x) => x.id === c.entry_step_id);
     return el('div', { class: 'ctx' },
+      el('h3', {}, 'Назва процесу'),
+      row('Назва процесу — напис на пулі схеми (входить у погодження; зміна створює нову версію)', card.process_name.value, 'Не зазначено. Потрібна перед побудовою схеми; назва кейсу «' + card.case.title + '» у схему не підставляється.'),
       el('h3', {}, 'Навіщо існує процес'),
       row('Бізнес-потреба: навіщо процес, хто отримує результат', c.business_context, 'Не з’ясовано: бізнес-контекст ще не заповнено.'),
       row('Результат процесу', c.boundaries.result),
@@ -406,7 +416,8 @@ const PANELS = {
       row('Початковий крок', entryStep ? `${entryStep.id} — ${entryStep.action}` : '',
         c.entry_step_id ? `Хибне посилання: крок ${c.entry_step_id} не існує` : 'Не задано (див. «Критичні прогалини»)'),
       el('h3', {}, 'Ролі'),
-      c.roles.length ? el('div', { class: 'chips' }, c.roles.map((r) => el('span', { class: 'chip' }, r))) : el('p', { class: 'notset' }, 'Ролей ще не вказано.'));
+      c.roles.length ? el('div', { class: 'chips' }, c.roles.map((r) => el('span', { class: 'chip' }, r))) : el('p', { class: 'notset' }, 'Ролей ще не вказано.'),
+      notationView(card));
   },
   steps: (card) => {
     const c = card.head.content; const steps = c.steps;
@@ -499,10 +510,12 @@ const PANELS = {
       const ok = await act(() => api('POST', `/api/cases/${card.case.id}/versions`, { base_version_id: card.head.id, cover_all_sources: f.cover.checked, fields: {
         summary: f.summary.value, business_context: f.business_context.value,
         boundaries: { trigger: f.trigger.value, input: f.input.value, completion: f.completion.value, result: f.result.value },
-        roles_text: f.roles.value, steps_text: f.steps.value, problems_text: f.problems.value, entry_step_id: f.entry.value } }), 'Збережено як нова версія');
+        roles_text: f.roles.value, steps_text: f.steps.value, problems_text: f.problems.value, entry_step_id: f.entry.value, process_name: f.process_name.value } }), 'Збережено як нова версія');
       if (ok) await refresh();
     } },
       el('p', { class: 'hint' }, 'Збереження створює НОВУ версію; попередні не змінюються. Після змін кейс повертається до стану «Дослідження», а погодження втрачає чинність.'),
+      el('label', {}, 'Назва процесу'), el('p', { class: 'hint' }, 'Входить у погодження й стає написом на пулі схеми. Це не назва кейсу («' + card.case.title + '»): назву кейсу в схему не підставляємо. Зміна створює нову версію.'),
+      el('input', { type: 'text', name: 'process_name', id: 'process-name-input', value: e.process_name }),
       el('label', {}, 'Суть'), el('textarea', { name: 'summary' }, e.summary),
       el('label', {}, 'Бізнес-контекст'), el('textarea', { name: 'business_context' }, e.business_context),
       ...[['trigger', 'Тригер'], ['input', 'Вхід'], ['completion', 'Фактичне завершення'], ['result', 'Результат']].flatMap(([k, l]) => [el('label', {}, l), el('input', { type: 'text', name: k, value: e.boundaries[k] })]),
@@ -525,6 +538,43 @@ const PANELS = {
     el('h3', {}, 'Запуски'), card.runs.length ? el('ul', {}, card.runs.map((r) => el('li', {}, `${r.agent} · ${r.mode === 'real' ? 'справжня модель ' + r.model : 'підставний клієнт (не AI)'} · інструкція ${r.instruction_version}${r.instruction_hash ? ' (' + r.instruction_hash.slice(0, 8) + ')' : ''} · ${r.technical_state}${r.duration_ms != null ? ' · ' + (r.duration_ms / 1000).toFixed(1) + ' с' : ''}${costText(r)}${r.attempts > 1 ? ' · спроб: ' + r.attempts : ''}${r.note ? ' · ' + r.note : ''}${r.error ? ' · помилка: ' + r.error : ''}`))) : el('p', { class: 'muted' }, 'Запусків ще не було.'),
     el('h3', {}, 'Журнал подій'), el('ul', { class: 'small' }, card.audit.slice(0, 15).map((a) => el('li', {}, `${fmt(a.at)} · ${a.actor} · ${a.action}`)))),
 };
+
+function notationView(card) {
+  const rs = card.notation_requirements || [];
+  const ST = { proposed: 'очікує рішення', confirmed: 'підтверджено', rejected: 'відхилено' };
+  const steps = card.head.content.steps;
+  const decide = (r, decision) => {
+    const note = el('input', { type: 'text', placeholder: 'Примітка до рішення (необов’язково)' });
+    openDialog(el('h2', {}, (decision === 'confirm' ? 'Підтвердити' : 'Відхилити') + ' пропозицію ' + r.id),
+      decision === 'confirm' ? el('p', {}, 'Вимога стане встановленим фактом опису: схема для цього процесу не буде побудована (непідтримувана нотація), але погоджений AS-IS не змінюється. Буде створено нову версію; чинне погодження (якщо є) скасується.') : el('p', {}, 'Пропозицію буде позначено відхиленою; нова версія, чинне погодження (якщо є) скасується.'),
+      note, el('div', { class: 'actions' },
+        el('button', { class: 'primary', onclick: async () => { dlg.close(); const x = await act(() => api('POST', `/api/cases/${card.case.id}/notation/decide`, { base_version_id: card.head.id, requirement_id: r.id, decision, note: note.value }), 'Рішення збережено як нова версія'); if (x) await refresh(); } }, 'Підтвердити'),
+        el('button', { onclick: () => dlg.close() }, 'Скасувати')));
+  };
+  const kind = el('select', { name: 'kind' }, Object.entries(card.notation_kinds).map(([k, l]) => el('option', { value: k }, l)));
+  const step = el('select', { name: 'step' }, steps.map((x) => el('option', { value: x.id }, `${x.id} — ${x.action}`)));
+  const detail = el('input', { type: 'text', name: 'detail', placeholder: 'Що саме в описі потребує цієї нотації (обов’язково)' });
+  const src = el('select', { name: 'src' }, el('option', { value: '' }, '— без джерела —'), card.sources.filter((x) => x.read_status === 'ok').map((x) => el('option', { value: x.id }, x.title)));
+  const quote = el('input', { type: 'text', name: 'quote', placeholder: 'Цитата з джерела (необов’язково)' });
+  const add = el('form', { onsubmit: async (ev) => { ev.preventDefault();
+      const x = await act(() => api('POST', `/api/cases/${card.case.id}/notation/add`, { base_version_id: card.head.id, kind: kind.value, step_id: step.value, detail: detail.value, evidence_source_id: src.value, evidence_quote: quote.value }), 'Вимогу додано як нову версію');
+      if (x) await refresh(); } },
+    el('h4', {}, 'Додати вимогу вручну'), kind, step, detail, src, quote,
+    el('div', { class: 'actions' }, el('button', { type: 'submit', disabled: !steps.length }, 'Додати вимогу (нова версія)')));
+  return el('div', { 'data-block': 'notation' },
+    el('h3', {}, 'Вимоги до нотації'),
+    el('p', { class: 'hint' }, 'Те, що проста схема процесу (v1) не вміє показати: паралельні гілки, таймер, повідомлення між учасниками, підпроцес тощо. Порожній список означає «не зазначено», а не «особливостей немає». Вимогу ставите ви (одразу підтверджена) або пропонує агент (з цитатою) — тоді підтверджуєте чи відхиляєте ви. Підтверджена вимога означає, що схему не буде побудовано, а погоджений опис лишається чинним.'),
+    rs.length ? rs.map((r) => el('div', { class: 'claim' + (r.status === 'proposed' ? ' unknown' : '') },
+      el('div', {}, el('span', { class: 'chip' }, r.id + ' · ' + ST[r.status] + ' · ' + (r.origin === 'agent' ? 'запропонував агент' : 'поставила аналітикиня')), ' ', r.kind_label, ` · крок ${r.step_id}`, r.step_action ? ` («${r.step_action}»)` : '', r.step_exists ? '' : el('strong', { style: 'color:var(--danger)' }, ' · ⚠ кроку немає в описі')),
+      el('div', { class: 'small' }, r.detail),
+      r.evidence_quote ? el('div', { class: 'small' }, 'Доказ: «' + r.evidence_quote + '» — ', r.evidence_title || r.evidence_source_id, r.evidence_check === 'quote_found' ? ' · цитату знайдено' : ' · ⚠ цитату НЕ знайдено', ' · ', el('button', { class: 'link', onclick: () => showSource(r.evidence_source_id, r.evidence_quote) }, 'Показати у джерелі')) : null,
+      r.decision_note ? el('div', { class: 'small' }, `Рішення (${r.decided_by}): ${r.decision_note}`) : (r.decided_by ? el('div', { class: 'small' }, `Рішення: ${r.decided_by}`) : null),
+      el('div', { class: 'actions' },
+        r.status === 'proposed' ? el('button', { class: 'primary', onclick: () => decide(r, 'confirm') }, 'Підтвердити…') : null,
+        r.status === 'proposed' ? el('button', { onclick: () => decide(r, 'reject') }, 'Відхилити…') : null,
+        el('button', { onclick: async () => { if (!confirm('Прибрати вимогу ' + r.id + '? Буде створено нову версію; попередня лишиться в історії.')) return; const x = await act(() => api('POST', `/api/cases/${card.case.id}/notation/remove`, { base_version_id: card.head.id, requirement_id: r.id }), 'Вимогу прибрано (нова версія)'); if (x) await refresh(); } }, 'Прибрати…')))) : el('p', { class: 'notset' }, 'Не зазначено.'),
+    add);
+}
 
 function proposalsView(card) {
   const ps = card.step_proposals || [];

@@ -122,6 +122,35 @@ export function verifyAgentOutput(raw: unknown, ctx: VerifyContext): VerifyResul
   });
   for (const [sid, n] of pendingPerStep) if (n > 1) v.push({ code: 'DUPLICATE_PROPOSAL', path: 'step_proposals', message: `для кроку ${sid} кілька відкритих пропозицій` });
 
+  // Вимоги до нотації (D61): агент лише ПРОПОНУЄ — з поясненням, джерелом і дослівною цитатою; підтверджує людина.
+  // Наявні вимоги (особливо підтверджені) агент не змінює й не видаляє — це відновить програма (protectAnalystEdits).
+  const baseReq = new Map((base.notation_requirements ?? []).map((r) => [r.id, canonical(r)]));
+  const baseReqList = base.notation_requirements ?? [];
+  const outReq = out.notation_requirements ?? [];
+  for (const d of new Set(dupes(outReq.map((r) => r.id)))) v.push({ code: 'DUPLICATE_ID', path: 'notation_requirements', message: `ID «${d}» повторюється` });
+  const seenNew = new Set<string>();
+  outReq.forEach((r, i) => {
+    if (baseReq.has(r.id)) return; // наявна: якщо змінена чи видалена — програма відновить і запише конфлікт
+    const path = `notation_requirements[${i}] (${r.id})`;
+    if (r.status !== 'proposed' || r.decided_by || r.decision_note) v.push({ code: 'AGENT_CANNOT_DECIDE', path, message: 'агент лише пропонує вимогу (status «proposed», decided_by і decision_note порожні); підтверджує людина' });
+    if (!outStepIds.has(r.step_id)) v.push({ code: 'NOTATION_BAD_STEP', path, message: `крок «${r.step_id}» відсутній у steps` });
+    if (!r.detail.trim()) v.push({ code: 'NOTATION_NO_DETAIL', path, message: 'не пояснено, що саме в описі потребує цієї нотації' });
+    if (!r.evidence_source_id || !r.evidence_quote.trim()) v.push({ code: 'NOTATION_NO_EVIDENCE', path, message: 'потрібні джерело й дослівна цитата-доказ' });
+    else {
+      checkRef(r.evidence_source_id, path + '.evidence_source_id');
+      if (provided.has(r.evidence_source_id) && findQuote(provided.get(r.evidence_source_id)!, r.evidence_quote).kind === 'not_found') {
+        v.push({ code: 'QUOTE_NOT_FOUND', path, message: `цитати-доказу немає в джерелі ${r.evidence_source_id}: «${r.evidence_quote.slice(0, 80)}»` });
+      }
+    }
+    const key = `${r.step_id}|${r.kind}`;
+    const active = baseReqList.find((b) => b.status !== 'rejected' && b.step_id === r.step_id && b.kind === r.kind);
+    if (active || seenNew.has(key)) v.push({ code: 'DUPLICATE_REQUIREMENT', path, message: `для кроку ${r.step_id} вимога цього виду вже є${active ? ` (${active.id})` : ''}` });
+    seenNew.add(key);
+    const rejected = baseReqList.find((b) => b.status === 'rejected' && b.step_id === r.step_id && b.kind === r.kind && b.evidence_quote.trim() === r.evidence_quote.trim());
+    if (rejected) v.push({ code: 'REPEAT_WITHOUT_NEW_EVIDENCE', path, message: `вимогу ${rejected.id} цього виду для кроку ${r.step_id} уже відхилено; без нового доказу її не повторюють` });
+  });
+  if ((out.process_name ?? '') !== (base.process_name ?? '')) warnings.push('Агент змінив назву процесу: її задає лише аналітикиня, програма відновить попереднє значення.');
+
   const claimIds = new Set(out.claims.map((c) => c.id));
   const baseHyp = new Map(base.hypotheses.map((h) => [h.id, h]));
   out.hypotheses.forEach((h, i) => {
@@ -156,9 +185,11 @@ export function verifyAgentOutput(raw: unknown, ctx: VerifyContext): VerifyResul
   const baseQ = new Set(base.questions.map((q) => q.id));
   for (const q of out.questions) if (!baseQ.has(q.id)) q.origin = 'agent';
   for (const h of out.hypotheses) if (!baseHyp.has(h.id)) h.author = 'agent';
+  for (const r of out.notation_requirements ?? []) if (!baseReq.has(r.id)) r.origin = 'agent';
 
   const used = referencedSourceIds(out);
   for (const p of outProps) if (p.evidence_source_id) used.add(p.evidence_source_id);
+  for (const r of outReq) if (r.evidence_source_id) used.add(r.evidence_source_id);
   for (const s of ctx.sources) {
     if (!used.has(s.id)) warnings.push(`Джерело ${s.id} передано, але жодне твердження, крок чи питання на нього не посилається.`);
   }

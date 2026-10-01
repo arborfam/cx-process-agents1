@@ -91,6 +91,41 @@ const StepProposal = z
   })
   .strict();
 
+/** Види нотації, яких генератор BPMN v1 не підтримує (D21). Вимога, підтверджена людиною, веде до `unsupported` без моделі. */
+export const NotationKind = z.enum(['parallel_branches', 'timer', 'message', 'subprocess', 'boundary_event', 'data_object', 'multiple_entry', 'other']);
+export type NotationKindT = z.infer<typeof NotationKind>;
+
+export const NOTATION_KIND_LABEL: Record<NotationKindT, string> = {
+  parallel_branches: 'паралельні гілки',
+  timer: 'таймер / очікування за часом',
+  message: 'повідомлення між учасниками',
+  subprocess: 'підпроцес',
+  boundary_event: 'гранична подія',
+  data_object: 'артефакт даних',
+  multiple_entry: 'кілька точок входу',
+  other: 'інша непідтримувана нотація',
+};
+
+/**
+ * Явна вимога до нотації (D61): крок + вид + пояснення. Входить у зміст версії, а отже в хеш і в людське погодження.
+ * Постановляє людина (origin «analyst», одразу «confirmed»); агент 1 лише ПРОПОНУЄ (origin «agent», status «proposed»,
+ * обов'язкові джерело й дослівна цитата); підтверджує чи відхиляє людина. Непідтверджена пропозиція не є встановленим фактом.
+ */
+const NotationRequirement = z
+  .object({
+    id: z.string().min(1).max(40),
+    kind: NotationKind,
+    step_id: z.string(),
+    detail: z.string(),
+    origin: z.enum(['analyst', 'agent']),
+    status: z.enum(['proposed', 'confirmed', 'rejected']),
+    evidence_source_id: z.string(),
+    evidence_quote: z.string(),
+    decided_by: z.string(),
+    decision_note: z.string(),
+  })
+  .strict();
+
 const Conflict = z.object({ key: z.string(), kept: z.string(), proposed: z.string(), note: z.string() }).strict();
 
 export const ContentSchema = z
@@ -109,6 +144,17 @@ export const ContentSchema = z
     conflicts: z.array(Conflict),
     /** Необов’язкове: старі версії його не мають. Рішення за пропозиціями приймає лише аналітикиня. */
     step_proposals: z.array(StepProposal).optional(),
+    /**
+     * Назва процесу (D62, варіант Б): входить у зміст версії, хеш і погодження; її зміна — нова версія.
+     * У v1 це ж напис на єдиному пулі схеми. Немає поля чи порожнє = «не зазначено»; назва кейсу сюди ніколи не підставляється.
+     * Необов’язкове: старі версії його не мають і не переписуються.
+     */
+    process_name: z.string().optional(),
+    /**
+     * Явні вимоги до нотації (D61). Немає поля чи порожній список = «не зазначено», а НЕ «особливостей немає»:
+     * смислова перевірка агента 2 від цього не скасовується. Необов’язкове: старі версії його не мають.
+     */
+    notation_requirements: z.array(NotationRequirement).optional(),
   })
   .strict();
 
@@ -120,6 +166,7 @@ export type Step = z.infer<typeof Step>;
 export type Problem = z.infer<typeof Problem>;
 export type Question = z.infer<typeof Question>;
 export type StepProposalT = z.infer<typeof StepProposal>;
+export type NotationRequirementT = z.infer<typeof NotationRequirement>;
 
 export function emptyContent(): Content {
   return {

@@ -7,6 +7,7 @@ export function mapSourceIds(content: Content, f: (id: string) => string): Conte
   for (const cl of c.claims) if (cl.source_id) cl.source_id = f(cl.source_id);
   for (const q of c.questions) if (q.closed_by_source_id) q.closed_by_source_id = f(q.closed_by_source_id);
   for (const p of c.step_proposals ?? []) if (p.evidence_source_id) p.evidence_source_id = f(p.evidence_source_id);
+  for (const r of c.notation_requirements ?? []) if (r.evidence_source_id) r.evidence_source_id = f(r.evidence_source_id);
   return c;
 }
 

@@ -2,24 +2,16 @@
  * Типи зрізу 3a: вхідний пакет, знахідки, результат генерації.
  * Усе, що створює й перевіряє схему, — звичайний код. Моделі тут немає (тест це перевіряє).
  */
-import type { Content } from '../schema.ts';
+import type { Content, NotationKindT } from '../schema.ts';
 
 /** Походження пакета. `test-fixture` — підготовлений вручну синтетичний пакет, створений без AI. */
 export type PackageOrigin = 'product' | 'test-fixture';
 
 /**
- * Позначка «для цього кроку потрібна нотація, якої генератор не підтримує» (D21).
- * У змісті версії AS-IS таких полів поки немає: у 3a їх задають лише тестові пакети вручну.
- * Автоматично їх виявляє лише агент 2 (зріз 3b) — наближено, без гарантії.
+ * Вид нотації, якої генератор v1 не підтримує (D21). Джерело правди — підтверджені вимоги `content.notation_requirements`
+ * (D61): вони у змісті версії, під хешем і погодженням; окремого входу «позначки» в генератора немає.
  */
-export type UnsupportedKind =
-  | 'parallel_branches' | 'timer' | 'message' | 'subprocess' | 'boundary_event' | 'data_object' | 'multiple_entry' | 'other';
-
-export interface UnsupportedMark {
-  step_id: string;
-  kind: UnsupportedKind;
-  detail: string;
-}
+export type UnsupportedKind = NotationKindT;
 
 /** Погоджений пакет — єдиний вхід генератора. Усе інше береться з нього дослівно. */
 export interface ApprovedPackage {
@@ -27,12 +19,16 @@ export interface ApprovedPackage {
   versionId: string;
   /** SHA-256 змісту версії (хеш погодженої версії). */
   contentHash: string;
-  /** Назва пулу (назва кейсу). Не частина змісту AS-IS; береться з запису кейсу й не входить у хеш версії. */
-  poolName: string;
+  /** Зміст версії. Назва пулу — `content.process_name` (D62), вимоги до нотації — `content.notation_requirements` (D61). */
   content: Content;
   origin: PackageOrigin;
-  unsupportedMarks?: UnsupportedMark[];
 }
+
+/**
+ * Напис на єдиному пулі (v1: пул = процес) — лише назва процесу зі змісту версії. Назви кейсу тут немає й бути не може.
+ * Порожній рядок означає «не зазначено» (генератор тоді відмовляє, див. PROCESS_NAME_MISSING).
+ */
+export const poolNameOf = (p: Pick<ApprovedPackage, 'content'>): string => p.content.process_name ?? '';
 
 /** Клас знахідки: що саме і чому. */
 export type FindingClass =

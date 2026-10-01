@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { all, one, run, tx, type DB } from './db.ts';
 import { DomainError } from './errors.ts';
 import { canonical, sha256 } from './hash.ts';
-import { CLAIM_TYPE_LABEL, ContentSchema, UNKNOWN, emptyContent, parseContent, type Content, type Question, type Step } from './schema.ts';
+import { CLAIM_TYPE_LABEL, ContentSchema, NOTATION_KIND_LABEL, NotationKind, UNKNOWN, emptyContent, parseContent, type Content, type NotationRequirementT, type Question, type Step } from './schema.ts';
 import { findQuote } from './ai/quote.ts';
 import { parseProblems, parseRoles, parseSteps, problemsToText, rolesToText, stepsToText } from './text-format.ts';
 
@@ -231,6 +231,9 @@ function contentKeys(c: Content): Map<string, string> {
   for (const k of ['trigger', 'input', 'completion', 'result'] as const) m.set(`boundaries.${k}`, c.boundaries[k]);
   m.set('roles', canonical(c.roles));
   m.set('entry_step_id', c.entry_step_id ?? '');
+  // «немає поля» і «порожньо» — одне й те саме («не зазначено»): старі версії без цих полів не дають хибних відмінностей
+  m.set('process_name', c.process_name ?? '');
+  m.set('notation_requirements', canonical(c.notation_requirements ?? []));
   for (const s of c.steps) m.set(`step:${s.id}`, canonical(s));
   for (const p of c.problems) m.set(`problem:${p.id}`, canonical(p));
   return m;
@@ -324,6 +327,33 @@ export function protectAnalystEdits(
     }
     for (const o of outP) if (!baseP.some((b) => b.id === o.id)) merged.push(o);
     if (merged.length) result.step_proposals = merged; else delete result.step_proposals;
+  }
+  // Назву процесу задає лише людина (D62): будь-яку зміну агентом відкидаємо, незалежно від «власності».
+  if ((out.process_name ?? '') !== (base.process_name ?? '')) {
+    conflicts.push({ key: 'process_name', kept: pretty(base.process_name), proposed: pretty(out.process_name),
+      note: 'Назву процесу задає лише аналітикиня (вона входить у погодження). Збережено її варіант.' });
+    if (base.process_name === undefined) delete result.process_name; else result.process_name = base.process_name;
+  }
+  // Вимоги до нотації (D61): наявні (особливо підтверджені людиною) агент не змінює й не видаляє; нові — лише «proposed» від агента.
+  {
+    const baseN = base.notation_requirements ?? [];
+    const outN = result.notation_requirements ?? [];
+    const label = (r: NotationRequirementT): string => `${NOTATION_KIND_LABEL[r.kind]} · крок ${r.step_id} (${r.status})`;
+    const merged = baseN.map((b) => structuredClone(b));
+    for (const b of baseN) {
+      const o = outN.find((x) => x.id === b.id);
+      if (!o) conflicts.push({ key: `notation:${b.id}`, kept: label(b), proposed: '(видалено)', note: 'Агент не може прибрати вимогу до нотації.' });
+      else if (canonical(o) !== canonical(b)) conflicts.push({ key: `notation:${b.id}`, kept: label(b), proposed: label(o), note: 'Агент змінив наявну вимогу до нотації; збережено попередній стан. Рішення приймає аналітикиня.' });
+    }
+    for (const o of outN) {
+      if (baseN.some((b) => b.id === o.id)) continue;
+      const fixed: NotationRequirementT = { ...o, origin: 'agent', status: 'proposed', decided_by: '', decision_note: '' };
+      if (o.origin !== 'agent' || o.status !== 'proposed' || o.decided_by || o.decision_note) {
+        conflicts.push({ key: `notation:${o.id}`, kept: `${label(fixed)}`, proposed: label(o), note: 'Агент не підтверджує вимог до нотації: пропозицію збережено як «proposed».' });
+      }
+      merged.push(fixed);
+    }
+    if (merged.length) result.notation_requirements = merged; else delete result.notation_requirements;
   }
   // Гіпотези аналітика: текст і спосіб перевірки агент не переписує (статус і докази може оновлювати).
   for (const bh of base.hypotheses) {
@@ -446,6 +476,8 @@ export interface EditFields {
   problems_text?: string;
   /** Явний початковий крок; null або порожній рядок — зняти. Ніколи не підставляється автоматично. */
   entry_step_id?: string | null;
+  /** Назва процесу (D62): входить у зміст, хеш і погодження; зміна створює нову версію. Ніколи не підставляється з назви кейсу. */
+  process_name?: string;
 }
 
 function assertBase(db: DB, caseId: string, baseVersionId: string): VersionRow {
@@ -500,6 +532,13 @@ export function saveAnalystVersion(
       }
       if (e) next.entry_step_id = e;
       else if (prev.entry_step_id !== undefined) next.entry_step_id = null;   // явне зняття; для старих записів без поля нічого не дописуємо
+    }
+
+    if (f.process_name !== undefined) {
+      const name = f.process_name.trim();
+      if (name.length > 300) throw new DomainError('VALIDATION', 'Назва процесу задовга (понад 300 символів)', 400);
+      if (name) next.process_name = name;
+      else if (prev.process_name !== undefined) next.process_name = '';   // явне зняття; для старих записів без поля нічого не дописуємо
     }
 
     let covered: string[] = JSON.parse(head.covered_json) as string[];
@@ -648,6 +687,107 @@ export function decideStepProposal(
   });
 }
 
+// ───────────────────────── вимоги до нотації (D61) ─────────────────────────
+
+const REQ_ACTIVE = (r: NotationRequirementT): boolean => r.status === 'proposed' || r.status === 'confirmed';
+
+/**
+ * Людина ставить явну вимогу до нотації (крок + вид + пояснення; джерело й цитата — необов'язково). Вимога одразу «confirmed»:
+ * її поставила людина. Створює НОВУ версію (зміст змінюється → хеш, прийняття й погодження — заново).
+ */
+export function addNotationRequirement(
+  db: DB, actor: Actor, caseId: string,
+  input: { baseVersionId: string; kind: string; stepId: string; detail: string; evidenceSourceId?: string; evidenceQuote?: string },
+): VersionRow {
+  requireHuman(actor, 'постановка вимоги до нотації');
+  const kind = NotationKind.safeParse(input.kind);
+  if (!kind.success) throw new DomainError('VALIDATION', `Невідомий вид нотації «${input.kind}»`, 400);
+  const detail = (input.detail ?? '').trim();
+  if (!detail) throw new DomainError('VALIDATION', 'Опишіть, що саме в описі процесу потребує цієї нотації', 400);
+  const srcId = (input.evidenceSourceId ?? '').trim();
+  const quote = (input.evidenceQuote ?? '').trim();
+  if (quote && !srcId) throw new DomainError('VALIDATION', 'Цитата без джерела: оберіть джерело', 400);
+  if (srcId && !listSources(db, caseId).some((x) => x.id === srcId)) throw new DomainError('VALIDATION', 'Джерело не належить цьому кейсу', 400);
+  return tx(db, () => {
+    const head = assertBase(db, caseId, input.baseVersionId);
+    const c = versionContent(head);
+    if (!c.steps.some((x) => x.id === input.stepId)) throw new DomainError('VALIDATION', `Кроку «${input.stepId}» немає в описі процесу`, 400);
+    const list = c.notation_requirements ?? [];
+    const dup = list.find((r) => REQ_ACTIVE(r) && r.step_id === input.stepId && r.kind === kind.data);
+    if (dup) {
+      throw new DomainError('DUPLICATE_REQUIREMENT', dup.status === 'proposed'
+        ? `Для кроку ${input.stepId} уже є пропозиція ${dup.id} цього виду: підтвердьте її замість нової вимоги.`
+        : `Для кроку ${input.stepId} уже є підтверджена вимога ${dup.id} цього виду.`, 409);
+    }
+    const req: NotationRequirementT = {
+      id: nextId('N', list.map((r) => r.id)), kind: kind.data, step_id: input.stepId, detail, origin: 'analyst', status: 'confirmed',
+      evidence_source_id: srcId, evidence_quote: quote, decided_by: actor.name, decision_note: '',
+    };
+    c.notation_requirements = [...list, req];
+    return commitAnalystVersion(db, actor, caseId, head, c, JSON.parse(head.covered_json) as string[],
+      `Додано вимогу до нотації ${req.id}: ${NOTATION_KIND_LABEL[req.kind]} (крок ${req.step_id})`);
+  });
+}
+
+/**
+ * Рішення людини щодо пропозиції агента: підтвердити (стає встановленим фактом опису) чи відхилити. Нова версія.
+ * Агент рішень не приймає: ні цією функцією (лише людина), ні змінами змісту (перевірка відповіді й захист правок).
+ */
+export function decideNotationRequirement(
+  db: DB, actor: Actor, caseId: string,
+  input: { baseVersionId: string; requirementId: string; decision: 'confirm' | 'reject'; note?: string },
+): VersionRow {
+  requireHuman(actor, 'рішення щодо вимоги до нотації');
+  if (input.decision !== 'confirm' && input.decision !== 'reject') throw new DomainError('VALIDATION', 'decision має бути confirm або reject', 400);
+  return tx(db, () => {
+    const head = assertBase(db, caseId, input.baseVersionId);
+    const c = versionContent(head);
+    const r = (c.notation_requirements ?? []).find((x) => x.id === input.requirementId);
+    if (!r) throw new DomainError('NOT_FOUND', 'Вимогу не знайдено', 404);
+    if (r.status !== 'proposed') throw new DomainError('REQUIREMENT_NOT_PENDING', 'Рішення за цією пропозицією вже прийнято', 409);
+    if (input.decision === 'confirm' && !c.steps.some((x) => x.id === r.step_id)) throw new DomainError('STEP_MISSING', `Кроку ${r.step_id} у поточній версії вже немає`, 409);
+    r.status = input.decision === 'confirm' ? 'confirmed' : 'rejected';
+    r.decided_by = actor.name;
+    r.decision_note = (input.note ?? '').trim();
+    return commitAnalystVersion(db, actor, caseId, head, c, JSON.parse(head.covered_json) as string[],
+      `Вимогу до нотації ${r.id} (${NOTATION_KIND_LABEL[r.kind]}, крок ${r.step_id}) ${input.decision === 'confirm' ? 'підтверджено' : 'відхилено'}`);
+  });
+}
+
+/** Людина прибирає вимогу (наприклад, після свідомого спрощення опису). Нова версія; попередня з вимогою лишається в історії. */
+export function removeNotationRequirement(
+  db: DB, actor: Actor, caseId: string, input: { baseVersionId: string; requirementId: string },
+): VersionRow {
+  requireHuman(actor, 'видалення вимоги до нотації');
+  return tx(db, () => {
+    const head = assertBase(db, caseId, input.baseVersionId);
+    const c = versionContent(head);
+    const list = c.notation_requirements ?? [];
+    const r = list.find((x) => x.id === input.requirementId);
+    if (!r) throw new DomainError('NOT_FOUND', 'Вимогу не знайдено', 404);
+    c.notation_requirements = list.filter((x) => x.id !== r.id);
+    if (c.notation_requirements.length === 0) delete c.notation_requirements;
+    return commitAnalystVersion(db, actor, caseId, head, c, JSON.parse(head.covered_json) as string[],
+      `Прибрано вимогу до нотації ${r.id} (${NOTATION_KIND_LABEL[r.kind]}, крок ${r.step_id})`);
+  });
+}
+
+/** Блокери за вимогами до нотації й назвою процесу: спільні для передачі на погодження і для серверного дозволу BPMN. */
+export function notationIssues(c: Content): Blocker[] {
+  const out: Blocker[] = [];
+  for (const r of c.notation_requirements ?? []) {
+    if (r.status === 'proposed') {
+      out.push({ code: 'PENDING_NOTATION_PROPOSAL', severity: 'critical', ref: r.id,
+        message: `Пропозиція агента ${r.id}: потрібна нотація «${NOTATION_KIND_LABEL[r.kind]}» (крок ${r.step_id}) — потрібне рішення аналітикині. Непідтверджена пропозиція не є встановленим фактом, але й не може лишатися без відповіді.` });
+    }
+    if (r.status !== 'rejected' && !c.steps.some((x) => x.id === r.step_id)) {
+      out.push({ code: 'NOTATION_BAD_STEP', severity: 'critical', ref: r.id,
+        message: `Вимога до нотації ${r.id} стосується кроку «${r.step_id}», якого немає в описі (його могли вилучити чи перейменувати). Приберіть вимогу або виправте опис.` });
+    }
+  }
+  return out;
+}
+
 // ───────────────────────── перевірки перед погодженням ─────────────────────────
 
 export function submissionBlockers(db: DB, caseId: string): Blocker[] {
@@ -675,6 +815,11 @@ export function submissionBlockers(db: DB, caseId: string): Blocker[] {
     if (p.status !== 'proposed') continue;
     out.push({ code: 'PENDING_STEP_PROPOSAL', severity: 'critical', ref: p.id,
       message: `Пропозиція агента ${p.id}: ${p.action === 'remove' ? 'вилучити' : 'замінити'} крок ${p.step_id}${p.action === 'replace' ? ` кроком ${p.replacement_step_id}` : ''} — потрібне рішення аналітикині (причина: ${p.reason}).` });
+  }
+  out.push(...notationIssues(c));
+  if (!(c.process_name ?? '').trim()) {
+    out.push({ code: 'PROCESS_NAME_MISSING', severity: 'warning',
+      message: 'Назву процесу не зазначено. Вона потрібна перед побудовою схеми (напис на пулі); назву кейсу в схему не підставляємо. Вкажіть її на вкладці «Редагувати».' });
   }
   for (const q of c.questions) {
     if (q.status === 'open' && q.critical) {
@@ -980,6 +1125,10 @@ export function bpmnGuard(db: DB, caseId: string): GuardResult {
     for (const q of open) fail('CRITICAL_QUESTION', `У погодженій версії є відкрите критичне питання ${q.id}.`);
     for (const issue of transitionIssues(versionContent(approved))) fail(issue.code, issue.message);
     for (const issue of flowIssues(versionContent(approved))) fail(issue.code, issue.message);
+    for (const issue of notationIssues(versionContent(approved))) fail(issue.code, issue.message);
+    if (!(versionContent(approved).process_name ?? '').trim()) {
+      fail('PROCESS_NAME_MISSING', 'У погодженій версії немає назви процесу: вона потрібна для напису на пулі, а підставляти назву кейсу не можна. Вкажіть назву — буде створено нову версію, її треба прийняти й погодити.');
+    }
   }
   const active = one<{ id: string }>(db, `SELECT id FROM run WHERE case_id = ? AND agent = 'bpmn' AND technical_state IN ('queued','running')`, caseId);
   if (active) fail('RUN_ACTIVE', 'Для цього кейсу вже є активний запуск BPMN.');
@@ -1013,7 +1162,7 @@ export function requestBpmnStart(db: DB, actor: Actor, caseId: string, mode: str
 // ───────────────────────── картка для UI ─────────────────────────
 
 export interface ChangeItem {
-  label: 'Джерело' | 'Питання' | 'Початок' | 'Крок' | 'Межі' | 'Суть' | 'Контекст' | 'Ролі' | 'Проблема' | 'Гіпотеза' | 'Твердження' | 'Конфлікт' | 'Пропозиція';
+  label: 'Джерело' | 'Питання' | 'Початок' | 'Крок' | 'Межі' | 'Суть' | 'Контекст' | 'Ролі' | 'Проблема' | 'Гіпотеза' | 'Твердження' | 'Конфлікт' | 'Пропозиція' | 'Назва процесу' | 'Нотація';
   text: string;
 }
 
@@ -1111,6 +1260,21 @@ export function diffVersions(
     else if (o.status !== p.status) out.push({ label: 'Пропозиція', text: `Пропозицію ${p.id} (${what}) ${p.status === 'accepted' ? 'прийнято' : 'відхилено'}${p.decision_note ? `: «${clip(p.decision_note, 60)}»` : ''}` });
   }
 
+  // назва процесу й вимоги до нотації (D61, D62)
+  if ((prev.process_name ?? '') !== (cur.process_name ?? '')) {
+    out.push({ label: 'Назва процесу', text: `було «${prev.process_name || 'не зазначено'}», стало «${cur.process_name || 'не зазначено'}»` });
+  }
+  const preq = new Map((prev.notation_requirements ?? []).map((x) => [x.id, x]));
+  for (const r of cur.notation_requirements ?? []) {
+    const o = preq.get(r.id);
+    const what = `${NOTATION_KIND_LABEL[r.kind]} (крок ${r.step_id})`;
+    if (!o) out.push({ label: 'Нотація', text: r.origin === 'agent' ? `Агент пропонує вимогу ${r.id}: ${what} — «${clip(r.detail, 80)}» (потрібне рішення аналітикині)` : `Додано вимогу ${r.id}: ${what} — «${clip(r.detail, 80)}»` });
+    else if (o.status !== r.status) out.push({ label: 'Нотація', text: `Вимогу ${r.id} (${what}) ${r.status === 'confirmed' ? 'підтверджено' : 'відхилено'}${r.decision_note ? `: «${clip(r.decision_note, 60)}»` : ''}` });
+  }
+  for (const o of prev.notation_requirements ?? []) {
+    if (!(cur.notation_requirements ?? []).some((r) => r.id === o.id)) out.push({ label: 'Нотація', text: `Прибрано вимогу ${o.id}: ${NOTATION_KIND_LABEL[o.kind]} (крок ${o.step_id})` });
+  }
+
   // 3) межі, суть, контекст, ролі
   const BL = { trigger: 'тригер', input: 'вхід', completion: 'фактичне завершення', result: 'результат' } as const;
   for (const k of ['trigger', 'input', 'completion', 'result'] as const) {
@@ -1157,7 +1321,7 @@ export function diffVersions(
 
 // ───────────────── огляд стану чернетки (окремо від змістових прогалин) ─────────────────
 
-const GAP_CODES = new Set(['PENDING_STEP_PROPOSAL', 'CRITICAL_QUESTION', 'UNRESOLVED_TRANSITION', 'UNKNOWN_WITHOUT_QUESTION', 'UNKNOWN_QUESTION_CLOSED', 'CONTRADICTION', 'QUESTION_LINK_BROKEN', 'ENTRY_MISSING', 'ENTRY_BAD_REF', 'STEP_UNREACHABLE', 'STEP_NO_EXIT']);
+const GAP_CODES = new Set(['PENDING_STEP_PROPOSAL', 'PENDING_NOTATION_PROPOSAL', 'NOTATION_BAD_STEP', 'CRITICAL_QUESTION', 'UNRESOLVED_TRANSITION', 'UNKNOWN_WITHOUT_QUESTION', 'UNKNOWN_QUESTION_CLOSED', 'CONTRADICTION', 'QUESTION_LINK_BROKEN', 'ENTRY_MISSING', 'ENTRY_BAD_REF', 'STEP_UNREACHABLE', 'STEP_NO_EXIT']);
 const STRUCTURE_CODES = new Set(['BOUNDARY_MISSING', 'NO_ROLES', 'NO_STEPS', 'STEP_INCOMPLETE', 'STEP_UNKNOWN_ROLE', 'STEP_NO_NEXT', 'STEP_BAD_NEXT', 'STEP_NO_CONDITION', 'PROBLEM_NO_IMPACT']);
 
 /** Критичні змістові прогалини: чого про процес ще не з’ясовано або де опис суперечить сам собі. */
@@ -1247,6 +1411,8 @@ export function draftReview(
   const unreadWarn = by((b) => b.code === 'UNREAD_SOURCE' && b.severity === 'warning');
   const uncovered = by((b) => b.code === 'UNCOVERED_SOURCE');
   const conflicts = by((b) => b.code === 'CONFLICTS_PRESENT');
+  const noName = by((b) => b.code === 'PROCESS_NAME_MISSING');
+  const pendingNotation = by((b) => b.code === 'PENDING_NOTATION_PROPOSAL' || b.code === 'NOTATION_BAD_STEP');
   const checks: ReviewCheck[] = [
     mk('accepted', 'Робочу версію прийнято аналітиком', opts.accepted ? 'ok' : 'fail', opts.accepted ? 'Так (це не погодження AS-IS)' : 'Ні — прийняття ще не відбулося'),
     mk('sources', 'Усі прочитані джерела враховано у версії', uncovered.length ? 'fail' : 'ok', `${opts.covered} з ${opts.readable}${uncovered.length ? ' — не враховано: ' + uncovered.map((b) => b.message.replace(/^Джерело /, '').replace(/ не враховано в цій версії\.$/, '')).join(', ') : ''}`),
@@ -1256,6 +1422,8 @@ export function draftReview(
       structure.length ? structure.slice(0, 3).map((b) => b.message).join(' · ') + (structure.length > 3 ? ` · …ще ${structure.length - 3}` : '') : 'Пропусків не виявлено'),
     mk('gaps', 'Критичних прогалин немає', gaps.length ? 'fail' : 'ok', gaps.length ? `Відкрито прогалин: ${gaps.length} (див. блок «Критичні прогалини»)` : 'Немає'),
     mk('integrity', 'Цілісність версії (хеш збігається зі змістом)', opts.integrityOk ? 'ok' : 'fail', opts.integrityOk ? 'Так' : 'Порушена: не використовуйте цю версію'),
+    mk('process_name', 'Назву процесу зазначено (потрібна перед побудовою схеми)', noName.length ? 'warn' : 'ok', noName.length ? 'Не зазначено — не блокує погодження, але схему без назви не побудувати' : 'Так'),
+    mk('notation', 'Пропозиції агента щодо нотації мають рішення', pendingNotation.length ? 'fail' : 'ok', pendingNotation.length ? pendingNotation.map((b) => b.message).slice(0, 2).join(' · ') : 'Немає відкритих'),
     mk('conflicts', 'Конфлікти між правками аналітика й агента', conflicts.length ? 'warn' : 'ok', conflicts.length ? conflicts[0]!.message : 'Немає'),
   ];
   const ready = checks.every((c) => c.status !== 'fail');
@@ -1293,6 +1461,11 @@ function computeNextAction(state: CaseState, blockers: Blocker[], accepted: bool
     if (bpmn.reasons.some((r) => r.code === 'ENTRY_MISSING' || r.code === 'ENTRY_BAD_REF')) {
       return { key: 'clarify_entry', enabled: true, label: 'Уточнити початковий крок',
         hint: 'У погодженому описі немає (або хибний) початковий крок. Погоджений пакет не змінюється: ви задаєте крок вручну, створюється нова версія, і для неї потрібне нове погодження.',
+        disabledReason: bpmn.reasons.map((r) => r.message).join(' ') };
+    }
+    if (bpmn.reasons.some((r) => r.code === 'PROCESS_NAME_MISSING') && !bpmn.reasons.some((r) => FLOW_CODES.has(r.code) || r.code.startsWith('UNKNOWN') || r.code.startsWith('ENTRY'))) {
+      return { key: 'clarify_process_name', enabled: true, label: 'Уточнити назву процесу',
+        hint: 'У погодженому описі немає назви процесу. Погоджений пакет не змінюється: ви вказуєте назву вручну, створюється нова версія, і для неї потрібне нове погодження. Назву кейсу в схему не підставляємо.',
         disabledReason: bpmn.reasons.map((r) => r.message).join(' ') };
     }
     if (bpmn.reasons.some((r) => FLOW_CODES.has(r.code) || r.code.includes('TRANSITION') || r.code.startsWith('UNKNOWN'))) {
@@ -1390,6 +1563,20 @@ export function buildCard(db: DB, caseId: string, mode: string) {
         evidence_check: m && m.kind !== 'not_found' ? 'quote_found' : 'quote_not_found',
       };
     }),
+    process_name: { value: content.process_name ?? '', defined: !!(content.process_name ?? '').trim() },
+    notation_kinds: NOTATION_KIND_LABEL,
+    notation_requirements: (content.notation_requirements ?? []).map((r) => {
+      const src = byId.get(r.evidence_source_id);
+      const m = src && r.evidence_quote ? findQuote(src.content, r.evidence_quote) : null;
+      return {
+        ...r,
+        kind_label: NOTATION_KIND_LABEL[r.kind],
+        step_action: content.steps.find((x) => x.id === r.step_id)?.action ?? null,
+        step_exists: content.steps.some((x) => x.id === r.step_id),
+        evidence_title: src?.title ?? null,
+        evidence_check: !r.evidence_quote ? 'no_quote' : m && m.kind !== 'not_found' ? 'quote_found' : 'quote_not_found',
+      };
+    }),
     entry: {
       id: content.entry_step_id ?? null,
       defined: !!content.entry_step_id && content.steps.some((x) => x.id === content.entry_step_id),
@@ -1397,6 +1584,7 @@ export function buildCard(db: DB, caseId: string, mode: string) {
     },
     editable: {
       entry_step_id: content.entry_step_id ?? '',
+      process_name: content.process_name ?? '',
       summary: content.summary,
       business_context: content.business_context,
       boundaries: content.boundaries,

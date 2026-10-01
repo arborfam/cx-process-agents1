@@ -7,7 +7,7 @@ import { DEMO_BANNER, type ModelConfig } from './config.ts';
 import { DomainError } from './errors.ts';
 import { sha256 } from './hash.ts';
 import {
-  acceptDraft, addQuestion, decideStepProposal, addSource, addSourceFromFile, answerQuestion, approve, buildCard, createCase, getCase,
+  acceptDraft, addQuestion, addNotationRequirement, decideNotationRequirement, removeNotationRequirement, decideStepProposal, addSource, addSourceFromFile, answerQuestion, approve, buildCard, createCase, getCase,
   listCases, listSources, requestBpmnStart, returnToResearch, saveAnalystVersion, setQuestionCritical, submitForApproval,
   type Actor, type EditFields,
 } from './domain.ts';
@@ -89,7 +89,7 @@ function pickFields(raw: unknown): EditFields {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new DomainError('VALIDATION', 'fields має бути об’єктом', 400);
   const r = raw as Record<string, unknown>;
   const out: EditFields = {};
-  for (const k of ['summary', 'business_context', 'roles_text', 'steps_text', 'problems_text'] as const) {
+  for (const k of ['summary', 'business_context', 'roles_text', 'steps_text', 'problems_text', 'process_name'] as const) {
     if (r[k] !== undefined) out[k] = str(r[k], k);
   }
   if (r.entry_step_id !== undefined) {
@@ -238,6 +238,25 @@ export function createApp(opts: ServerOptions): Server {
             decision: b.decision === 'accept' ? 'accept' : b.decision === 'reject' ? 'reject' : (() => { throw new DomainError('VALIDATION', 'decision має бути accept або reject', 400); })(),
             note: str(b.note, 'note', false),
           });
+          return json(res, 201, { version_id: v.id });
+        }
+        case 'notation/add': {
+          const v = addNotationRequirement(db, human, caseId, {
+            baseVersionId: str(b.base_version_id, 'base_version_id'), kind: str(b.kind, 'kind'), stepId: str(b.step_id, 'step_id'),
+            detail: str(b.detail, 'detail'), evidenceSourceId: str(b.evidence_source_id, 'evidence_source_id', false), evidenceQuote: str(b.evidence_quote, 'evidence_quote', false),
+          });
+          return json(res, 201, { version_id: v.id });
+        }
+        case 'notation/decide': {
+          const v = decideNotationRequirement(db, human, caseId, {
+            baseVersionId: str(b.base_version_id, 'base_version_id'), requirementId: str(b.requirement_id, 'requirement_id'),
+            decision: b.decision === 'confirm' ? 'confirm' : b.decision === 'reject' ? 'reject' : (() => { throw new DomainError('VALIDATION', 'decision має бути confirm або reject', 400); })(),
+            note: str(b.note, 'note', false),
+          });
+          return json(res, 201, { version_id: v.id });
+        }
+        case 'notation/remove': {
+          const v = removeNotationRequirement(db, human, caseId, { baseVersionId: str(b.base_version_id, 'base_version_id'), requirementId: str(b.requirement_id, 'requirement_id') });
           return json(res, 201, { version_id: v.id });
         }
         case 'scenario/next': {

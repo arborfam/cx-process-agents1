@@ -99,7 +99,7 @@ test('спецсимволи, лапки, кирилиця, довгі підп�
     const r = await generateOk(p);
     const m = readBpmn(r.bpmn).model!;
     for (const s of p.content.steps) assert.equal(m.nodes.get(`Task_${s.id}`)!.name, s.action, `${id}: дія ${s.id}`);
-    assert.equal(m.participant!.name, p.poolName);
+    assert.equal(m.participant!.name, p.content.process_name);
     assert.deepEqual(m.lanes.map((l) => l.name), p.content.roles);
     const d = readDrawio(r.drawio.xml!);
     for (const s of p.content.steps) assert.equal(d.cells.find((c) => c.id === `Task_${s.id}`)!.value, s.action, `${id}: дія ${s.id} у .drawio`);

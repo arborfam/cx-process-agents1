@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { all } from '../src/db.ts';
-import { acceptDraft, addQuestion, addSource, approve, bpmnGuard, currentApproval, getCase, headVersion, saveAnalystVersion, submitForApproval, versionContent, verifyVersionIntegrity, getVersion } from '../src/domain.ts';
+import { acceptDraft, addNotationRequirement, addQuestion, addSource, approve, bpmnGuard, currentApproval, getCase, headVersion, saveAnalystVersion, submitForApproval, versionContent, verifyVersionIntegrity, getVersion } from '../src/domain.ts';
 import { DomainError } from '../src/errors.ts';
 import { packageFromApproval } from '../src/bpmn/approved.ts';
 import { generateBpmn } from '../src/bpmn/generate.ts';
@@ -30,7 +30,9 @@ test('схема з погодженої версії прив’язана до
   assert.equal(pkg.versionId, a.version_id);
   assert.equal(pkg.contentHash, a.content_hash);
   assert.equal(pkg.origin, 'product');
-  assert.equal(pkg.poolName, getCase(db, c.id).title);
+  assert.equal(pkg.content.process_name, versionContent(getVersion(db, v.id)).process_name);
+  assert.ok(pkg.content.process_name, 'назва процесу є у змісті');
+  assert.notEqual(pkg.content.process_name, getCase(db, c.id).title, 'назва кейсу — окрема мітка й у схему не потрапляє');
   const r = await generateOk(pkg);
   assert.equal(r.binding.versionId, v.id);
   assert.match(r.bpmn, new RegExp(`versionId="${v.id}"`));
@@ -61,7 +63,7 @@ test('після правки AS-IS погодження скасовано: п�
   assert.throws(() => packageFromApproval(db, c.id), (e: unknown) => e instanceof DomainError && e.code === 'GUARD_FAILED');
   assert.equal(bpmnGuard(db, c.id).ok, false);
   // файл, створений на старій версії, не збігається з новою: ні за версією, ні за хешем, ні за змістом
-  const newer: ApprovedPackage = { versionId: v2.id, contentHash: v2.content_hash, poolName: oldPkg.poolName, content: versionContent(v2), origin: 'product' };
+  const newer: ApprovedPackage = { versionId: v2.id, contentHash: v2.content_hash, content: versionContent(v2), origin: 'product' };
   const codes = verifyBpmn(oldFile, newer).report.errors.map((e) => e.code);
   assert.ok(codes.includes('BINDING_MISMATCH'));
   assert.ok(codes.includes('TASK_NAME_MISMATCH'));
@@ -104,7 +106,7 @@ test('D28: невизначений перехід блокує погоджен
   acceptDraft(db, human, c.id, v2.id);
   assert.throws(() => submitForApproval(db, human, c.id), (e: unknown) => e instanceof DomainError);
   // навіть якщо пакет складено повз доменний шар, генератор сам відмовляє (другий рубіж)
-  const pkg: ApprovedPackage = { versionId: v2.id, contentHash: v2.content_hash, poolName: 'Тест', content: versionContent(v2), origin: 'product' };
+  const pkg: ApprovedPackage = { versionId: v2.id, contentHash: v2.content_hash, content: versionContent(v2), origin: 'product' };
   const r = await generateBpmn(pkg);
   assert.equal(r.status, 'blocked');
   if (r.status === 'blocked') assert.ok(r.findings.some((f) => f.code === 'UNKNOWN_TRANSITION'));
@@ -112,9 +114,16 @@ test('D28: невизначений перехід блокує погоджен
 
 test('D21: unsupported не змінює погоджений AS-IS, його хеш і погодження; кейс лишається «погоджено»', async () => {
   const db = freshDb();
-  const { c, v, a } = approvedCase(db);
+  // підтверджені людиною вимоги до нотації — частина погодженого змісту (під хешем)
+  const d = draftReadyCase(db);
+  const v1 = addNotationRequirement(db, human, d.c.id, { baseVersionId: d.v.id, kind: 'timer', stepId: 'S2', detail: 'очікування три дні' });
+  const v2 = addNotationRequirement(db, human, d.c.id, { baseVersionId: v1.id, kind: 'parallel_branches', stepId: 'S1', detail: 'паралельно' });
+  acceptDraft(db, human, d.c.id, v2.id);
+  submitForApproval(db, human, d.c.id);
+  const a = approve(db, human, d.c.id, { versionId: v2.id, checklistConfirmed: true });
+  const c = d.c, v = v2;
   const before = snapshot(db);
-  const pkg = packageFromApproval(db, c.id, { unsupportedMarks: [{ step_id: 'S2', kind: 'timer', detail: 'очікування три дні' }, { step_id: 'S1', kind: 'parallel_branches', detail: 'паралельно' }] });
+  const pkg = packageFromApproval(db, c.id);
   const r = await generateBpmn(pkg);
   assert.equal(r.status, 'unsupported');
   if (r.status === 'unsupported') {
