@@ -1,0 +1,146 @@
+{
+  "original": {
+    "file": "original/CX_ASIS_discovery_inputs_draft1.md",
+    "sha256": "9c22fa19168ddc6a0c930577f29ef0737ac7b49b3db101262f0a45d745c21077"
+  },
+  "sources": [
+    {
+      "id": "SRC-01",
+      "title": "Jira-запит",
+      "kind": "jira_ticket",
+      "origin": "synthetic",
+      "stage": 1,
+      "provenance": "оригінал, §1, рядки 7–9",
+      "lines": [
+        7,
+        9
+      ],
+      "file": "sources/SRC-01.md",
+      "sha256": "22031645a64d242dc03a6eb776422fbeed7faec6a1c9d48e00f8032de379c1c8"
+    },
+    {
+      "id": "SRC-02",
+      "title": "Розмова із замовником із CX",
+      "kind": "interview",
+      "origin": "synthetic",
+      "stage": 1,
+      "provenance": "оригінал, §1а, рядки 13–19",
+      "lines": [
+        13,
+        19
+      ],
+      "file": "sources/SRC-02.md",
+      "sha256": "d7b30af686831786be581cf0b332f0f21c4123d95002be93f3ea5f251aeb614f"
+    },
+    {
+      "id": "SRC-03",
+      "title": "Розмова з відповідальною за підготовку агентів у CX",
+      "kind": "interview",
+      "origin": "synthetic",
+      "stage": 2,
+      "provenance": "оригінал, §2, рядки 23–49",
+      "lines": [
+        23,
+        49
+      ],
+      "file": "sources/SRC-03.md",
+      "sha256": "dc5b0601f181312b6d2940f99a7cf8557a5539321930510fdb69dcc474231148"
+    },
+    {
+      "id": "SRC-04",
+      "title": "Розмова з представницею команди Growth",
+      "kind": "interview",
+      "origin": "synthetic",
+      "stage": 3,
+      "provenance": "оригінал, §3, рядки 53–63",
+      "lines": [
+        53,
+        63
+      ],
+      "file": "sources/SRC-04.md",
+      "sha256": "88df685e2296f942c23f4558e4e18d50af532a60646fde2276c6aa2f1ff00f5b"
+    },
+    {
+      "id": "SRC-05",
+      "title": "Розмова з представницею команди знижок і комісійних програм",
+      "kind": "interview",
+      "origin": "synthetic",
+      "stage": 4,
+      "provenance": "оригінал, §4, рядки 67–77",
+      "lines": [
+        67,
+        77
+      ],
+      "file": "sources/SRC-05.md",
+      "sha256": "d0060c638b6703201ef4742fcab5df341ddd3167bc57b69d253772073f062e8e"
+    },
+    {
+      "id": "SRC-06",
+      "title": "Розмова з представником команди, що відповідає за реліз",
+      "kind": "interview",
+      "origin": "synthetic",
+      "stage": 4,
+      "provenance": "оригінал, §5, рядки 81–87",
+      "lines": [
+        81,
+        87
+      ],
+      "file": "sources/SRC-06.md",
+      "sha256": "f61a5f35107e72b2d0460ccb584808f6044ce2c85ede755051e15866f87b5f5d"
+    },
+    {
+      "id": "SRC-07",
+      "title": "Відомості із первинного опису проблеми",
+      "kind": "reference_note",
+      "origin": "synthetic",
+      "stage": 4,
+      "provenance": "оригінал, §6, рядки 91–91",
+      "lines": [
+        91,
+        91
+      ],
+      "file": "sources/SRC-07.md",
+      "sha256": "c113707ccffbbdfbd0e1afa24190eb755bd2577f9113acfd000e1690e746620e"
+    },
+    {
+      "id": "SRC-00",
+      "title": "Навчальна межа від аналітика",
+      "kind": "analyst_note",
+      "origin": "synthetic",
+      "stage": 1,
+      "provenance": "додано аналітиком як рамку вправи; не з оригіналу",
+      "file": "sources/SRC-00.md",
+      "sha256": "aba7acac578dbad87f3e691d1563cf6fb24710825ce30973f2a6813151bca38b"
+    },
+    {
+      "id": "SRC-08p",
+      "title": "Синтетичне уточнення (позитивний сценарій)",
+      "kind": "analyst_clarification",
+      "origin": "synthetic",
+      "stage": 5,
+      "provenance": "вигадано для тесту; не з оригіналу",
+      "file": "sources/SRC-08p.md",
+      "sha256": "51451b853593573397561f156bf27a76f15ba01e73f7718361fced6725619cb4"
+    },
+    {
+      "id": "SRC-08n",
+      "title": "Синтетичне уточнення (негативний сценарій)",
+      "kind": "analyst_clarification",
+      "origin": "synthetic",
+      "stage": 5,
+      "provenance": "вигадано для тесту; не з оригіналу; без відповіді про перенесення/вилучення",
+      "file": "sources/SRC-08n.md",
+      "sha256": "04f623c44f72d74c67ccebac81a9691edc58163caed9f772bef9f064b24bf900"
+    },
+    {
+      "id": "SRC-09",
+      "title": "Явне уточнення про перенесення/вилучення (негативний сценарій)",
+      "kind": "analyst_clarification",
+      "origin": "synthetic",
+      "stage": null,
+      "provenance": "вигадано для тесту; подається лише явною дією аналітика",
+      "file": "hidden/SRC-09.md",
+      "sha256": "eaa8f6ed625dc7b762627f4a479d257fdf3ed4b4c31c1f9f13011b1a8aa7a3f6"
+    }
+  ]
+}
