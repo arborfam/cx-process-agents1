@@ -152,6 +152,7 @@ test('3. Вигаданий короткий фрагмент із «…» не 
 });
 
 // ─────────── 4. Пропозиції вилучення/заміни кроків ───────────
+import { pvHash } from './agent1-fixtures.ts';
 import { acceptDraft, approve, bpmnGuard, buildCard, currentApproval, decideStepProposal, getCase, getVersion, headVersion, saveAnalystVersion, submissionBlockers, submitForApproval, verifyVersionIntegrity, versionContent } from '../src/domain.ts';
 import { verifyAgentOutput } from '../src/ai/verify.ts';
 import { ScriptedDemoClient } from '../src/runs.ts';
@@ -244,10 +245,10 @@ test('4в. Прийняття вилучення: нова версія, ста�
   const withP = headVersion(db, c.id);
   assert.equal(getCase(db, c.id).state, 'research', 'агент змінив зміст — погодження не діє');
   assert.throws(() => decideStepProposal(db, agent, c.id, { baseVersionId: withP.id, proposalId: 'SP1', decision: 'accept' }), (e: any) => /людин|Агент/i.test(e.message) || e.code);
-  assert.throws(() => decideStepProposal(db, human, c.id, { baseVersionId: v.id, proposalId: 'SP1', decision: 'accept' }), (e: any) => e.code === 'VERSION_CONFLICT');
-  assert.throws(() => decideStepProposal(db, human, c.id, { baseVersionId: withP.id, proposalId: 'SPX', decision: 'accept' }), (e: any) => e.code === 'NOT_FOUND');
+  assert.throws(() => decideStepProposal(db, human, c.id, { previewHash: pvHash(db, c.id, ['SP1']), baseVersionId: v.id, proposalId: 'SP1', decision: 'accept' }), (e: any) => e.code === 'VERSION_CONFLICT');
+  assert.throws(() => decideStepProposal(db, human, c.id, { previewHash: pvHash(db, c.id, ['SPX']), baseVersionId: withP.id, proposalId: 'SPX', decision: 'accept' }), (e: any) => e.code === 'NOT_FOUND');
 
-  const nv = decideStepProposal(db, human, c.id, { baseVersionId: withP.id, proposalId: 'SP1', decision: 'accept', note: 'Підтверджую' });
+  const nv = decideStepProposal(db, human, c.id, { previewHash: pvHash(db, c.id, ['SP1']), baseVersionId: withP.id, proposalId: 'SP1', decision: 'accept', note: 'Підтверджую' });
   const nc = versionContent(nv);
   assert.ok(!nc.steps.some((s) => s.id === 'S3'), 'крок вилучено в НОВІЙ версії');
   assert.equal(nc.step_proposals![0]!.status, 'accepted');
@@ -266,13 +267,13 @@ test('4в. Прийняття вилучення: нова версія, ста�
   assert.ok(!codes.includes('PENDING_STEP_PROPOSAL'));
   assert.equal(bpmnGuard(db, c.id).ok, false);
   assert.equal(getCase(db, c.id).state, 'research');
-  assert.throws(() => decideStepProposal(db, human, c.id, { baseVersionId: nv.id, proposalId: 'SP1', decision: 'accept' }), (e: any) => e.code === 'PROPOSAL_NOT_PENDING');
+  assert.throws(() => decideStepProposal(db, human, c.id, { previewHash: pvHash(db, c.id, ['SP1']), baseVersionId: nv.id, proposalId: 'SP1', decision: 'accept' }), (e: any) => e.code === 'PROPOSAL_NOT_PENDING');
 });
 
 test('4г. Прийняття заміни: переходи переходять на крок-заміну; вона стає «власністю» аналітикині', async () => {
   const { db, c, src } = setup();
   await runAnalyst(db, c.id, new ScriptedDemoClient(() => withProps(versionContent(headVersion(db, c.id)), prop(src.id, { action: 'replace', replacement_step_id: 'S4' }))));
-  const nv = decideStepProposal(db, human, c.id, { baseVersionId: headVersion(db, c.id).id, proposalId: 'SP1', decision: 'accept' });
+  const nv = decideStepProposal(db, human, c.id, { previewHash: pvHash(db, c.id, ['SP1']), baseVersionId: headVersion(db, c.id).id, proposalId: 'SP1', decision: 'accept' });
   const nc = versionContent(nv);
   assert.ok(!nc.steps.some((s) => s.id === 'S3'));
   assert.equal(nc.steps.find((s) => s.id === 'S2')!.next[0]!.to, 'S4', 'перехід перенаправлено на заміну');
@@ -295,9 +296,9 @@ test('4д. Початковий крок, що вилучається, знім�
   await runAnalyst(db, c.id, new ScriptedDemoClient(() => withProps(cur, prop(src.id, { step_id: 'S1', reason: 'тест', evidence_quote: 'Менеджер приймає запит.' }))));
   // D68: знімання початкового кроку — наслідок, який людина має побачити й підтвердити явно (без підтвердження версію не змінено).
   const before = headVersion(db, c.id).id;
-  assert.throws(() => decideStepProposal(db, human, c.id, { baseVersionId: before, proposalId: 'SP1', decision: 'accept' }), (e: any) => e.code === 'CONSEQUENCES_NOT_CONFIRMED' && e.details.preview.entry.after === null);
+  assert.throws(() => decideStepProposal(db, human, c.id, { previewHash: pvHash(db, c.id, ['SP1']), baseVersionId: before, proposalId: 'SP1', decision: 'accept' }), (e: any) => e.code === 'CONSEQUENCES_NOT_CONFIRMED' && e.details.preview.entry.after === null);
   assert.equal(headVersion(db, c.id).id, before);
-  const nv = decideStepProposal(db, human, c.id, { baseVersionId: before, proposalId: 'SP1', decision: 'accept', acknowledge: true });
+  const nv = decideStepProposal(db, human, c.id, { previewHash: pvHash(db, c.id, ['SP1']), baseVersionId: before, proposalId: 'SP1', decision: 'accept', acknowledge: true });
   assert.equal(versionContent(nv).entry_step_id, null);
   assert.ok(submissionBlockers(db, c.id).some((b) => b.code === 'ENTRY_MISSING' || b.code === 'ENTRY_BAD_REF'));
 });
@@ -339,7 +340,7 @@ test('4ж. HTTP: рішення за пропозицією — лише чер�
     const head = headVersion(db, c.id).id;
     assert.equal((await s.call('POST', `/api/cases/${c.id}/step-proposals/decide`, { base_version_id: head, proposal_id: 'SP1', decision: 'accept' }, { auth: false })).status, 401);
     assert.equal((await s.call('POST', `/api/cases/${c.id}/step-proposals/decide`, { base_version_id: head, proposal_id: 'SP1', decision: 'maybe' })).status, 400);
-    const r = await s.call('POST', `/api/cases/${c.id}/step-proposals/decide`, { base_version_id: head, proposal_id: 'SP1', decision: 'accept', note: 'ок' });
+    const r = await s.call('POST', `/api/cases/${c.id}/step-proposals/decide`, { base_version_id: head, proposal_id: 'SP1', decision: 'accept', note: 'ок', preview_hash: pvHash(db, c.id, ['SP1']) });
     assert.equal(r.status, 201);
     const card = (await s.call('GET', `/api/cases/${c.id}`)).body;
     assert.equal(card.step_proposals[0].status, 'accepted');

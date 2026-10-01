@@ -5,7 +5,7 @@
  * початок, поставлений поруч зі скелетом, і пара залежних пропозицій заміни.
  */
 import type { DB } from '../src/db.ts';
-import { acceptDraft, approve, createCase, headVersion, insertVersion, submitForApproval, versionContent, type VersionRow } from '../src/domain.ts';
+import { acceptDraft, approve, createCase, headVersion, insertVersion, previewAccept, submitForApproval, versionContent, type VersionRow } from '../src/domain.ts';
 import { emptyContent, UNKNOWN, type Content } from '../src/schema.ts';
 import { human } from './helpers.ts';
 
@@ -74,4 +74,9 @@ export function approvedWith(db: DB, content: Content): { caseId: string; versio
   submitForApproval(db, human, caseId);
   approve(db, human, caseId, { versionId: version.id, checklistConfirmed: true });
   return { caseId, version };
+}
+
+/** Хеш показу наслідків для точного набору пропозицій на поточній версії (те, що людина бачить у картці перед рішенням). */
+export function pvHash(db: DB, caseId: string, ids: string[]): string {
+  return previewAccept(headContent(db, caseId), ids, { caseId, versionId: headVersion(db, caseId).id }).hash;
 }

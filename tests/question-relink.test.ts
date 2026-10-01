@@ -131,17 +131,21 @@ test('Агент не переписує виправлену прив’язк�
   assert.ok(head.conflicts.some((c) => c.key === 'question:Q7.link'));
 });
 
-test('Агент у нових відповідях сам обирає вид прив’язки: допустимі види проходять, а відомий перехід із «напрямком» відхиляється й не потрапляє у версію', async () => {
+test('Агент не перекласифіковує прив’язки відкритих питань (D69); нове питання з суперечливою прив’язкою відхиляється й не потрапляє у версію', async () => {
   const db = freshDb();
   const { caseId } = caseWith(db, mislinked(), 'analyst');
+  const links = () => JSON.stringify(headContent(db, caseId).questions.map((q) => [q.id, q.affects_transitions]));
+  const linksBefore = links();
   const out = mislinked();
-  // агент виправив власну ваду: Q7 → виняток, Q13 → порядок, Q11 → виняток; Q12 лишається напрямком
+  // агент «виправляє» вид прив’язки відкритих питань сам — це не його право: зміна не застосовується, фіксується конфлікт
   out.questions.find((q) => q.id === 'Q7')!.affects_transitions![0]!.kind = 'exception';
   out.questions.find((q) => q.id === 'Q11')!.affects_transitions![0]!.kind = 'exception';
   out.questions.find((q) => q.id === 'Q13')!.affects_transitions![0]!.kind = 'unconfirmed_sequence';
   const res = await runAnalyst(db, caseId, new ScriptedDemoClient(() => out));
-  assert.ok(res.ok, res.ok ? '' : res.error);
-  assert.deepEqual(contradictions(headContent(db, caseId)), []);
+  if (res.ok) {
+    assert.equal(links(), linksBefore, 'прив’язки відкритих питань не змінились');
+    assert.ok(headContent(db, caseId).conflicts.some((c) => /^question:Q(7|11|13)\.link$/.test(c.key)), 'спробу зафіксовано як конфлікт');
+  } else assert.equal(links(), linksBefore);
   const before = headVersion(db, caseId).id;
   const bad = structuredClone(headContent(db, caseId));
   bad.questions.push(Q('Q30', 'Нове питання про напрямок відомого переходу?', [{ step: 'K2', condition: '' }]));

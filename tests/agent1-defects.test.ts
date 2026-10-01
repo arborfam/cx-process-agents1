@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { verifyAgentOutput } from '../src/ai/verify.ts';
 import { protectAnalystEdits, bpmnGuard, decideStepProposal, headVersion, versionContent } from '../src/domain.ts';
 import { freshDb, human } from './helpers.ts';
-import { P, Q, T, UNKNOWN, approvedWith, baseContent, caseWith, skeletonPlusChain } from './agent1-fixtures.ts';
+import { P, Q, T, pvHash, UNKNOWN, approvedWith, baseContent, caseWith, skeletonPlusChain } from './agent1-fixtures.ts';
 import type { Content } from '../src/schema.ts';
 
 const ctx = (base: Content) => ({ base, sources: [], fromModel: (c: Content) => c });
@@ -65,7 +65,7 @@ test('ДЕФЕКТ: «Прийняти» лише одну із залежних
   const { caseId } = caseWith(db, skeletonPlusChain());
   const before = headVersion(db, caseId).id;
   assert.throws(
-    () => decideStepProposal(db, human, caseId, { baseVersionId: headVersion(db, caseId).id, proposalId: 'R2', decision: 'accept' }),
+    () => decideStepProposal(db, human, caseId, { previewHash: pvHash(db, caseId, ['R2']), baseVersionId: headVersion(db, caseId).id, proposalId: 'R2', decision: 'accept' }),
     (e: any) => e.code === 'CONSEQUENCES_NOT_CONFIRMED',
     'очікується вимога підтвердити наслідки (залишиться недосяжний крок K1)',
   );

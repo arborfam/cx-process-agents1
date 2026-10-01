@@ -11,7 +11,7 @@ import {
 import { UNKNOWN, type Content } from '../src/schema.ts';
 import { ScriptedDemoClient, runAnalyst } from '../src/runs.ts';
 import { agent, freshDb, human, startTestServer } from './helpers.ts';
-import { P, T, approvedWith, baseContent, caseWith, headContent, skeletonPlusChain } from './agent1-fixtures.ts';
+import { P, T, pvHash, approvedWith, baseContent, caseWith, headContent, skeletonPlusChain } from './agent1-fixtures.ts';
 
 const unreachable = (c: Content): string[] => flowIssues(c).filter((i) => i.code === 'STEP_UNREACHABLE').flatMap((i) => (i.ref ?? '').split(',')).sort();
 const shape = (c: Content) => ({ steps: c.steps.map((s) => [s.id, s.next.map((n) => n.to).join('>')]), entry: c.entry_step_id ?? null, st: (c.step_proposals ?? []).map((p) => `${p.id}:${p.status}`) });
@@ -51,8 +51,8 @@ test('Стан до і після SP2-подібної пропозиції та
     const db = freshDb();
     const { caseId } = caseWith(db, skeletonPlusChain());
     const n0 = all(db, 'SELECT id FROM as_is_version WHERE case_id = ?', caseId).length;
-    if (order[0] === 'GROUP') decideStepProposals(db, human, caseId, { baseVersionId: headVersion(db, caseId).id, proposalIds: ['R1', 'R2'] });
-    else for (const id of order) decideStepProposal(db, human, caseId, { baseVersionId: headVersion(db, caseId).id, proposalId: id, decision: 'accept', acknowledge: true });
+    if (order[0] === 'GROUP') decideStepProposals(db, human, caseId, { previewHash: pvHash(db, caseId, ['R1', 'R2']), baseVersionId: headVersion(db, caseId).id, proposalIds: ['R1', 'R2'] });
+    else for (const id of order) decideStepProposal(db, human, caseId, { previewHash: pvHash(db, caseId, [id]), baseVersionId: headVersion(db, caseId).id, proposalId: id, decision: 'accept', acknowledge: true });
     const c = headContent(db, caseId);
     finals.push(shape(c));
     versionContent(headVersion(db, caseId));
@@ -69,11 +69,11 @@ test('Прийняття лише однієї із залежних пропо�
   const { caseId } = caseWith(db, skeletonPlusChain());
   const head = headVersion(db, caseId).id;
   const history = historyRows(db, caseId);
-  assert.throws(() => decideStepProposal(db, human, caseId, { baseVersionId: head, proposalId: 'R2', decision: 'accept' }),
+  assert.throws(() => decideStepProposal(db, human, caseId, { previewHash: pvHash(db, caseId, ['R2']), baseVersionId: head, proposalId: 'R2', decision: 'accept' }),
     (e: any) => e.code === 'CONSEQUENCES_NOT_CONFIRMED' && e.status === 409 && e.details.preview.residual.includes('STEP_UNREACHABLE:K1'));
   assert.equal(headVersion(db, caseId).id, head);
   assert.equal(historyRows(db, caseId), history);
-  decideStepProposal(db, human, caseId, { baseVersionId: head, proposalId: 'R2', decision: 'accept', acknowledge: true, note: 'розумію наслідок' });
+  decideStepProposal(db, human, caseId, { previewHash: pvHash(db, caseId, ['R2']), baseVersionId: head, proposalId: 'R2', decision: 'accept', acknowledge: true, note: 'розумію наслідок' });
   assert.deepEqual(unreachable(headContent(db, caseId)), ['K1'], 'наслідок лишився видимим прогалиною, а не прихованим');
 });
 
@@ -83,7 +83,7 @@ test('Інші пропозиції автоматично не приймают
   c.steps.push(T('K7', 'Виконавець', 'Окремий крок', 'Р', [{ to: 'K6' }]));
   c.step_proposals!.push(P('R3', 'K7', 'K5'));
   const { caseId } = caseWith(db, c);
-  decideStepProposals(db, human, caseId, { baseVersionId: headVersion(db, caseId).id, proposalIds: ['R1', 'R2'] });
+  decideStepProposals(db, human, caseId, { previewHash: pvHash(db, caseId, ['R1', 'R2']), baseVersionId: headVersion(db, caseId).id, proposalIds: ['R1', 'R2'] });
   const after = headContent(db, caseId);
   assert.deepEqual(after.step_proposals!.map((p) => `${p.id}:${p.status}`), ['R1:accepted', 'R2:accepted', 'R3:proposed']);
   assert.ok(after.steps.some((s) => s.id === 'K7'), 'крок третьої пропозиції лишився');
@@ -93,7 +93,7 @@ test('Хеш показаних наслідків: хибний чи заста
   const db = freshDb();
   const { caseId } = caseWith(db, skeletonPlusChain());
   const head = headVersion(db, caseId);
-  const pv = previewAccept(versionContent(head), ['R1', 'R2']);
+  const pv = previewAccept(versionContent(head), ['R1', 'R2'], { caseId, versionId: head.id });
   assert.throws(() => decideStepProposals(db, human, caseId, { baseVersionId: head.id, proposalIds: ['R1', 'R2'], previewHash: 'x'.repeat(64) }), (e: any) => e.code === 'PREVIEW_STALE');
   assert.throws(() => decideStepProposals(db, human, caseId, { baseVersionId: head.id, proposalIds: ['R1'], previewHash: pv.hash }), (e: any) => e.code === 'PREVIEW_STALE', 'показ іншого набору');
   decideStepProposals(db, human, caseId, { baseVersionId: head.id, proposalIds: ['R1', 'R2'], previewHash: pv.hash });
@@ -117,8 +117,8 @@ test('Вилучення без заміни: показано нове неві
   assert.equal(pv.needs_ack, true);
   const db = freshDb();
   const { caseId } = caseWith(db, c);
-  assert.throws(() => decideStepProposal(db, human, caseId, { baseVersionId: headVersion(db, caseId).id, proposalId: 'R1', decision: 'accept' }), (e: any) => e.code === 'CONSEQUENCES_NOT_CONFIRMED');
-  decideStepProposal(db, human, caseId, { baseVersionId: headVersion(db, caseId).id, proposalId: 'R1', decision: 'accept', acknowledge: true });
+  assert.throws(() => decideStepProposal(db, human, caseId, { previewHash: pvHash(db, caseId, ['R1']), baseVersionId: headVersion(db, caseId).id, proposalId: 'R1', decision: 'accept' }), (e: any) => e.code === 'CONSEQUENCES_NOT_CONFIRMED');
+  decideStepProposal(db, human, caseId, { previewHash: pvHash(db, caseId, ['R1']), baseVersionId: headVersion(db, caseId).id, proposalId: 'R1', decision: 'accept', acknowledge: true });
   const q = headContent(db, caseId).questions[0]!;
   assert.deepEqual([q.critical, q.status, q.affects_transitions?.[0]?.kind], [true, 'open', 'direction']);
   // початок: заміна переносить, зняття — потребує підтвердження
@@ -143,11 +143,11 @@ test('Група атомарна й перевіряється: невідом�
   const history = historyRows(db, caseId);
   assert.throws(() => decideStepProposals(db, human, caseId, { baseVersionId: head, proposalIds: [] }), (e: any) => e.code === 'VALIDATION');
   assert.throws(() => decideStepProposals(db, human, caseId, { baseVersionId: head, proposalIds: ['R1', 'NOPE'] }), (e: any) => e.code === 'NOT_FOUND');
-  assert.throws(() => decideStepProposals(db, human, caseId, { baseVersionId: head, proposalIds: ['R1', 'R3'] }), (e: any) => e.code === 'STEP_MISSING');
-  assert.throws(() => decideStepProposals(db, human, caseId, { baseVersionId: 'ver_stale', proposalIds: ['R1'] }), (e: any) => e.code === 'VERSION_CONFLICT');
+  assert.throws(() => decideStepProposals(db, human, caseId, { previewHash: pvHash(db, caseId, ['R1', 'R3']), baseVersionId: head, proposalIds: ['R1', 'R3'] }), (e: any) => e.code === 'STEP_MISSING');
+  assert.throws(() => decideStepProposals(db, human, caseId, { previewHash: pvHash(db, caseId, ['R1']), baseVersionId: 'ver_stale', proposalIds: ['R1'] }), (e: any) => e.code === 'VERSION_CONFLICT');
   assert.equal(historyRows(db, caseId), history, 'жодної нової версії');
   decideStepProposal(db, human, caseId, { baseVersionId: head, proposalId: 'R2', decision: 'reject', note: 'ні' });
-  assert.throws(() => decideStepProposals(db, human, caseId, { baseVersionId: headVersion(db, caseId).id, proposalIds: ['R1', 'R2'] }), (e: any) => e.code === 'PROPOSAL_NOT_PENDING');
+  assert.throws(() => decideStepProposals(db, human, caseId, { previewHash: pvHash(db, caseId, ['R1', 'R2']), baseVersionId: headVersion(db, caseId).id, proposalIds: ['R1', 'R2'] }), (e: any) => e.code === 'PROPOSAL_NOT_PENDING');
 });
 
 test('Рішення лише людини; агент не приймає пропозицій; історичні версії й погодження не переписуються; нове рішення скасовує чинне погодження', () => {
@@ -175,7 +175,7 @@ test('Захист від обходу через API: без сесії — 401
     assert.deepEqual(card.body.proposal_previews.bundles.map((b: any) => b.ids), [['R1', 'R2']]);
     assert.ok(card.body.proposal_previews.items.R2.needs_ack);
     assert.equal(card.body.link_kinds.exception.length > 0, true);
-    const payload = { base_version_id: card.body.head.id, proposal_id: 'R2', decision: 'accept', approved: true, state: 'approved', acknowledge: false };
+    const payload = { base_version_id: card.body.head.id, proposal_id: 'R2', decision: 'accept', approved: true, state: 'approved', acknowledge: false, preview_hash: card.body.proposal_previews.items.R2.hash };
     assert.equal((await s.call('POST', `/api/cases/${caseId}/step-proposals/decide`, payload, { auth: false })).status, 401);
     const refused = await s.call('POST', `/api/cases/${caseId}/step-proposals/decide`, payload);
     assert.equal(refused.status, 409);
@@ -188,10 +188,11 @@ test('Захист від обходу через API: без сесії — 401
     const c2 = caseWith(db2, skeletonPlusChain()).caseId;
     const s2 = await startTestServer(db2);
     try {
-      const h2 = (await s2.call('GET', `/api/cases/${c2}`)).body.head.id;
-      const no = await s2.call('POST', `/api/cases/${c2}/step-proposals/decide`, { base_version_id: h2, proposal_ids: ['R2'], decision: 'accept' });
+      const card2 = (await s2.call('GET', `/api/cases/${c2}`)).body;
+      const h2 = card2.head.id; const ph2 = card2.proposal_previews.items.R2.hash;
+      const no = await s2.call('POST', `/api/cases/${c2}/step-proposals/decide`, { base_version_id: h2, proposal_ids: ['R2'], decision: 'accept', preview_hash: ph2 });
       assert.deepEqual([no.status, no.body.error.code], [409, 'CONSEQUENCES_NOT_CONFIRMED']);
-      assert.equal((await s2.call('POST', `/api/cases/${c2}/step-proposals/decide`, { base_version_id: h2, proposal_ids: ['R2'], decision: 'accept', acknowledge: true })).status, 201);
+      assert.equal((await s2.call('POST', `/api/cases/${c2}/step-proposals/decide`, { base_version_id: h2, proposal_ids: ['R2'], decision: 'accept', acknowledge: true, preview_hash: ph2 })).status, 201);
     } finally { await s2.close(); }
     const rej = await s.call('POST', `/api/cases/${caseId}/step-proposals/decide`, { base_version_id: group.body.version_id, proposal_ids: ['R1', 'R2'], decision: 'reject' });
     assert.equal(rej.status, 400, 'групове відхилення не підтримується');
@@ -204,7 +205,7 @@ test('Захист від обходу через API: без сесії — 401
 test('Прогін агента не прибирає рішення: пропозиції, прийняті людиною, лишаються прийнятими; нові — лише пропозиції', async () => {
   const db = freshDb();
   const { caseId } = caseWith(db, skeletonPlusChain());
-  decideStepProposals(db, human, caseId, { baseVersionId: headVersion(db, caseId).id, proposalIds: ['R1', 'R2'], note: 'ок' });
+  decideStepProposals(db, human, caseId, { previewHash: pvHash(db, caseId, ['R1', 'R2']), baseVersionId: headVersion(db, caseId).id, proposalIds: ['R1', 'R2'], note: 'ок' });
   const cur = headContent(db, caseId);
   const tamper = structuredClone(cur);
   tamper.step_proposals = tamper.step_proposals!.map((p) => ({ ...p, status: 'proposed' as const }));

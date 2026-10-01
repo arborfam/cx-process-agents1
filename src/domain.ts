@@ -304,13 +304,25 @@ export function protectAnalystEdits(
       conflicts.push({ key: `question:${bq.id}`, kept: bq.text, proposed: '(видалено)', note: 'Агент не може видаляти питання.' });
       continue;
     }
-    // Явне виправлення прив'язки питання аналітикинею (історія в link_history) агент не переписує.
-    if ((bq.link_history ?? []).length > 0 && (canonical(oq.affects_transitions ?? null) !== canonical(bq.affects_transitions ?? null) || canonical(oq.link_history ?? null) !== canonical(bq.link_history ?? null))) {
-      oq.affects_transitions = structuredClone(bq.affects_transitions);
-      oq.link_history = structuredClone(bq.link_history);
-      if (oq.affects_transitions === undefined) delete oq.affects_transitions;
-      conflicts.push({ key: `question:${bq.id}.link`, kept: 'прив’язка, виправлена аналітикинею', proposed: 'інша прив’язка',
-        note: 'Прив’язку питання до потоку виправила аналітикиня; агент її не змінює.' });
+    // Прив'язка питання до потоку — його блокувальний зміст. Доки питання відкрите, агент не може її зняти,
+    // перекласифікувати чи перенести: наявні прив'язки (разом із історією виправлень) зберігаються, додавати нові можна.
+    // Змінити їх може аналітикиня явним рішенням (relinkQuestion, з поясненням в link_history) або закриття питання відповіддю з джерела.
+    const closesValidly = oq.status === 'closed' && !!oq.closed_by_source_id && validSourceIds.has(oq.closed_by_source_id);
+    if (bq.status === 'open' && !closesValidly) {
+      const kept = structuredClone(bq.affects_transitions ?? []);
+      const key = (l: { step_id: string; condition: string; kind?: string }) => canonical({ s: l.step_id, c: l.condition, k: l.kind ?? 'direction' });
+      const outLinks = oq.affects_transitions ?? [];
+      const lost = kept.filter((l) => !outLinks.some((o) => key(o) === key(l)));
+      const historyChanged = canonical(oq.link_history ?? null) !== canonical(bq.link_history ?? null);
+      if (lost.length > 0 || historyChanged) {
+        const extra = outLinks.filter((o) => !kept.some((l) => key(l) === key(o)) && !kept.some((l) => l.step_id === o.step_id && l.condition === o.condition));
+        // щось зняли/перенесли — зміну відхиляємо цілком; лише додавання нових прив'язок (без втрат) лишається
+        oq.affects_transitions = lost.length > 0 || historyChanged ? kept : [...kept, ...extra];
+        if (oq.affects_transitions.length === 0) delete oq.affects_transitions;
+        if (bq.link_history === undefined) delete oq.link_history; else oq.link_history = structuredClone(bq.link_history);
+        conflicts.push({ key: `question:${bq.id}.link`, kept: 'прив’язка до потоку без змін', proposed: 'знято, перекласифіковано чи перенесено',
+          note: 'Прив’язку відкритого питання до потоку агент не змінює: це блокувальний зміст. Змінити її може аналітикиня з поясненням або закриття питання відповіддю з джерела.' });
+      }
     }
     if (bq.critical && !oq.critical) {
       oq.critical = true;
@@ -774,7 +786,7 @@ const flowKeyText = (c: Content, k: string): string => {
  * Наслідки прийняття набору пропозицій (чиста функція): які кроки зникнуть, куди перейдуть зв'язки, чи зміниться початок,
  * що стане недосяжним, які нові невідомі переходи й питання з'являться. Показується ДО рішення; прийняття звіряє хеш цього показу.
  */
-export function previewAccept(content: Content, ids: string[]): ProposalPreview {
+export function previewAccept(content: Content, ids: string[], scope: PreviewScope = null): ProposalPreview {
   const c = structuredClone(content);
   const fx: ProposalEffects = { removed: [], rewired: [], new_unknown: [], orphan_candidates: [], entry: { before: content.entry_step_id ?? null, after: content.entry_step_id ?? null }, errors: [] };
   const order = (content.step_proposals ?? []).map((p) => p.id);
@@ -802,13 +814,16 @@ export function previewAccept(content: Content, ids: string[]): ProposalPreview 
   if (after.length === 0) lines.push('Після прийняття проблем потоку (недосяжних кроків, кроків без виходу) не лишиться.');
   else lines.push(`Після прийняття ЛИШАТЬСЯ проблеми потоку: ${after.map((k) => flowKeyText(c, k)).join('; ')}.`);
   for (const e of fx.errors) lines.push(`Помилка: ${e.message}.`);
-  const hash = sha256(canonical({ ids: [...ids].sort(), base: sha256(canonical(content)), removed: fx.removed.map((r) => r.id), rewired: fx.rewired, new_unknown: fx.new_unknown.map((u) => [u.from, u.condition]), entry: fx.entry, after, errors: fx.errors.map((e) => e.code) }));
+  const hash = sha256(canonical({ scope, ids: [...ids].sort(), base: sha256(canonical(content)), removed: fx.removed.map((r) => r.id), rewired: fx.rewired, new_unknown: fx.new_unknown.map((u) => [u.from, u.condition]), entry: fx.entry, after, errors: fx.errors.map((e) => e.code) }));
   return {
     proposal_ids: [...ids], removed: fx.removed, rewired: fx.rewired, new_unknown: fx.new_unknown,
     entry: { before: fx.entry.before, after: fx.entry.after, changed: entryChanged },
     flow_before: before, flow_after: after, resolved, introduced, residual, needs_ack: needsAck, errors: fx.errors, lines, hash,
   };
 }
+
+/** Область дії показу: кейс і точна версія, для яких наслідки показано. Хеш чужого кейсу чи іншої версії не збігається. */
+export type PreviewScope = { caseId: string; versionId: string } | null;
 
 export interface ProposalPreviews {
   /** Наслідки прийняття кожної відкритої пропозиції ОКРЕМО. */
@@ -821,16 +836,16 @@ export interface ProposalPreviews {
 
 const MAX_BUNDLE_SEARCH = 8;
 
-export function previewProposals(content: Content): ProposalPreviews {
+export function previewProposals(content: Content, scope: PreviewScope = null): ProposalPreviews {
   const pending = (content.step_proposals ?? []).filter((p) => p.status === 'proposed').map((p) => p.id);
   const items: ProposalPreviews['items'] = {};
   const bundles: ProposalPreviews['bundles'] = [];
   const skipped = pending.length > MAX_BUNDLE_SEARCH;
-  const alone = new Map(pending.map((id) => [id, previewAccept(content, [id])]));
+  const alone = new Map(pending.map((id) => [id, previewAccept(content, [id], scope)]));
   const cost = new Map<string, number>();
   const costOf = (ids: string[]): number => {
     const key = [...ids].sort().join(',');
-    if (!cost.has(key)) { const pv = previewAccept(content, ids); cost.set(key, pv.errors.length ? Infinity : pv.flow_after.length); }
+    if (!cost.has(key)) { const pv = previewAccept(content, ids, scope); cost.set(key, pv.errors.length ? Infinity : pv.flow_after.length); }
     return cost.get(key)!;
   };
   const seen = new Set<string>();
@@ -851,7 +866,7 @@ export function previewProposals(content: Content): ProposalPreviews {
     if (betterWith.length) {
       const group = [id, ...betterWith].sort((x, y) => pending.indexOf(x) - pending.indexOf(y));
       const key = group.join(',');
-      if (!seen.has(key)) { seen.add(key); bundles.push({ ids: group, preview: previewAccept(content, group) }); }
+      if (!seen.has(key)) { seen.add(key); bundles.push({ ids: group, preview: previewAccept(content, group, scope) }); }
     }
   }
   return { items, bundles, bundles_skipped: skipped };
@@ -863,7 +878,7 @@ export function previewProposals(content: Content): ProposalPreviews {
  * «невідомо» з критичним питанням (remove) — «невідоме не стає фактом»; початковий крок переноситься або знімається.
  * Пов'язані пропозиції можна прийняти ОДНИМ явним рішенням (`proposalIds`): одна нова версія, інші пропозиції автоматично не чіпаються.
  * Якщо після прийняття лишається недосяжність чи крок без виходу, пов'язані зі зміною, потрібне явне підтвердження наслідків
- * (`acknowledge`); показані наслідки звіряються за хешем (`previewHash`), застарілий показ відхиляється.
+ * (`acknowledge`). Хеш показу (`previewHash`) ОБОВ'ЯЗКОВИЙ: він охоплює кейс, поточну версію, точний набір пропозицій і наслідки; відсутній — PREVIEW_REQUIRED, чужий чи застарілий — PREVIEW_STALE.
  * Нова версія потребує прийняття, передачі на погодження й погодження заново (погодження втрачає чинність).
  * Правки аналітикині не знімаються: змінені кроки стають її «власністю», агент їх не перезапише.
  */
@@ -882,10 +897,14 @@ export function decideStepProposals(
       if (!p) throw new DomainError('NOT_FOUND', 'Пропозицію не знайдено', 404);
       if (p.status !== 'proposed') throw new DomainError('PROPOSAL_NOT_PENDING', 'Рішення за цією пропозицією вже прийнято', 409);
     }
-    const preview = previewAccept(c, ids);
+    const preview = previewAccept(c, ids, { caseId, versionId: head.id });
     const missing = preview.errors.find((e) => e.code === 'STEP_MISSING');
     if (missing) throw new DomainError('STEP_MISSING', missing.message, 409);
-    if (input.previewHash !== undefined && input.previewHash !== preview.hash) {
+    // Прийняття прив'язане до переглянутих наслідків: показ обов'язковий; `acknowledge` його не замінює.
+    if (!input.previewHash) {
+      throw new DomainError('PREVIEW_REQUIRED', 'Спершу перегляньте наслідки прийняття: без хеша показу рішення не приймається.', 428, { preview });
+    }
+    if (input.previewHash !== preview.hash) {
       throw new DomainError('PREVIEW_STALE', 'Наслідки, які ви бачили, більше не відповідають поточній версії. Перегляньте їх ще раз.', 409, { preview });
     }
     if (preview.needs_ack && !input.acknowledge) {
@@ -1833,7 +1852,7 @@ export function buildCard(db: DB, caseId: string, mode: string) {
          FROM approval a LEFT JOIN approval_revocation r ON r.approval_id = a.id WHERE a.case_id = ? ORDER BY a.created_at DESC`, caseId),
     runs: all(db, 'SELECT * FROM run WHERE case_id = ? ORDER BY started_at DESC LIMIT 20', caseId),
     audit: all(db, 'SELECT at, actor, action, details_json FROM audit_log WHERE case_id = ? ORDER BY id DESC LIMIT 40', caseId),
-    proposal_previews: previewProposals(content),
+    proposal_previews: previewProposals(content, { caseId, versionId: head.id }),
     link_kinds: LINK_KIND_LABEL,
     step_proposals: (content.step_proposals ?? []).map((p) => {
       const src = byId.get(p.evidence_source_id);
