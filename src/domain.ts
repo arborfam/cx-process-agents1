@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { all, one, run, tx, type DB } from './db.ts';
 import { DomainError } from './errors.ts';
 import { canonical, sha256 } from './hash.ts';
-import { CLAIM_TYPE_LABEL, ContentSchema, NOTATION_KIND_LABEL, NotationKind, UNKNOWN, emptyContent, parseContent, type Content, type NotationRequirementT, type Question, type Step } from './schema.ts';
+import { CLAIM_TYPE_LABEL, ContentSchema, LINK_KIND_LABEL, NOTATION_KIND_LABEL, NotationKind, UNKNOWN, emptyContent, parseContent, type Content, type LinkKindT, type NotationRequirementT, type Question, type Step, type StepProposalT } from './schema.ts';
 import { findQuote } from './ai/quote.ts';
 import { parseProblems, parseRoles, parseSteps, problemsToText, rolesToText, stepsToText } from './text-format.ts';
 
@@ -304,6 +304,14 @@ export function protectAnalystEdits(
       conflicts.push({ key: `question:${bq.id}`, kept: bq.text, proposed: '(видалено)', note: 'Агент не може видаляти питання.' });
       continue;
     }
+    // Явне виправлення прив'язки питання аналітикинею (історія в link_history) агент не переписує.
+    if ((bq.link_history ?? []).length > 0 && (canonical(oq.affects_transitions ?? null) !== canonical(bq.affects_transitions ?? null) || canonical(oq.link_history ?? null) !== canonical(bq.link_history ?? null))) {
+      oq.affects_transitions = structuredClone(bq.affects_transitions);
+      oq.link_history = structuredClone(bq.link_history);
+      if (oq.affects_transitions === undefined) delete oq.affects_transitions;
+      conflicts.push({ key: `question:${bq.id}.link`, kept: 'прив’язка, виправлена аналітикинею', proposed: 'інша прив’язка',
+        note: 'Прив’язку питання до потоку виправила аналітикиня; агент її не змінює.' });
+    }
     if (bq.critical && !oq.critical) {
       oq.critical = true;
       conflicts.push({ key: `question:${bq.id}.critical`, kept: 'критичне', proposed: 'некритичне',
@@ -327,6 +335,12 @@ export function protectAnalystEdits(
     }
     for (const o of outP) if (!baseP.some((b) => b.id === o.id)) merged.push(o);
     if (merged.length) result.step_proposals = merged; else delete result.step_proposals;
+  }
+  // Початковий крок — межа процесу, а не висновок агента: будь-яку його зміну агентом відкидаємо, незалежно від «власності».
+  if ((out.entry_step_id ?? null) !== (base.entry_step_id ?? null)) {
+    conflicts.push({ key: 'entry_step_id', kept: pretty(base.entry_step_id ?? ''), proposed: pretty(out.entry_step_id ?? ''),
+      note: 'Початковий крок (межу процесу) задає лише аналітикиня. Агент може поставити питання, але не обирає початок. Збережено попереднє значення.' });
+    if (base.entry_step_id === undefined) delete result.entry_step_id; else result.entry_step_id = base.entry_step_id;
   }
   // Назву процесу задає лише людина (D62): будь-яку зміну агентом відкидаємо, незалежно від «власності».
   if ((out.process_name ?? '') !== (base.process_name ?? '')) {
@@ -562,7 +576,7 @@ function nextId(prefix: string, existing: string[]): string {
 /** Питання ставить аналітик явно (у зрізі 1 виявлення питань агентом немає). */
 export function addQuestion(
   db: DB, actor: Actor, caseId: string,
-  input: { baseVersionId: string; text: string; critical: boolean; impact: string; addressee?: string; affects?: { step_id: string; condition: string }[] },
+  input: { baseVersionId: string; text: string; critical: boolean; impact: string; addressee?: string; affects?: { step_id: string; condition: string; kind?: LinkKindT }[] },
 ): VersionRow {
   requireHuman(actor, 'постановка питання');
   if (!input.text.trim()) throw new DomainError('VALIDATION', 'Текст питання порожній', 400);
@@ -580,7 +594,7 @@ export function addQuestion(
       id: nextId('Q', c.questions.map((q) => q.id)), text: input.text.trim(), critical: input.critical,
       impact: input.impact.trim(), addressee: (input.addressee ?? '').trim(), status: 'open', answer: '',
       closed_by_source_id: null, origin: 'analyst', criticality_note: '',
-      ...(affects.length ? { affects_transitions: affects.map((a) => ({ step_id: a.step_id, condition: a.condition })) } : {}),
+      ...(affects.length ? { affects_transitions: affects.map((a) => ({ step_id: a.step_id, condition: a.condition, ...(a.kind ? { kind: a.kind } : {}) })) } : {}),
     });
     return commitAnalystVersion(db, actor, caseId, head, c, JSON.parse(head.covered_json) as string[],
       `Додано ${input.critical ? 'критичне ' : ''}питання`);
@@ -633,57 +647,289 @@ export function setQuestionCritical(
 }
 
 /**
- * Рішення аналітикині щодо пропозиції агента вилучити/замінити крок. Створює НОВУ версію; попередні лишаються.
+ * Явне виправлення помилкової прив'язки питання до потоку (аналітикиня). Створює НОВУ версію з записом в історії прив'язки (хто, коли,
+ * з якого виду на який, чому). Питання лишається ВІДКРИТИМ, його критичність і текст не змінюються; змінюється лише вид ОДНІЄЇ прив'язки.
+ * Масового чи автоматичного відкріплення немає. Справжній невідомий перехід так «виправити» не можна (це приховало б невідоме).
+ */
+export function relinkQuestion(
+  db: DB, actor: Actor, caseId: string,
+  input: { baseVersionId: string; questionId: string; stepId: string; condition: string; toKind: LinkKindT; note: string },
+): VersionRow {
+  requireHuman(actor, 'виправлення прив’язки питання');
+  if (!LINK_KIND_LABEL[input.toKind]) throw new DomainError('VALIDATION', 'Невідомий вид прив’язки', 400);
+  const note = (input.note ?? '').trim();
+  if (note.length < 5) throw new DomainError('VALIDATION', 'Поясніть, чому прив’язку змінено (обов’язково)', 400);
+  return tx(db, () => {
+    const head = assertBase(db, caseId, input.baseVersionId);
+    const c = versionContent(head);
+    const q = c.questions.find((x) => x.id === input.questionId);
+    if (!q) throw new DomainError('NOT_FOUND', 'Питання не знайдено', 404);
+    if (q.status !== 'open') throw new DomainError('QUESTION_CLOSED', 'Прив’язку можна виправляти лише в відкритого питання', 409);
+    const link = (q.affects_transitions ?? []).find((a) => a.step_id === input.stepId && a.condition === input.condition);
+    if (!link) throw new DomainError('LINK_NOT_FOUND', 'Такої прив’язки в питання немає', 404);
+    const from = linkKindOf(link);
+    if (from === input.toKind) throw new DomainError('VALIDATION', 'Прив’язка вже має такий вид', 400);
+    const tr = c.steps.find((s) => s.id === input.stepId)?.next.find((n) => n.condition === input.condition);
+    if (input.toKind !== 'step_detail' && !tr) throw new DomainError('LINK_BROKEN', 'Перехід, до якого прив’язано питання, у кроці не знайдено', 409);
+    if (tr?.to === UNKNOWN && (from === 'direction' || input.toKind !== 'direction')) {
+      throw new DomainError('TRANSITION_UNKNOWN', 'Перехід справді невідомий: питання про його напрямок не можна перетворити на інше, це приховало б невідоме. Спершу з’ясуйте напрямок.', 409);
+    }
+    if (input.toKind === 'direction' && tr && tr.to !== UNKNOWN) {
+      throw new DomainError('LINK_TARGET_KNOWN', 'Перехід записано як відомий: або позначте його «невідомо», або оберіть інший вид прив’язки.', 409);
+    }
+    link.kind = input.toKind;
+    q.link_history = [...(q.link_history ?? []), { at: now(), by: actor.name, step_id: input.stepId, condition: input.condition, from, to: input.toKind, note }];
+    audit(db, caseId, actor, 'question_link_changed', { question_id: q.id, step_id: input.stepId, from, to: input.toKind });
+    return commitAnalystVersion(db, actor, caseId, head, c, JSON.parse(head.covered_json) as string[],
+      `Питання ${q.id}: прив’язку до переходу кроку ${input.stepId} змінено з «${LINK_KIND_LABEL[from]}» на «${LINK_KIND_LABEL[input.toKind]}»: ${note}`);
+  });
+}
+
+// ───────────────────────── пропозиції щодо кроків: наслідки до прийняття ─────────────────────────
+
+export interface ProposalEffects {
+  removed: { id: string; action: string }[];
+  rewired: { from: string; condition: string; was: string; now: string }[];
+  new_unknown: { from: string; condition: string; question_id: string }[];
+  /** Цілі переходів вилученого кроку: вони можуть втратити єдиний вхід. */
+  orphan_candidates: string[];
+  entry: { before: string | null; after: string | null };
+  errors: { code: string; message: string }[];
+}
+
+const stepLabel = (c: Content, id: string): string => `${id} («${clipTxt(c.steps.find((x) => x.id === id)?.action ?? '', 40)}»)`;
+
+/** Застосовує прийняття однієї пропозиції до змісту (змінює `c`). Одна й та сама логіка для показу наслідків і для справжнього прийняття. */
+function applyAccept(c: Content, p: StepProposalT, fx: ProposalEffects): boolean {
+  if (!c.steps.some((s) => s.id === p.step_id)) { fx.errors.push({ code: 'STEP_MISSING', message: `Кроку ${p.step_id} у поточній версії вже немає` }); return false; }
+  if (p.action === 'replace' && !c.steps.some((s) => s.id === p.replacement_step_id)) {
+    fx.errors.push({ code: 'STEP_MISSING', message: `Кроку-заміни ${p.replacement_step_id} немає в поточній версії` }); return false;
+  }
+  const replacement = p.action === 'replace' ? p.replacement_step_id : null;
+  const gone = c.steps.find((s) => s.id === p.step_id)!;
+  fx.removed.push({ id: gone.id, action: gone.action });
+  for (const n of gone.next) if (n.to !== 'END' && n.to !== UNKNOWN && n.to !== gone.id) fx.orphan_candidates.push(n.to);
+  c.steps = c.steps.filter((s) => s.id !== p.step_id);
+  for (const s of c.steps) {
+    for (const n of s.next) {
+      if (n.to !== p.step_id) continue;
+      if (replacement && s.id !== replacement) { fx.rewired.push({ from: s.id, condition: n.condition, was: n.to, now: replacement }); n.to = replacement; continue; }
+      n.to = UNKNOWN;
+      const qid = nextId('Q', c.questions.map((q) => q.id));
+      fx.new_unknown.push({ from: s.id, condition: n.condition, question_id: qid });
+      c.questions.push({
+        id: qid,
+        text: `Куди веде перехід ${s.id}${n.condition ? ` (${n.condition})` : ''} після вилучення кроку ${p.step_id}?`,
+        critical: true, impact: `Перехід вказував на вилучений крок ${p.step_id}; без відповіді потік процесу невизначений`,
+        addressee: '', status: 'open', answer: '', closed_by_source_id: null, origin: 'analyst',
+        criticality_note: 'Створено автоматично під час прийняття пропозиції вилучення кроку',
+        affects_transitions: [{ step_id: s.id, condition: n.condition, kind: 'direction' }],
+      });
+    }
+  }
+  if (c.entry_step_id === p.step_id) { fx.entry.after = replacement ?? null; c.entry_step_id = replacement ?? null; }
+  p.status = 'accepted';
+  return true;
+}
+
+const FLOW_STRUCT_CODES = new Set(['STEP_UNREACHABLE', 'STEP_NO_EXIT', 'ENTRY_BAD_REF', 'ENTRY_MISSING']);
+
+/** Структурні проблеми потоку як окремі пари «код + крок» (для порівняння до/після). */
+function flowKeys(c: Content): string[] {
+  const out: string[] = [];
+  for (const i of flowIssues(c)) {
+    if (!FLOW_STRUCT_CODES.has(i.code)) continue;
+    for (const ref of (i.ref ?? '').split(',').filter(Boolean)) out.push(`${i.code}:${ref}`);
+    if (!i.ref) out.push(i.code);
+  }
+  return [...new Set(out)].sort();
+}
+
+export interface ProposalPreview {
+  proposal_ids: string[];
+  removed: { id: string; action: string }[];
+  rewired: ProposalEffects['rewired'];
+  new_unknown: ProposalEffects['new_unknown'];
+  entry: { before: string | null; after: string | null; changed: boolean };
+  flow_before: string[];
+  flow_after: string[];
+  resolved: string[];
+  introduced: string[];
+  /** Проблеми потоку після прийняття, що пов'язані з цією зміною (нові або на кроках, яких вона торкнулась). */
+  residual: string[];
+  needs_ack: boolean;
+  errors: ProposalEffects['errors'];
+  lines: string[];
+  hash: string;
+}
+
+const flowKeyText = (c: Content, k: string): string => {
+  const [code, step] = k.split(':');
+  const label = step ? stepLabel(c, step) : '';
+  return code === 'STEP_UNREACHABLE' ? `недосяжний крок ${label}` : code === 'STEP_NO_EXIT' ? `крок ${label} без виходу до завершення`
+    : code === 'ENTRY_BAD_REF' ? 'початковий крок не існує' : 'початковий крок не задано';
+};
+
+/**
+ * Наслідки прийняття набору пропозицій (чиста функція): які кроки зникнуть, куди перейдуть зв'язки, чи зміниться початок,
+ * що стане недосяжним, які нові невідомі переходи й питання з'являться. Показується ДО рішення; прийняття звіряє хеш цього показу.
+ */
+export function previewAccept(content: Content, ids: string[]): ProposalPreview {
+  const c = structuredClone(content);
+  const fx: ProposalEffects = { removed: [], rewired: [], new_unknown: [], orphan_candidates: [], entry: { before: content.entry_step_id ?? null, after: content.entry_step_id ?? null }, errors: [] };
+  const order = (content.step_proposals ?? []).map((p) => p.id);
+  for (const id of [...ids].sort((x, y) => order.indexOf(x) - order.indexOf(y))) {
+    const p = (c.step_proposals ?? []).find((x) => x.id === id);
+    if (!p) { fx.errors.push({ code: 'NOT_FOUND', message: `Пропозицію ${id} не знайдено` }); continue; }
+    if (p.status !== 'proposed') { fx.errors.push({ code: 'PROPOSAL_NOT_PENDING', message: `Рішення за пропозицією ${id} уже прийнято` }); continue; }
+    applyAccept(c, p, fx);
+  }
+  const before = flowKeys(content);
+  const after = flowKeys(c);
+  const touched = new Set<string>([...fx.removed.map((r) => r.id), ...fx.rewired.map((r) => r.from), ...fx.orphan_candidates, ...fx.new_unknown.map((u) => u.from)]);
+  if (fx.entry.after !== null) touched.add(fx.entry.after);
+  const introduced = after.filter((k) => !before.includes(k));
+  const resolved = before.filter((k) => !after.includes(k));
+  const residual = after.filter((k) => introduced.includes(k) || touched.has(k.split(':')[1] ?? ''));
+  const entryChanged = fx.entry.before !== fx.entry.after;
+  const needsAck = residual.length > 0 || (entryChanged && fx.entry.after === null);
+  const lines: string[] = [];
+  for (const r of fx.removed) lines.push(`Крок ${stepLabel(content, r.id)} зникне з опису.`);
+  for (const w of fx.rewired) lines.push(`Перехід ${w.from}${w.condition ? ` («${clipTxt(w.condition, 40)}»)` : ''} → ${w.was} перейде на ${w.now}.`);
+  for (const u of fx.new_unknown) lines.push(`Перехід кроку ${u.from} стане «невідомо»; буде створено критичне питання ${u.question_id} (невідоме не стає фактом).`);
+  lines.push(entryChanged ? `Початковий крок зміниться: ${fx.entry.before ?? 'не задано'} → ${fx.entry.after ?? 'не задано'}.` : `Початковий крок не зміниться (${fx.entry.before ?? 'не задано'}).`);
+  if (resolved.length) lines.push(`Буде усунуто: ${resolved.map((k) => flowKeyText(content, k)).join('; ')}.`);
+  if (after.length === 0) lines.push('Після прийняття проблем потоку (недосяжних кроків, кроків без виходу) не лишиться.');
+  else lines.push(`Після прийняття ЛИШАТЬСЯ проблеми потоку: ${after.map((k) => flowKeyText(c, k)).join('; ')}.`);
+  for (const e of fx.errors) lines.push(`Помилка: ${e.message}.`);
+  const hash = sha256(canonical({ ids: [...ids].sort(), base: sha256(canonical(content)), removed: fx.removed.map((r) => r.id), rewired: fx.rewired, new_unknown: fx.new_unknown.map((u) => [u.from, u.condition]), entry: fx.entry, after, errors: fx.errors.map((e) => e.code) }));
+  return {
+    proposal_ids: [...ids], removed: fx.removed, rewired: fx.rewired, new_unknown: fx.new_unknown,
+    entry: { before: fx.entry.before, after: fx.entry.after, changed: entryChanged },
+    flow_before: before, flow_after: after, resolved, introduced, residual, needs_ack: needsAck, errors: fx.errors, lines, hash,
+  };
+}
+
+export interface ProposalPreviews {
+  /** Наслідки прийняття кожної відкритої пропозиції ОКРЕМО. */
+  items: Record<string, ProposalPreview & { better_with: string[] }>;
+  /** Групи пов'язаних пропозицій: разом дають менше проблем потоку, ніж кожна окремо. */
+  bundles: { ids: string[]; preview: ProposalPreview }[];
+  /** Пропозицій забагато для повного перебору комбінацій — групи не обчислювались. */
+  bundles_skipped: boolean;
+}
+
+const MAX_BUNDLE_SEARCH = 8;
+
+export function previewProposals(content: Content): ProposalPreviews {
+  const pending = (content.step_proposals ?? []).filter((p) => p.status === 'proposed').map((p) => p.id);
+  const items: ProposalPreviews['items'] = {};
+  const bundles: ProposalPreviews['bundles'] = [];
+  const skipped = pending.length > MAX_BUNDLE_SEARCH;
+  const alone = new Map(pending.map((id) => [id, previewAccept(content, [id])]));
+  const cost = new Map<string, number>();
+  const costOf = (ids: string[]): number => {
+    const key = [...ids].sort().join(',');
+    if (!cost.has(key)) { const pv = previewAccept(content, ids); cost.set(key, pv.errors.length ? Infinity : pv.flow_after.length); }
+    return cost.get(key)!;
+  };
+  const seen = new Set<string>();
+  for (const id of pending) {
+    let betterWith: string[] = [];
+    if (!skipped) {
+      const base = costOf([id]);
+      let bestCost = base;
+      for (let mask = 1; mask < 1 << pending.length; mask++) {
+        const subset = pending.filter((_, i) => (mask & (1 << i)) !== 0);
+        if (!subset.includes(id) || subset.length < 2) continue;
+        const cst = costOf(subset);
+        // найменша кількість проблем потоку; за однакової — найменша група
+        if (cst < bestCost || (cst === bestCost && cst < base && subset.length - 1 < betterWith.length)) { bestCost = cst; betterWith = subset.filter((x) => x !== id); }
+      }
+    }
+    items[id] = { ...alone.get(id)!, better_with: betterWith };
+    if (betterWith.length) {
+      const group = [id, ...betterWith].sort((x, y) => pending.indexOf(x) - pending.indexOf(y));
+      const key = group.join(',');
+      if (!seen.has(key)) { seen.add(key); bundles.push({ ids: group, preview: previewAccept(content, group) }); }
+    }
+  }
+  return { items, bundles, bundles_skipped: skipped };
+}
+
+/**
+ * Рішення аналітикині щодо пропозицій агента вилучити/замінити крок. Створює НОВУ версію; попередні лишаються.
  * Прийняття: крок вилучається; переходи, що вели до нього, перенаправляються на крок-заміну (replace) або стають
  * «невідомо» з критичним питанням (remove) — «невідоме не стає фактом»; початковий крок переноситься або знімається.
+ * Пов'язані пропозиції можна прийняти ОДНИМ явним рішенням (`proposalIds`): одна нова версія, інші пропозиції автоматично не чіпаються.
+ * Якщо після прийняття лишається недосяжність чи крок без виходу, пов'язані зі зміною, потрібне явне підтвердження наслідків
+ * (`acknowledge`); показані наслідки звіряються за хешем (`previewHash`), застарілий показ відхиляється.
  * Нова версія потребує прийняття, передачі на погодження й погодження заново (погодження втрачає чинність).
  * Правки аналітикині не знімаються: змінені кроки стають її «власністю», агент їх не перезапише.
  */
+export function decideStepProposals(
+  db: DB, actor: Actor, caseId: string,
+  input: { baseVersionId: string; proposalIds: string[]; note?: string; previewHash?: string; acknowledge?: boolean },
+): VersionRow {
+  requireHuman(actor, 'рішення щодо пропозиції агента');
+  const ids = [...new Set(input.proposalIds)];
+  if (ids.length === 0) throw new DomainError('VALIDATION', 'Не вказано пропозицій', 400);
+  return tx(db, () => {
+    const head = assertBase(db, caseId, input.baseVersionId);
+    const c = versionContent(head);
+    for (const id of ids) {
+      const p = (c.step_proposals ?? []).find((x) => x.id === id);
+      if (!p) throw new DomainError('NOT_FOUND', 'Пропозицію не знайдено', 404);
+      if (p.status !== 'proposed') throw new DomainError('PROPOSAL_NOT_PENDING', 'Рішення за цією пропозицією вже прийнято', 409);
+    }
+    const preview = previewAccept(c, ids);
+    const missing = preview.errors.find((e) => e.code === 'STEP_MISSING');
+    if (missing) throw new DomainError('STEP_MISSING', missing.message, 409);
+    if (input.previewHash !== undefined && input.previewHash !== preview.hash) {
+      throw new DomainError('PREVIEW_STALE', 'Наслідки, які ви бачили, більше не відповідають поточній версії. Перегляньте їх ще раз.', 409, { preview });
+    }
+    if (preview.needs_ack && !input.acknowledge) {
+      throw new DomainError('CONSEQUENCES_NOT_CONFIRMED',
+        'Після прийняття лишаться проблеми потоку, пов’язані з цією зміною. Перегляньте наслідки й підтвердіть їх явно (або прийміть пов’язані пропозиції разом).', 409, { preview });
+    }
+    const note = (input.note ?? '').trim();
+    const fx: ProposalEffects = { removed: [], rewired: [], new_unknown: [], orphan_candidates: [], entry: { before: c.entry_step_id ?? null, after: c.entry_step_id ?? null }, errors: [] };
+    const order = (c.step_proposals ?? []).map((p) => p.id);
+    for (const id of [...ids].sort((x, y) => order.indexOf(x) - order.indexOf(y))) {
+      const p = (c.step_proposals ?? []).find((x) => x.id === id)!;
+      p.decided_by = actor.name;
+      p.decision_note = note;
+      applyAccept(c, p, fx);
+    }
+    const what = (id: string, p: StepProposalT) => (p.action === 'remove' ? `вилучено крок ${p.step_id}` : `крок ${p.step_id} замінено на ${p.replacement_step_id}`);
+    const props = (c.step_proposals ?? []).filter((p) => ids.includes(p.id));
+    const msg = ids.length === 1
+      ? `Прийнято пропозицію ${props[0]!.id}: ${what(props[0]!.id, props[0]!)}`
+      : `Прийнято разом пропозиції ${props.map((p) => p.id).join(', ')}: ${props.map((p) => what(p.id, p)).join('; ')}`;
+    return commitAnalystVersion(db, actor, caseId, head, c, JSON.parse(head.covered_json) as string[], msg);
+  });
+}
+
 export function decideStepProposal(
   db: DB, actor: Actor, caseId: string,
-  input: { baseVersionId: string; proposalId: string; decision: 'accept' | 'reject'; note?: string },
+  input: { baseVersionId: string; proposalId: string; decision: 'accept' | 'reject'; note?: string; previewHash?: string; acknowledge?: boolean },
 ): VersionRow {
   requireHuman(actor, 'рішення щодо пропозиції агента');
   if (input.decision !== 'accept' && input.decision !== 'reject') throw new DomainError('VALIDATION', 'decision має бути accept або reject', 400);
+  if (input.decision === 'accept') {
+    return decideStepProposals(db, actor, caseId, { baseVersionId: input.baseVersionId, proposalIds: [input.proposalId], note: input.note, previewHash: input.previewHash, acknowledge: input.acknowledge });
+  }
   return tx(db, () => {
     const head = assertBase(db, caseId, input.baseVersionId);
     const c = versionContent(head);
     const p = (c.step_proposals ?? []).find((x) => x.id === input.proposalId);
     if (!p) throw new DomainError('NOT_FOUND', 'Пропозицію не знайдено', 404);
     if (p.status !== 'proposed') throw new DomainError('PROPOSAL_NOT_PENDING', 'Рішення за цією пропозицією вже прийнято', 409);
-    const note = (input.note ?? '').trim();
     p.decided_by = actor.name;
-    p.decision_note = note;
-    if (input.decision === 'reject') {
-      p.status = 'rejected';
-      return commitAnalystVersion(db, actor, caseId, head, c, JSON.parse(head.covered_json) as string[],
-        `Пропозицію ${p.id} (${p.action} ${p.step_id}) відхилено`);
-    }
-    if (!c.steps.some((s) => s.id === p.step_id)) throw new DomainError('STEP_MISSING', `Кроку ${p.step_id} у поточній версії вже немає`, 409);
-    if (p.action === 'replace' && !c.steps.some((s) => s.id === p.replacement_step_id)) {
-      throw new DomainError('STEP_MISSING', `Кроку-заміни ${p.replacement_step_id} немає в поточній версії`, 409);
-    }
-    const replacement = p.action === 'replace' ? p.replacement_step_id : null;
-    c.steps = c.steps.filter((s) => s.id !== p.step_id);
-    for (const s of c.steps) {
-      for (const n of s.next) {
-        if (n.to !== p.step_id) continue;
-        if (replacement && s.id !== replacement) { n.to = replacement; continue; }
-        n.to = UNKNOWN;
-        c.questions.push({
-          id: nextId('Q', c.questions.map((q) => q.id)),
-          text: `Куди веде перехід ${s.id}${n.condition ? ` (${n.condition})` : ''} після вилучення кроку ${p.step_id}?`,
-          critical: true, impact: `Перехід вказував на вилучений крок ${p.step_id}; без відповіді потік процесу невизначений`,
-          addressee: '', status: 'open', answer: '', closed_by_source_id: null, origin: 'analyst',
-          criticality_note: 'Створено автоматично під час прийняття пропозиції вилучення кроку',
-          affects_transitions: [{ step_id: s.id, condition: n.condition }],
-        });
-      }
-    }
-    if (c.entry_step_id === p.step_id) c.entry_step_id = replacement ?? null;
-    p.status = 'accepted';
+    p.decision_note = (input.note ?? '').trim();
+    p.status = 'rejected';
     return commitAnalystVersion(db, actor, caseId, head, c, JSON.parse(head.covered_json) as string[],
-      `Прийнято пропозицію ${p.id}: ${p.action === 'remove' ? 'вилучено крок ' + p.step_id : 'крок ' + p.step_id + ' замінено на ' + replacement}`);
+      `Пропозицію ${p.id} (${p.action} ${p.step_id}) відхилено`);
   });
 }
 
@@ -860,6 +1106,7 @@ export function submissionBlockers(db: DB, caseId: string): Blocker[] {
   }
   out.push(...transitionIssues(c));
   out.push(...flowIssues(c));
+  out.push(...preparationIssues(c));
   if (c.conflicts.length > 0) {
     out.push({ code: 'CONFLICTS_PRESENT', severity: 'warning', message: `Є конфлікти між правками аналітика й агента: ${c.conflicts.length}. Перегляньте обидва варіанти.` });
   }
@@ -870,16 +1117,20 @@ export function submissionBlockers(db: DB, caseId: string): Blocker[] {
 
 const condText = (cond: string): string => (cond ? `«${cond}»` : '(без умови)');
 
-/** Питання, що стосуються переходу (крок, умова). */
-export function questionsAffecting(c: Content, stepId: string, condition: string): Question[] {
-  return c.questions.filter((q) => (q.affects_transitions ?? []).some((a) => a.step_id === stepId && a.condition === condition));
+export const linkKindOf = (a: { kind?: LinkKindT }): LinkKindT => a.kind ?? 'direction';
+
+/** Питання, що стосуються переходу (крок, умова) для вказаних видів прив'язки (за замовчуванням — лише «напрямок», як було раніше). */
+export function questionsAffecting(c: Content, stepId: string, condition: string, kinds: LinkKindT[] = ['direction']): Question[] {
+  return c.questions.filter((q) => (q.affects_transitions ?? []).some((a) => a.step_id === stepId && a.condition === condition && kinds.includes(linkKindOf(a))));
 }
 
 /**
  * Правила «невідоме не стає фактом». Усі порушення критичні (це прогалини у ході процесу):
- *  • перехід «невідомо» без питання, з закритим питанням, або з відкритим питанням (залишається прогалиною);
- *  • відкрите питання про перехід, який поданий як встановлений (наприклад, END) — суперечність;
- *  • відкрите питання посилається на перехід, якого в описі немає.
+ *  • перехід «невідомо» без питання про НАПРЯМОК, з закритим питанням, або з відкритим питанням (залишається прогалиною);
+ *  • відкрите питання про НАПРЯМОК переходу, який поданий як встановлений (наприклад, END) — суперечність;
+ *  • відкрите питання про непідтверджену ПОСЛІДОВНІСТЬ відомого переходу — прогалина «послідовність не підтверджена»;
+ *  • відкрите питання про ВИНЯТОК або уточнення кроку саме по собі переходів не блокує (блокує лише критичне питання окремим правилом);
+ *  • відкрите питання посилається на перехід (чи крок), якого в описі немає.
  */
 export function transitionIssues(c: Content): Blocker[] {
   const out: Blocker[] = [];
@@ -890,7 +1141,7 @@ export function transitionIssues(c: Content): Blocker[] {
       if (n.to === UNKNOWN) {
         if (linked.length === 0) {
           out.push({ code: 'UNKNOWN_WITHOUT_QUESTION', severity: 'critical', ref: s.id,
-            message: `Крок ${s.id}: перехід ${condText(n.condition)} позначено «невідомо», але немає питання, яке б це з’ясовувало. Додайте питання.` });
+            message: `Крок ${s.id}: перехід ${condText(n.condition)} позначено «невідомо», але немає питання про напрямок, яке б це з’ясовувало. Додайте питання.` });
         } else if (open.length === 0) {
           out.push({ code: 'UNKNOWN_QUESTION_CLOSED', severity: 'critical', ref: s.id,
             message: `Крок ${s.id}: перехід ${condText(n.condition)} досі «невідомо», хоча питання ${linked.map((q) => q.id).join(', ')} закрито. Оновіть крок відповідно до уточнення.` });
@@ -898,20 +1149,47 @@ export function transitionIssues(c: Content): Blocker[] {
           out.push({ code: 'UNRESOLVED_TRANSITION', severity: 'critical', ref: s.id,
             message: `Крок ${s.id}: перехід ${condText(n.condition)} невизначений — див. питання ${open.map((q) => q.id).join(', ')}.` });
         }
-      } else if (open.length > 0) {
-        out.push({ code: 'CONTRADICTION', severity: 'critical', ref: open[0]!.id,
-          message: `Суперечність: питання ${open.map((q) => q.id).join(', ')} про перехід ${condText(n.condition)} кроку ${s.id} відкрите, але перехід поданий як встановлений (→ ${n.to}). Невідоме не можна записувати як факт.` });
+      } else {
+        if (open.length > 0) {
+          out.push({ code: 'CONTRADICTION', severity: 'critical', ref: open[0]!.id,
+            message: `Суперечність: питання ${open.map((q) => q.id).join(', ')} про перехід ${condText(n.condition)} кроку ${s.id} відкрите як питання про напрямок, але перехід поданий як встановлений (→ ${n.to}). Невідоме не можна записувати як факт: або позначте перехід «невідомо», або, якщо питання не про напрямок (послідовність не підтверджена, невідомий виняток, уточнення кроку), змініть вид прив’язки питання.` });
+        }
+        const seq = questionsAffecting(c, s.id, n.condition, ['unconfirmed_sequence']).filter((q) => q.status === 'open');
+        if (seq.length > 0) {
+          out.push({ code: 'SEQUENCE_UNCONFIRMED', severity: 'critical', ref: seq[0]!.id,
+            message: `Послідовність ${s.id} → ${n.to} не підтверджена: ${seq.map((q) => q.id).join(', ')}. Перехід записано за припущенням; доки питання відкрите, потік процесу не можна вважати встановленим.` });
+        }
       }
     }
   }
   for (const q of c.questions) {
     if (q.status !== 'open') continue;
     for (const a of q.affects_transitions ?? []) {
-      const exists = c.steps.some((s) => s.id === a.step_id && s.next.some((n) => n.condition === a.condition));
+      const kind = linkKindOf(a);
+      const exists = kind === 'step_detail'
+        ? c.steps.some((s) => s.id === a.step_id)
+        : c.steps.some((s) => s.id === a.step_id && s.next.some((n) => n.condition === a.condition));
       if (!exists) {
         out.push({ code: 'QUESTION_LINK_BROKEN', severity: 'critical', ref: q.id,
-          message: `Питання ${q.id} стосується переходу ${condText(a.condition)} кроку ${a.step_id}, якого в описі немає (змінено умову чи крок?).` });
+          message: kind === 'step_detail'
+            ? `Питання ${q.id} стосується кроку ${a.step_id}, якого в описі немає.`
+            : `Питання ${q.id} стосується переходу ${condText(a.condition)} кроку ${a.step_id}, якого в описі немає (змінено умову чи крок?).` });
       }
+    }
+  }
+  return out;
+}
+
+/**
+ * Ранній варіант правила генератора SINGLE_CONDITIONAL_BRANCH: єдиний вихідний перехід кроку має умову (а що буде в іншому випадку — не сказано).
+ * Перехід у «невідомо» не рахується (його пояснює питання). Це попередження до побудови: воно не змінює зміст і справжніх умов не чіпає.
+ */
+export function preparationIssues(c: Content): Blocker[] {
+  const out: Blocker[] = [];
+  for (const s of c.steps) {
+    if (s.next.length === 1 && s.next[0]!.condition.trim() !== '' && s.next[0]!.to !== UNKNOWN) {
+      out.push({ code: 'SINGLE_CONDITIONAL_BRANCH', severity: 'warning', ref: s.id,
+        message: `Крок ${s.id}: єдиний вихідний перехід має умову «${clipTxt(s.next[0]!.condition, 60)}», а що буде в іншому випадку — не сказано. Якщо це лише результат кроку, умову варто прибрати (результат — у полі «Результат»); якщо це справжній вибір, опишіть другу гілку. Схему з такою умовою побудувати не вдасться.` });
     }
   }
   return out;
@@ -1125,6 +1403,8 @@ export function bpmnGuard(db: DB, caseId: string, opts: { ignoreActiveRun?: bool
     for (const q of open) fail('CRITICAL_QUESTION', `У погодженій версії є відкрите критичне питання ${q.id}.`);
     for (const issue of transitionIssues(versionContent(approved))) fail(issue.code, issue.message);
     for (const issue of flowIssues(versionContent(approved))) fail(issue.code, issue.message);
+    // Правило генератора, що виявляється до спроби побудови: єдиний перехід з умовою (D28: K1 блокує BPMN, але не погодження).
+    for (const issue of preparationIssues(versionContent(approved))) fail(issue.code, issue.message);
     for (const issue of notationIssues(versionContent(approved))) fail(issue.code, issue.message);
     if (!(versionContent(approved).process_name ?? '').trim()) {
       fail('PROCESS_NAME_MISSING', 'У погодженій версії немає назви процесу: вона потрібна для напису на пулі, а підставляти назву кейсу не можна. Вкажіть назву — буде створено нову версію, її треба прийняти й погодити.');
@@ -1321,7 +1601,7 @@ export function diffVersions(
 
 // ───────────────── огляд стану чернетки (окремо від змістових прогалин) ─────────────────
 
-const GAP_CODES = new Set(['PENDING_STEP_PROPOSAL', 'PENDING_NOTATION_PROPOSAL', 'NOTATION_BAD_STEP', 'CRITICAL_QUESTION', 'UNRESOLVED_TRANSITION', 'UNKNOWN_WITHOUT_QUESTION', 'UNKNOWN_QUESTION_CLOSED', 'CONTRADICTION', 'QUESTION_LINK_BROKEN', 'ENTRY_MISSING', 'ENTRY_BAD_REF', 'STEP_UNREACHABLE', 'STEP_NO_EXIT']);
+const GAP_CODES = new Set(['PENDING_STEP_PROPOSAL', 'PENDING_NOTATION_PROPOSAL', 'NOTATION_BAD_STEP', 'CRITICAL_QUESTION', 'UNRESOLVED_TRANSITION', 'UNKNOWN_WITHOUT_QUESTION', 'UNKNOWN_QUESTION_CLOSED', 'CONTRADICTION', 'QUESTION_LINK_BROKEN', 'ENTRY_MISSING', 'ENTRY_BAD_REF', 'STEP_UNREACHABLE', 'STEP_NO_EXIT', 'SEQUENCE_UNCONFIRMED']);
 const STRUCTURE_CODES = new Set(['BOUNDARY_MISSING', 'NO_ROLES', 'NO_STEPS', 'STEP_INCOMPLETE', 'STEP_UNKNOWN_ROLE', 'STEP_NO_NEXT', 'STEP_BAD_NEXT', 'STEP_NO_CONDITION', 'PROBLEM_NO_IMPACT']);
 
 /** Критичні змістові прогалини: чого про процес ще не з’ясовано або де опис суперечить сам собі. */
@@ -1412,6 +1692,7 @@ export function draftReview(
   const uncovered = by((b) => b.code === 'UNCOVERED_SOURCE');
   const conflicts = by((b) => b.code === 'CONFLICTS_PRESENT');
   const noName = by((b) => b.code === 'PROCESS_NAME_MISSING');
+  const prep = by((b) => b.code === 'SINGLE_CONDITIONAL_BRANCH');
   const pendingNotation = by((b) => b.code === 'PENDING_NOTATION_PROPOSAL' || b.code === 'NOTATION_BAD_STEP');
   const checks: ReviewCheck[] = [
     mk('accepted', 'Робочу версію прийнято аналітиком', opts.accepted ? 'ok' : 'fail', opts.accepted ? 'Так (це не погодження AS-IS)' : 'Ні — прийняття ще не відбулося'),
@@ -1423,6 +1704,7 @@ export function draftReview(
     mk('gaps', 'Критичних прогалин немає', gaps.length ? 'fail' : 'ok', gaps.length ? `Відкрито прогалин: ${gaps.length} (див. блок «Критичні прогалини»)` : 'Немає'),
     mk('integrity', 'Цілісність версії (хеш збігається зі змістом)', opts.integrityOk ? 'ok' : 'fail', opts.integrityOk ? 'Так' : 'Порушена: не використовуйте цю версію'),
     mk('process_name', 'Назву процесу зазначено (потрібна перед побудовою схеми)', noName.length ? 'warn' : 'ok', noName.length ? 'Не зазначено — не блокує погодження, але схему без назви не побудувати' : 'Так'),
+    mk('conditions', 'Переходи придатні до побудови схеми (немає єдиного переходу з умовою)', prep.length ? 'warn' : 'ok', prep.length ? prep.slice(0, 2).map((b) => b.message).join(' · ') + (prep.length > 2 ? ` · …ще ${prep.length - 2}` : '') : 'Так'),
     mk('notation', 'Пропозиції агента щодо нотації мають рішення', pendingNotation.length ? 'fail' : 'ok', pendingNotation.length ? pendingNotation.map((b) => b.message).slice(0, 2).join(' · ') : 'Немає відкритих'),
     mk('conflicts', 'Конфлікти між правками аналітика й агента', conflicts.length ? 'warn' : 'ok', conflicts.length ? conflicts[0]!.message : 'Немає'),
   ];
@@ -1551,6 +1833,8 @@ export function buildCard(db: DB, caseId: string, mode: string) {
          FROM approval a LEFT JOIN approval_revocation r ON r.approval_id = a.id WHERE a.case_id = ? ORDER BY a.created_at DESC`, caseId),
     runs: all(db, 'SELECT * FROM run WHERE case_id = ? ORDER BY started_at DESC LIMIT 20', caseId),
     audit: all(db, 'SELECT at, actor, action, details_json FROM audit_log WHERE case_id = ? ORDER BY id DESC LIMIT 40', caseId),
+    proposal_previews: previewProposals(content),
+    link_kinds: LINK_KIND_LABEL,
     step_proposals: (content.step_proposals ?? []).map((p) => {
       const src = byId.get(p.evidence_source_id);
       const m = src && p.evidence_quote ? findQuote(src.content, p.evidence_quote) : null;

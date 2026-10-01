@@ -160,7 +160,7 @@ export function analyzePackage(pkg: ApprovedPackage): Analysis {
     }
   }
   for (const issue of transitionIssues(c)) {
-    if (issue.code === 'CONTRADICTION' || issue.code === 'QUESTION_LINK_BROKEN') k1(issue.code, issue.message, issue.ref ? [issue.ref] : []);
+    if (issue.code === 'CONTRADICTION' || issue.code === 'QUESTION_LINK_BROKEN' || issue.code === 'SEQUENCE_UNCONFIRMED') k1(issue.code, issue.message, issue.ref ? [issue.ref] : []);
   }
   for (const q of c.questions) {
     if (q.status === 'open' && q.critical) k1('CRITICAL_QUESTION', `Відкрите критичне питання ${q.id}: ${clip(q.text, 120)}`, [q.id]);

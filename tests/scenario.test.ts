@@ -222,7 +222,9 @@ test('Негативний сценарій: невизначена гілка �
     }))).ok);
   }
   // Етап 5: питання про гілку відкрите → блокування (логіка програми)
-  const v5 = headVersion(db, neg.id);
+  // Початковий крок — межа процесу: від D68 його задає аналітикиня, а не підставний «агент» (його зміна відкидається).
+  assert.equal(versionContent(headVersion(db, neg.id)).entry_step_id ?? null, null);
+  const v5 = saveAnalystVersion(db, human, neg.id, { baseVersionId: headVersion(db, neg.id).id, fields: { entry_step_id: 'S1' } });
   acceptDraft(db, human, neg.id, v5.id);
   const blockers = submissionBlockers(db, neg.id).filter((b) => b.severity === 'critical').map((b) => b.code);
   assert.ok(blockers.includes('CRITICAL_QUESTION') && blockers.includes('UNRESOLVED_TRANSITION'), blockers.join());

@@ -1,6 +1,7 @@
 import { canonical } from '../hash.ts';
 import { ContentSchema, type Content } from '../schema.ts';
 import { findQuote } from './quote.ts';
+import { selfConsistency } from './consistency.ts';
 
 export interface Violation {
   code: string;
@@ -179,11 +180,16 @@ export function verifyAgentOutput(raw: unknown, ctx: VerifyContext): VerifyResul
     const missing = b.filter((id) => !set.has(id));
     if (missing.length) v.push({ code: 'DELETED_ITEMS', path: name, message: `відсутні наявні ID: ${missing.join(', ')} (видаляти не можна)` });
   }
+  const sc = selfConsistency(base, out);
+  v.push(...sc.violations);
+  warnings.push(...sc.warnings);
   if (v.length) return { ok: false, violations: v };
 
   // Нормалізація (не порушення): авторство нових елементів визначає програма, а не модель.
   const baseQ = new Set(base.questions.map((q) => q.id));
   for (const q of out.questions) if (!baseQ.has(q.id)) q.origin = 'agent';
+  // Історію виправлень прив'язки веде лише застосунок за рішенням аналітикині: агент її не створює й не змінює.
+  for (const q of out.questions) { const b = base.questions.find((x) => x.id === q.id); if (b?.link_history) q.link_history = b.link_history; else delete q.link_history; }
   for (const h of out.hypotheses) if (!baseHyp.has(h.id)) h.author = 'agent';
   for (const r of out.notation_requirements ?? []) if (!baseReq.has(r.id)) r.origin = 'agent';
 

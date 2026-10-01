@@ -293,7 +293,11 @@ test('4д. Початковий крок, що вилучається, знім�
   const cur = versionContent(h);
   assert.equal(cur.entry_step_id, 'S1');
   await runAnalyst(db, c.id, new ScriptedDemoClient(() => withProps(cur, prop(src.id, { step_id: 'S1', reason: 'тест', evidence_quote: 'Менеджер приймає запит.' }))));
-  const nv = decideStepProposal(db, human, c.id, { baseVersionId: headVersion(db, c.id).id, proposalId: 'SP1', decision: 'accept' });
+  // D68: знімання початкового кроку — наслідок, який людина має побачити й підтвердити явно (без підтвердження версію не змінено).
+  const before = headVersion(db, c.id).id;
+  assert.throws(() => decideStepProposal(db, human, c.id, { baseVersionId: before, proposalId: 'SP1', decision: 'accept' }), (e: any) => e.code === 'CONSEQUENCES_NOT_CONFIRMED' && e.details.preview.entry.after === null);
+  assert.equal(headVersion(db, c.id).id, before);
+  const nv = decideStepProposal(db, human, c.id, { baseVersionId: before, proposalId: 'SP1', decision: 'accept', acknowledge: true });
   assert.equal(versionContent(nv).entry_step_id, null);
   assert.ok(submissionBlockers(db, c.id).some((b) => b.code === 'ENTRY_MISSING' || b.code === 'ENTRY_BAD_REF'));
 });

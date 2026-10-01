@@ -246,6 +246,16 @@ export function addUsage(a: Usage, b?: Usage): Usage {
   };
 }
 
+/** Дописує журнал спроб (причини невдалих) у checks_json запуску: інакше при вдалій наступній спробі причина повтору губиться. */
+function recordAttempts(db: DB, runId: string, log: { attempt: number; kind: string; message: string; violations: Violation[] }[]): void {
+  if (log.length === 0) return;
+  const row = one<{ checks_json: string }>(db, 'SELECT checks_json FROM run WHERE id = ?', runId);
+  let checks: Record<string, unknown> = {};
+  try { checks = JSON.parse(row?.checks_json ?? '{}') as Record<string, unknown>; } catch { checks = {}; }
+  checks.failed_attempts = log.map((l) => ({ attempt: l.attempt, kind: l.kind, message: redact(l.message).slice(0, 500), violations: l.violations.slice(0, 20) }));
+  run(db, 'UPDATE run SET checks_json = ? WHERE id = ?', JSON.stringify(checks), runId);
+}
+
 export type RunResult = { ok: true; runId: string; version: VersionRow } | { ok: false; runId: string; error: string };
 
 /**
@@ -261,6 +271,7 @@ export async function executeAnalystRun(db: DB, ctx: RunCtx, client: AnalystClie
   let attempts = 0;
   let lastError = 'невідома помилка';
   let lastViolations: Violation[] = [];
+  const attemptLog: { attempt: number; kind: string; message: string; violations: Violation[] }[] = [];
   let known = 0;               // вартість спроб із відомим usage
   let unknownReserve = 0;      // консервативний резерв спроб без usage
   let attemptReserve = ctx.reservedUsd;
@@ -296,12 +307,14 @@ export async function executeAnalystRun(db: DB, ctx: RunCtx, client: AnalystClie
       try {
         const version = completeAnalystRun(db, ctx.runId, out.output);
         writeMeta(db, ctx.runId, meta());
+        recordAttempts(db, ctx.runId, attemptLog);
         return { ok: true, runId: ctx.runId, version };
       } catch (e) {
         lastError = e instanceof Error ? e.message : String(e);
         if (e instanceof DomainError && e.code === 'BAD_OUTPUT') {
           lastViolations = ((e.details as { violations?: Violation[] } | undefined)?.violations) ?? [];
           retryNote = formatViolations(lastViolations);
+          attemptLog.push({ attempt, kind: 'invalid_output', message: lastError, violations: lastViolations });
         } else break;
       }
     } catch (e) {
@@ -310,6 +323,7 @@ export async function executeAnalystRun(db: DB, ctx: RunCtx, client: AnalystClie
         usage = addUsage(usage, e.usage);
         settle(e.usage, e.billing);
         lastError = e.message;
+        attemptLog.push({ attempt, kind: e.kind, message: e.message, violations: [] });
         if (!e.retryable) break;
         retryNote = e.kind === 'invalid_json' ? ['Відповідь не була коректним JSON-об’єктом за схемою.'] : undefined;
       } else {
@@ -321,6 +335,7 @@ export async function executeAnalystRun(db: DB, ctx: RunCtx, client: AnalystClie
     if (attempt < maxAttempts) ctx.input = { ...ctx.input, retry_feedback: retryNote };
   }
   failRun(db, ctx.runId, lastError, meta(), lastViolations);
+  recordAttempts(db, ctx.runId, attemptLog);
   return { ok: false, runId: ctx.runId, error: lastError };
 }
 

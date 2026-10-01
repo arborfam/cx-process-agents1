@@ -187,7 +187,7 @@ test('Прогалини й статус чернетки — окремі бл�
   assert.ok(c0.gaps.every((g) => g.severity === 'critical'));
   assert.ok(!c0.gaps.some((g) => g.code === 'NOT_ACCEPTED'), 'прийняття — не змістова прогалина');
   const keys = c0.review.checks.map((x) => x.key);
-  assert.deepEqual(keys, ['accepted', 'sources', 'reading', 'structure', 'gaps', 'integrity', 'process_name', 'notation', 'conflicts']);
+  assert.deepEqual(keys, ['accepted', 'sources', 'reading', 'structure', 'gaps', 'integrity', 'process_name', 'conditions', 'notation', 'conflicts']);
   assert.equal(c0.review.ready, false);
   assert.ok(c0.review.checks.every((x) => ['Пройдено', 'Не пройдено', 'Увага'].includes(x.status_text)), 'статуси мають текстові підписи');
   assert.equal(c0.review.checks.find((x) => x.key === 'gaps')!.status, 'fail');

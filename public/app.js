@@ -128,8 +128,8 @@ async function renderCase(id) {
     const isTr = ['UNRESOLVED_TRANSITION', 'UNKNOWN_WITHOUT_QUESTION', 'UNKNOWN_QUESTION_CLOSED'].includes(g.code);
     const isEntry = g.code === 'ENTRY_MISSING' || g.code === 'ENTRY_BAD_REF';
     const isFlow = g.code === 'STEP_UNREACHABLE' || g.code === 'STEP_NO_EXIT';
-    const qid = g.code === 'CONTRADICTION' || g.code === 'QUESTION_LINK_BROKEN' ? g.ref : isTr ? (card.unknown_transitions.find((u) => u.step_id === g.ref)?.question_ids[0]) : null;
-    const title = isQ ? 'Критичне питання ' : isTr ? 'Невизначений перехід. ' : g.code === 'CONTRADICTION' ? 'Суперечність. '
+    const qid = g.code === 'CONTRADICTION' || g.code === 'QUESTION_LINK_BROKEN' || g.code === 'SEQUENCE_UNCONFIRMED' ? g.ref : isTr ? (card.unknown_transitions.find((u) => u.step_id === g.ref)?.question_ids[0]) : null;
+    const title = isQ ? 'Критичне питання ' : isTr ? 'Невизначений перехід. ' : g.code === 'CONTRADICTION' ? 'Суперечність. ' : g.code === 'SEQUENCE_UNCONFIRMED' ? 'Послідовність не підтверджена. '
       : isEntry ? 'Початковий крок. ' : g.code === 'STEP_UNREACHABLE' ? 'Недосяжні кроки. ' : g.code === 'STEP_NO_EXIT' ? 'Немає виходу до завершення. ' : g.code === 'PENDING_STEP_PROPOSAL' ? 'Пропозиція агента без рішення. ' : g.code === 'PENDING_NOTATION_PROPOSAL' ? 'Пропозиція щодо нотації без рішення. ' : g.code === 'NOTATION_BAD_STEP' ? 'Вимога до нотації без кроку. ' : 'Прогалина. ';
     return el('div', { class: 'blocker' },
       el('strong', {}, title),
@@ -427,7 +427,7 @@ const PANELS = {
       : el('p', { class: 'warnbox' }, el('strong', {}, 'Початковий крок не задано. '), 'Оберіть його в блоці «Критичні прогалини» або на вкладці «Редагувати».');
     return el('div', {}, entryLine, proposalsView(card),
       el('table', {}, el('thead', {}, el('tr', {}, ['ID', 'Роль', 'Дія', 'Результат', 'Далі'].map((h) => el('th', {}, h)))),
-        el('tbody', {}, steps.map((s) => el('tr', {}, el('td', {}, s.id === c.entry_step_id ? '▶ ' + s.id : s.id), el('td', {}, s.role), el('td', {}, s.action), el('td', {}, s.result),
+        el('tbody', {}, steps.map((s) => el('tr', {}, el('td', {}, s.id === c.entry_step_id ? '▶ ' + s.id : s.id), el('td', {}, s.role), el('td', {}, s.action, s.details ? el('details', { class: 'small' }, el('summary', {}, 'Деталі'), s.details) : null), el('td', {}, s.result),
           el('td', {}, s.next.map((n) => n.to === 'UNKNOWN' ? unknownView(card, s, n) : el('div', {}, '→ ' + (n.to === 'END' ? 'кінець процесу' : n.to) + (n.condition ? ' (' + n.condition + ')' : '')))))))));
   },
   claims: (card) => {
@@ -576,24 +576,62 @@ function notationView(card) {
     add);
 }
 
+function previewBox(pv) {
+  return el('div', { class: 'small', 'data-block': 'preview' }, el('strong', {}, 'Що зміниться, якщо прийняти: '),
+    el('ul', {}, pv.lines.map((l) => el('li', {}, l))));
+}
+
 function proposalsView(card) {
   const ps = card.step_proposals || [];
   if (!ps.length) return null;
   const ST = { proposed: 'очікує рішення', accepted: 'прийнято', rejected: 'відхилено' };
+  const prev = card.proposal_previews || { items: {}, bundles: [] };
+  const bundleFor = (p) => (prev.items[p.id] && prev.items[p.id].better_with.length)
+    ? prev.bundles.find((bd) => bd.ids.includes(p.id) && bd.ids.length === prev.items[p.id].better_with.length + 1) : null;
   return el('div', { class: 'warnbox', 'data-block': 'proposals' }, el('strong', {}, 'Пропозиції агента щодо кроків'),
-    el('p', { class: 'small' }, 'Агент не вилучає кроків сам: крок лишається в описі, доки ви не приймете пропозицію. Прийняття створює нову версію (стара зберігається) і потребує нового прийняття й погодження.'),
-    ps.map((p) => el('div', { class: 'claim' },
-      el('div', {}, el('span', { class: 'chip' }, p.id + ' · ' + ST[p.status]), ' ',
-        p.action === 'remove' ? `Вилучити крок ${p.step_id}` : `Замінити крок ${p.step_id} кроком ${p.replacement_step_id}`,
-        p.step_action ? ` («${p.step_action}»)` : ''),
-      el('div', { class: 'small' }, 'Причина: ' + p.reason),
-      el('div', { class: 'small' }, 'Доказ: «' + p.evidence_quote + '» — ', p.evidence_title || p.evidence_source_id, p.evidence_check === 'quote_found' ? ' · цитату знайдено' : ' · ⚠ цитату НЕ знайдено', ' · ',
-        el('button', { class: 'link', onclick: () => showSource(p.evidence_source_id, p.evidence_quote) }, 'Показати у джерелі')),
-      p.step_analyst_edited ? el('div', { class: 'small', style: 'color:var(--danger)' }, '⚠ Цей крок редагувала аналітикиня.') : null,
-      p.decision_note ? el('div', { class: 'small' }, `Рішення (${p.decided_by}): ${p.decision_note}`) : null,
-      p.status === 'proposed' ? el('div', { class: 'actions' },
-        el('button', { class: 'primary', onclick: () => proposalDialog(card, p, 'accept') }, 'Прийняти…'),
-        el('button', { onclick: () => proposalDialog(card, p, 'reject') }, 'Відхилити…')) : null)));
+    el('p', { class: 'small' }, 'Агент не вилучає кроків сам: крок лишається в описі, доки ви не приймете пропозицію. Перед прийняттям показано, що саме зміниться. Прийняття створює нову версію (стара збережеться) і потребує нового погодження.'),
+    prev.bundles.map((bd) => el('div', { class: 'claim', 'data-block': 'bundle' },
+      el('div', {}, el('span', { class: 'chip' }, 'Пов’язані пропозиції: ' + bd.ids.join(' + ')), ' Окремо кожна лишає проблеми потоку; прийняті разом вони дають узгоджений стан.'),
+      previewBox(bd.preview),
+      el('div', { class: 'actions' }, el('button', { class: 'primary', onclick: () => acceptDialog(card, bd.ids, bd.preview) }, 'Прийняти разом: ' + bd.ids.join(' + ') + '…')))),
+    ps.map((p) => {
+      const pv = p.status === 'proposed' ? prev.items[p.id] : null;
+      const bd = pv ? bundleFor(p) : null;
+      return el('div', { class: 'claim' },
+        el('div', {}, el('span', { class: 'chip' }, p.id + ' · ' + ST[p.status]), ' ',
+          p.action === 'remove' ? `Вилучити крок ${p.step_id}` : `Замінити крок ${p.step_id} кроком ${p.replacement_step_id}`,
+          p.step_action ? ` («${p.step_action}»)` : ''),
+        el('div', { class: 'small' }, 'Причина: ' + p.reason),
+        el('div', { class: 'small' }, 'Доказ: «' + p.evidence_quote + '» — ', p.evidence_title || p.evidence_source_id, p.evidence_check === 'quote_found' ? ' · цитату знайдено' : ' · ⚠ цитату НЕ знайдено в джерелі',
+          el('button', { class: 'link', onclick: () => showSource(p.evidence_source_id, p.evidence_quote) }, 'Показати у джерелі')),
+        p.step_analyst_edited ? el('div', { class: 'small', style: 'color:var(--danger)' }, '⚠ Цей крок редагувала аналітикиня.') : null,
+        p.decision_note ? el('div', { class: 'small' }, `Рішення (${p.decided_by}): ${p.decision_note}`) : null,
+        pv ? previewBox(pv) : null,
+        pv && pv.better_with.length ? el('div', { class: 'small', style: 'color:var(--danger)' }, `Пов’язана з ${pv.better_with.join(', ')}: окремо після прийняття лишаться проблеми потоку.`) : null,
+        p.status === 'proposed' ? el('div', { class: 'actions' },
+          el('button', { class: bd ? '' : 'primary', onclick: () => acceptDialog(card, [p.id], pv) }, 'Прийняти лише цю…'),
+          bd ? el('button', { class: 'primary', onclick: () => acceptDialog(card, bd.ids, bd.preview) }, 'Прийняти разом: ' + bd.ids.join(' + ') + '…') : null,
+          el('button', { onclick: () => proposalDialog(card, p, 'reject') }, 'Відхилити…')) : null);
+    }));
+}
+
+/** Прийняття однієї чи кількох пов'язаних пропозицій ОДНИМ явним рішенням; наслідки показано, за потреби — явне підтвердження. */
+function acceptDialog(card, ids, pv) {
+  const note = el('input', { type: 'text', placeholder: 'Примітка до рішення (необов’язково)' });
+  const ack = el('input', { type: 'checkbox' });
+  const btn = el('button', { class: 'primary', disabled: !!pv.needs_ack, onclick: async () => {
+    dlg.close();
+    const body = { base_version_id: card.head.id, decision: 'accept', note: note.value, preview_hash: pv.hash, acknowledge: pv.needs_ack ? ack.checked : false };
+    if (ids.length > 1) body.proposal_ids = ids; else body.proposal_id = ids[0];
+    const r = await act(() => api('POST', `/api/cases/${card.case.id}/step-proposals/decide`, body), ids.length > 1 ? 'Пов’язані пропозиції прийнято разом як одну нову версію' : 'Рішення збережено як нова версія');
+    if (r) await refresh();
+  } }, ids.length > 1 ? 'Прийняти разом: ' + ids.join(' + ') : 'Прийняти ' + ids[0]);
+  ack.addEventListener('change', () => { btn.disabled = !!pv.needs_ack && !ack.checked; });
+  openDialog(el('h2', {}, ids.length > 1 ? 'Прийняти разом пропозиції ' + ids.join(', ') : 'Прийняти пропозицію ' + ids[0]),
+    previewBox(pv),
+    pv.needs_ack ? el('label', { class: 'inline', 'data-block': 'ack' }, ack, 'Розумію, що після прийняття лишаться проблеми потоку, пов’язані з цією зміною, і підтверджую цей наслідок.') : null,
+    el('p', { class: 'small' }, 'Чинне погодження (якщо є) скасується; нову версію потрібно буде прийняти й погодити заново. Інші пропозиції не змінюються.'),
+    note, el('div', { class: 'actions' }, btn, el('button', { onclick: () => dlg.close() }, 'Скасувати')));
 }
 
 function proposalDialog(card, p, decision) {
@@ -612,12 +650,27 @@ function questionView(card, q) {
   return el('div', { class: 'claim ' + (open && q.critical ? 'unknown' : ''), id: 'q-' + q.id },
     el('div', {}, el('span', { class: 'chip' }, q.id + ' · ' + (q.critical ? 'КРИТИЧНЕ' : 'некритичне') + ' · ' + (open ? 'відкрите' : 'закрите')), ' ', q.text),
     el('div', { class: 'small muted' }, 'Вплив: ' + (q.impact || '—') + (q.addressee ? ' · Кому: ' + q.addressee : '') + origin),
-    (q.affects_transitions || []).length ? el('div', { class: 'small' }, 'Стосується переходу: ' + q.affects_transitions.map((a) => a.step_id + (a.condition ? ' (' + a.condition + ')' : '')).join(', ') + (open ? ' — доки питання відкрите, цей перехід «невідомо», а не факт.' : '')) : null,
+    (q.affects_transitions || []).map((a) => el('div', { class: 'small', 'data-block': 'link' },
+      `Прив’язка: крок ${a.step_id}${a.condition ? ' («' + a.condition + '»)' : ''} — ${(card.link_kinds || {})[a.kind || 'direction']}.`,
+      open ? el('button', { class: 'link', onclick: () => relinkDialog(card, q, a) }, 'Змінити вид прив’язки…') : null)),
+    (q.link_history || []).map((h) => el('div', { class: 'small muted' }, `Прив’язку змінено (${h.by}): ${(card.link_kinds || {})[h.from]} → ${(card.link_kinds || {})[h.to]}. Причина: ${h.note}`)),
     q.criticality_note ? el('div', { class: 'small' }, 'Пояснення щодо критичності: ' + q.criticality_note) : null,
     open ? el('div', {}, ans, el('div', { class: 'actions' },
       el('button', { onclick: async () => { const r = await act(() => api('POST', `/api/cases/${card.case.id}/questions/answer`, { base_version_id: card.head.id, question_id: q.id, answer: ans.value }), 'Уточнення додано; створено нову версію'); if (r) await refresh(); } }, 'Закрити питання уточненням'),
       q.critical ? el('button', { onclick: () => critDialog(card, q) }, 'Зробити некритичним…') : null))
       : el('div', { class: 'small' }, 'Відповідь: ' + q.answer, ' · ', q.closed_by_source_id ? el('button', { class: 'link', onclick: () => showSource(q.closed_by_source_id) }, 'джерело відповіді') : ''));
+}
+
+function relinkDialog(card, q, a) {
+  const cur = a.kind || 'direction';
+  const sel = el('select', {}, Object.entries(card.link_kinds || {}).filter(([k]) => k !== cur).map(([k, t]) => el('option', { value: k }, t)));
+  const note = el('input', { type: 'text', placeholder: 'Чому змінюєте прив’язку (обов’язково)' });
+  openDialog(el('h2', {}, 'Вид прив’язки питання ' + q.id),
+    el('p', {}, 'Зараз: ' + card.link_kinds[cur] + '. Питання лишається відкритим, його критичність не змінюється; змінюється лише вид цієї прив’язки. Буде створено нову версію; зміну збережено в історії.'),
+    el('p', { class: 'hint' }, 'Справжній невідомий перехід так змінити не можна: спершу з’ясуйте напрямок.'),
+    sel, note, el('div', { class: 'actions' },
+      el('button', { class: 'primary', onclick: async () => { dlg.close(); const r = await act(() => api('POST', `/api/cases/${card.case.id}/questions/relink`, { base_version_id: card.head.id, question_id: q.id, step_id: a.step_id, condition: a.condition, to_kind: sel.value, note: note.value }), 'Прив’язку змінено; створено нову версію'); if (r) await refresh(); } }, 'Підтвердити'),
+      el('button', { onclick: () => dlg.close() }, 'Скасувати')));
 }
 
 function critDialog(card, q) {

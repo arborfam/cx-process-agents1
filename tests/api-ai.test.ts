@@ -89,7 +89,7 @@ test('API: запуск аналізу асинхронний (202); резул�
     assert.equal(card.runs[0].technical_state, 'done');
     assert.equal(card.head.content.summary, 'Результат підставного клієнта (не AI)');
     assert.equal(card.head.created_by, 'agent');
-    assert.equal(card.runs[0].instruction_version, 'analyst-v0.4');
+    assert.equal(card.runs[0].instruction_version, 'analyst-v0.5');
     assert.equal(card.runs[0].mode, 'demo');
     assert.match(card.runs[0].model, /не AI/);
   } finally { release(); await s.close(); }

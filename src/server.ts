@@ -7,10 +7,11 @@ import { DEMO_BANNER, type ModelConfig } from './config.ts';
 import { DomainError } from './errors.ts';
 import { sha256 } from './hash.ts';
 import {
-  acceptDraft, addQuestion, addNotationRequirement, decideNotationRequirement, removeNotationRequirement, decideStepProposal, addSource, addSourceFromFile, answerQuestion, approve, buildCard, createCase, getCase,
+  acceptDraft, addQuestion, addNotationRequirement, decideNotationRequirement, removeNotationRequirement, decideStepProposal, decideStepProposals, relinkQuestion, addSource, addSourceFromFile, answerQuestion, approve, buildCard, createCase, getCase,
   listCases, listSources, requestBpmnStart, returnToResearch, saveAnalystVersion, setQuestionCritical, submitForApproval,
   type Actor, type EditFields,
 } from './domain.ts';
+import { LinkKind, type LinkKindT } from './schema.ts';
 import { seedDemoCase } from './demo.ts';
 import { redact } from './ai/redact.ts';
 import { beginAnalystRun, executeAnalystRun, type RunOptions } from './runs.ts';
@@ -78,12 +79,14 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(data);
 }
 
-function pickAffects(raw: unknown): { step_id: string; condition: string }[] {
+function pickAffects(raw: unknown): { step_id: string; condition: string; kind?: LinkKindT }[] {
   if (raw === undefined || raw === null) return [];
   if (!Array.isArray(raw)) throw new DomainError('VALIDATION', 'affects має бути списком', 400);
   return raw.map((a) => {
     const o = (a ?? {}) as Record<string, unknown>;
-    return { step_id: str(o.step_id, 'affects.step_id'), condition: str(o.condition, 'affects.condition', false) };
+    const kind = o.kind === undefined ? undefined : LinkKind.safeParse(o.kind);
+    if (kind && !kind.success) throw new DomainError('VALIDATION', 'affects.kind має бути direction, unconfirmed_sequence, exception або step_detail', 400);
+    return { step_id: str(o.step_id, 'affects.step_id'), condition: str(o.condition, 'affects.condition', false), ...(kind?.success ? { kind: kind.data } : {}) };
   });
 }
 
@@ -247,10 +250,27 @@ export function createApp(opts: ServerOptions): Server {
           returnToResearch(db, human, caseId, str(b.reason, 'reason'));
           return json(res, 200, { ok: true });
         case 'step-proposals/decide': {
+          // Пов'язані пропозиції приймаються ОДНИМ явним рішенням: proposal_ids (лише accept). Інші пропозиції автоматично не чіпаються.
+          const decision = b.decision === 'accept' ? 'accept' : b.decision === 'reject' ? 'reject' : (() => { throw new DomainError('VALIDATION', 'decision має бути accept або reject', 400); })();
+          const previewHash = b.preview_hash === undefined ? undefined : str(b.preview_hash, 'preview_hash');
+          if (Array.isArray(b.proposal_ids)) {
+            if (decision !== 'accept') throw new DomainError('VALIDATION', 'Кілька пропозицій можна лише прийняти разом; відхиляйте по одній', 400);
+            const v = decideStepProposals(db, human, caseId, {
+              baseVersionId: str(b.base_version_id, 'base_version_id'), proposalIds: b.proposal_ids.map((x, i) => str(x, `proposal_ids[${i}]`)),
+              note: str(b.note, 'note', false), previewHash, acknowledge: b.acknowledge === true,
+            });
+            return json(res, 201, { version_id: v.id });
+          }
           const v = decideStepProposal(db, human, caseId, {
-            baseVersionId: str(b.base_version_id, 'base_version_id'), proposalId: str(b.proposal_id, 'proposal_id'),
-            decision: b.decision === 'accept' ? 'accept' : b.decision === 'reject' ? 'reject' : (() => { throw new DomainError('VALIDATION', 'decision має бути accept або reject', 400); })(),
-            note: str(b.note, 'note', false),
+            baseVersionId: str(b.base_version_id, 'base_version_id'), proposalId: str(b.proposal_id, 'proposal_id'), decision,
+            note: str(b.note, 'note', false), previewHash, acknowledge: b.acknowledge === true,
+          });
+          return json(res, 201, { version_id: v.id });
+        }
+        case 'questions/relink': {
+          const v = relinkQuestion(db, human, caseId, {
+            baseVersionId: str(b.base_version_id, 'base_version_id'), questionId: str(b.question_id, 'question_id'), stepId: str(b.step_id, 'step_id'),
+            condition: str(b.condition, 'condition', false), toKind: str(b.to_kind, 'to_kind') as LinkKindT, note: str(b.note, 'note'),
           });
           return json(res, 201, { version_id: v.id });
         }

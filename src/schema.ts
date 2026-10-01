@@ -7,6 +7,16 @@ import { z } from 'zod';
 export const ClaimType = z.enum(['source_fact', 'analyst_confirmed', 'hypothesis', 'improvement_proposal', 'unknown']);
 export type ClaimTypeT = z.infer<typeof ClaimType>;
 
+export const LinkKind = z.enum(['direction', 'unconfirmed_sequence', 'exception', 'step_detail']);
+export type LinkKindT = z.infer<typeof LinkKind>;
+export const LINK_KIND_LABEL: Record<LinkKindT, string> = {
+  direction: 'напрямок переходу невизначений',
+  unconfirmed_sequence: 'послідовність кроків не підтверджена',
+  exception: 'невідомий виняток або альтернатива (відома гілка існує)',
+  step_detail: 'уточнення змісту кроку',
+};
+const LinkSchema = z.object({ step_id: z.string(), condition: z.string(), kind: LinkKind.optional() }).strict();
+
 const Step = z
   .object({
     id: z.string().min(1).max(40),
@@ -17,6 +27,8 @@ const Step = z
     result: z.string(),
     next: z.array(z.object({ to: z.string(), condition: z.string() }).strict()),
     source_ids: z.array(z.string()),
+    /** Деталі, приклади й канали — окремо від короткої назви дії (`action` іде підписом на схемі). Необов'язкове: старі версії його не мають. */
+    details: z.string().optional(),
   })
   .strict();
 
@@ -66,8 +78,16 @@ const Question = z
     closed_by_source_id: z.string().nullable(),
     origin: z.enum(['analyst', 'demo_script', 'agent']),
     criticality_note: z.string(),
-    /** Переходи, про які це питання: доки воно відкрите, такий перехід має бути «невідомим», а не фактом. */
-    affects_transitions: z.array(z.object({ step_id: z.string(), condition: z.string() }).strict()).optional(),
+    /**
+     * Прив'язка питання до потоку. Вид `kind` (відсутній = `direction`, як було раніше) каже, ЩО саме невідомо:
+     *  • direction — напрямок переходу невизначений: доки питання відкрите, перехід має бути «невідомим» (блокує);
+     *  • unconfirmed_sequence — перехід відомий, але послідовність не підтверджена (блокує: заважає визначити потік);
+     *  • exception — відома гілка існує, невідома лише альтернатива/виняток (саме по собі не блокує);
+     *  • step_detail — уточнення змісту кроку, перехід не стосується (саме по собі не блокує).
+     */
+    affects_transitions: z.array(LinkSchema).optional(),
+    /** Історія явних виправлень прив'язки аналітикинею (хто, коли, з якого виду на який, чому). Агент її не змінює. */
+    link_history: z.array(z.object({ at: z.string(), by: z.string(), step_id: z.string(), condition: z.string(), from: LinkKind, to: LinkKind, note: z.string() }).strict()).optional(),
   })
   .strict();
 
