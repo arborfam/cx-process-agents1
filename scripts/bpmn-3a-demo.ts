@@ -26,10 +26,13 @@ const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;'
 interface Row { fx: Fixture; result: GenerationResult; bpmnPng?: string; drawioPng?: string }
 
 async function main(): Promise<void> {
-  for (const sub of ['packages', 'schemes', 'results', 'screenshots']) {
+  for (const sub of ['packages', 'schemes', 'results']) {
     rmSync(join(outDir, sub), { recursive: true, force: true });
     mkdirSync(join(outDir, sub), { recursive: true });
   }
+  // знімки: прибираємо лише власні файли *.png; тека defects/ (знімки навмисно пошкоджених файлів) лишається
+  mkdirSync(join(outDir, 'screenshots'), { recursive: true });
+  for (const f of readdirSync(join(outDir, 'screenshots'))) if (f.endsWith('.png')) rmSync(join(outDir, 'screenshots', f));
   const rows: Row[] = [];
   for (const f of readdirSync(FIX).filter((x) => x.endsWith('.json')).sort()) {
     const fx = JSON.parse(readFileSync(join(FIX, f), 'utf8')) as Fixture;
@@ -110,10 +113,10 @@ async function screenshots(rows: Row[]): Promise<void> {
         await dpage.waitForSelector('.mxgraph svg', { timeout: 20000 });
         await dpage.waitForTimeout(1200);
         const box = await dpage.evaluate(() => { const r = document.querySelector('.mxgraph svg')!.getBoundingClientRect(); return { w: Math.ceil(r.width), h: Math.ceil(r.height) }; });
-        await dpage.setViewportSize({ width: Math.max(800, box.w + 20), height: Math.max(400, box.h + 20) });
+        await dpage.setViewportSize({ width: Math.max(800, box.w + 40), height: Math.max(400, box.h + 40) });
         await dpage.waitForTimeout(300);
         row.drawioPng = `${id}-drawio.png`;
-        await dpage.screenshot({ path: join(outDir, 'screenshots', row.drawioPng), clip: { x: 0, y: 0, width: box.w + 4, height: box.h + 4 } });
+        await dpage.screenshot({ path: join(outDir, 'screenshots', row.drawioPng), clip: { x: 0, y: 0, width: box.w + 24, height: box.h + 24 } });
         await dpage.close();
       }
     }

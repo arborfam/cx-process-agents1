@@ -12,18 +12,10 @@ import { escapeAttr, parseXml, XmlError, attr, elementChildren, type XmlElement 
 import { GENERATOR_NAME, ID } from './ids.ts';
 import { collapse, diffEdges, type GFlow, type GNode } from './graph.ts';
 import { expectedTransitions } from './verify.ts';
+import { checkCellStyle, EDGE_STYLE_FIXED, GRAPH_MODEL_ATTRS, POOL_STYLE, LANE_STYLE, START_STYLE, END_STYLE, GATEWAY_STYLE, TASK_STYLE, vertexStyleOf, type CellKind } from './drawio-style.ts';
 import type { BpmnModel, Rect } from './read.ts';
 import type { ApprovedPackage, DrawioExport, Issue, StepMapRow } from './types.ts';
 
-const POOL_STYLE = 'swimlane;html=0;childLayout=stackLayout;horizontal=0;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;collapsible=0;swimlaneFillColor=#ffffff;whiteSpace=wrap;fontStyle=0;fontSize=12;';
-const LANE_STYLE = 'swimlane;html=0;startSize=30;horizontal=0;collapsible=0;swimlaneLine=1;swimlaneFillColor=#ffffff;fillColor=none;whiteSpace=wrap;fontStyle=0;fontSize=12;';
-const EVENT_BASE = 'points=[[0.145,0.145,0],[0.5,0,0],[0.855,0.145,0],[1,0.5,0],[0.855,0.855,0],[0.5,1,0],[0.145,0.855,0],[0,0.5,0]];shape=mxgraph.bpmn.event;html=0;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;verticalAlign=top;align=center;perimeter=ellipsePerimeter;outlineConnect=0;aspect=fixed;fontSize=12;';
-// підпис початкової події переноситься в колонку ≈100 px (від'ємні відступи розширюють текстове поле; без них draw.io малює або один довгий рядок, або колонку 36 px)
-const START_STYLE = EVENT_BASE + 'whiteSpace=wrap;spacingLeft=-32;spacingRight=-32;outline=standard;symbol=general;';
-const END_STYLE = EVENT_BASE + 'outline=end;symbol=general;';
-const GATEWAY_STYLE = 'points=[[0.25,0.25,0],[0.5,0,0],[0.75,0.25,0],[1,0.5,0],[0.75,0.75,0],[0.5,1,0],[0.25,0.75,0],[0,0.5,0]];shape=mxgraph.bpmn.gateway2;html=0;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;verticalAlign=top;align=center;perimeter=rhombusPerimeter;outlineConnect=0;outline=none;symbol=none;gwType=exclusive;fontSize=12;';
-// нейтральна задача: маркер «abstract» (без іконки «людина», бо тип виконавця в AS-IS не заданий)
-const TASK_STYLE = 'shape=mxgraph.bpmn.task2;whiteSpace=wrap;rectStyle=rounded;size=10;html=0;container=0;expand=0;collapsible=0;taskMarker=abstract;fontSize=12;';
 
 const n2 = (v: number): string => String(Math.round(v * 100) / 100);
 const err = (code: string, message: string, refs: string[] = []): Issue => ({ code, severity: 'error', message, refs });
@@ -48,7 +40,7 @@ export function exportDrawio(model: BpmnModel, pkg: ApprovedPackage, _map: StepM
   const out: string[] = [];
   out.push('<mxfile host="cx-process-agents" agent="' + escapeAttr(GENERATOR_NAME) + '" version="1.0">');
   out.push('  <diagram id="AS-IS" name="AS-IS">');
-  out.push('    <mxGraphModel dx="1000" dy="700" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" math="0" shadow="0">');
+  out.push(`    <mxGraphModel ${Object.entries(GRAPH_MODEL_ATTRS).map(([k, v]) => `${k}="${v}"`).join(' ')}>`);
   out.push('      <root>');
   out.push('        <mxCell id="0" />');
   out.push('        <mxCell id="1" parent="0" />');
@@ -77,12 +69,8 @@ export function exportDrawio(model: BpmnModel, pkg: ApprovedPackage, _map: StepM
     const pts = model.edges.get(f.id)?.[0];
     const s = shape(f.source), t = shape(f.target);
     if (!pts || pts.length < 2 || !s || !t) return failed([err('DRAWIO_EXPORT', `Немає лінії чи кінців для переходу ${f.id}: експорт неможливий.`, [f.id])]);
-    const rel = (p: { x: number; y: number }, r: Rect): { x: number; y: number } => ({
-      x: Math.min(1, Math.max(0, Math.round(((p.x - r.x) / r.w) * 10000) / 10000)),
-      y: Math.min(1, Math.max(0, Math.round(((p.y - r.y) / r.h) * 10000) / 10000)),
-    });
-    const a = rel(pts[0]!, s), b = rel(pts[pts.length - 1]!, t);
-    const style = `html=0;rounded=0;endArrow=blockThin;endFill=1;fontSize=11;labelBackgroundColor=#ffffff;exitX=${a.x};exitY=${a.y};exitDx=0;exitDy=0;exitPerimeter=0;entryX=${b.x};entryY=${b.y};entryDx=0;entryDy=0;entryPerimeter=0;`;
+    const a = relPoint(pts[0]!, s), b = relPoint(pts[pts.length - 1]!, t);
+    const style = `${EDGE_STYLE_FIXED}exitX=${a.x};exitY=${a.y};entryX=${b.x};entryY=${b.y};`;
     const mid = pts.slice(1, -1).map((p) => `<mxPoint x="${n2(p.x)}" y="${n2(p.y)}" />`).join('');
     const inner = mid ? `<Array as="points">${mid}</Array>` : '';
     // підпис: у ту саму точку, яку обрав лейаутер (положення вздовж лінії + зсув від неї)
@@ -103,6 +91,14 @@ export function exportDrawio(model: BpmnModel, pkg: ApprovedPackage, _map: StepM
   const issues = verifyDrawio(xml, pkg, model);
   if (issues.some((i) => i.severity === 'error')) return failed(issues);
   return { status: 'ok', xml, issues };
+}
+
+/** Точка на блоці у відносних координатах 0…1 (для exitX/exitY/entryX/entryY). */
+export function relPoint(p: { x: number; y: number }, r: Rect): { x: number; y: number } {
+  return {
+    x: Math.min(1, Math.max(0, Math.round(((p.x - r.x) / r.w) * 10000) / 10000)),
+    y: Math.min(1, Math.max(0, Math.round(((p.y - r.y) / r.h) * 10000) / 10000)),
+  };
 }
 
 /**
@@ -156,37 +152,52 @@ interface Cell {
   edge: boolean;
   source: string | undefined;
   target: string | undefined;
-  geo: { x: number; y: number; w: number; h: number; relative: boolean; points: { x: number; y: number }[] } | null;
+  geo: {
+    x: number; y: number; w: number; h: number; relative: boolean; points: { x: number; y: number }[];
+    offset: { x: number; y: number } | null;
+    /** Імена всіх атрибутів і дочірніх елементів геометрії (для виявлення сторонніх параметрів). */
+    attrNames: string[]; childNames: string[];
+  } | null;
   props: Map<string, string>;
+  /** Імена всіх атрибутів клітинки (mxCell) і, якщо є, обгортки object. */
+  attrNames: string[];
+  objectAttrNames: string[];
+  /** Чи клітинка була обгорнута в object (потрібно лише для пулу). */
+  wrapped: boolean;
 }
 
-export function readDrawio(xml: string): { cells: Cell[]; issues: Issue[] } {
+export function readDrawio(xml: string): { cells: Cell[]; issues: Issue[]; modelAttrs: Map<string, string> } {
   const issues: Issue[] = [];
   let root: XmlElement;
   try {
     root = parseXml(xml);
   } catch (e) {
-    return { cells: [], issues: [err('DRAWIO_XML_MALFORMED', `Файл .drawio не є коректним XML: ${e instanceof XmlError ? e.message : String(e)}.`)] };
+    return { cells: [], modelAttrs: new Map(), issues: [err('DRAWIO_XML_MALFORMED', `Файл .drawio не є коректним XML: ${e instanceof XmlError ? e.message : String(e)}.`)] };
   }
-  if (root.local !== 'mxfile') return { cells: [], issues: [err('DRAWIO_STRUCTURE', 'Кореневий елемент має бути mxfile.')] };
+  if (root.local !== 'mxfile') return { cells: [], modelAttrs: new Map(), issues: [err('DRAWIO_STRUCTURE', 'Кореневий елемент має бути mxfile.')] };
   const diagrams = elementChildren(root).filter((e) => e.local === 'diagram');
-  if (diagrams.length !== 1) return { cells: [], issues: [err('DRAWIO_STRUCTURE', `У файлі ${diagrams.length} діаграм(и), а має бути одна.`)] };
+  if (diagrams.length !== 1) return { cells: [], modelAttrs: new Map(), issues: [err('DRAWIO_STRUCTURE', `У файлі ${diagrams.length} діаграм(и), а має бути одна.`)] };
   const model = elementChildren(diagrams[0]!).find((e) => e.local === 'mxGraphModel');
-  if (!model) return { cells: [], issues: [err('DRAWIO_STRUCTURE', 'Діаграма стиснена або не містить mxGraphModel: такий вміст перевірити не можна.')] };
+  if (!model) return { cells: [], modelAttrs: new Map(), issues: [err('DRAWIO_STRUCTURE', 'Діаграма стиснена або не містить mxGraphModel: такий вміст перевірити не можна.')] };
   const rootEl = elementChildren(model).find((e) => e.local === 'root');
-  if (!rootEl) return { cells: [], issues: [err('DRAWIO_STRUCTURE', 'Немає елемента root.')] };
+  if (!rootEl) return { cells: [], modelAttrs: new Map(), issues: [err('DRAWIO_STRUCTURE', 'Немає елемента root.')] };
 
   const num = (e: XmlElement, k: string): number => { const v = attr(e, k); return v === undefined || v.trim() === '' ? NaN : Number(v); };
+  const modelAttrs = new Map<string, string>(model.attrs.map((a) => [a.name, a.value]));
   const cells: Cell[] = [];
   for (const el of elementChildren(rootEl)) {
     let cell = el;
     const props = new Map<string, string>();
+    let objectAttrNames: string[] = [];
+    let wrapped = false;
     let id = attr(el, 'id') ?? '';
     let value = attr(el, 'value') ?? '';
     if (el.local === 'object' || el.local === 'UserObject') {
       const inner = elementChildren(el).find((c) => c.local === 'mxCell');
       if (!inner) { issues.push(err('DRAWIO_STRUCTURE', `Об’єкт ${id} без mxCell.`, [id])); continue; }
       cell = inner;
+      wrapped = true;
+      objectAttrNames = el.attrs.map((a) => a.name);
       value = attr(el, 'label') ?? '';
       for (const a of el.attrs) if (!['label', 'id'].includes(a.name)) props.set(a.name, a.value);
     } else if (el.local !== 'mxCell') {
@@ -197,7 +208,10 @@ export function readDrawio(xml: string): { cells: Cell[]; issues: Issue[] } {
     let geo: Cell['geo'] = null;
     if (geoEl) {
       const arr = elementChildren(geoEl).find((c) => c.local === 'Array');
+      const off = elementChildren(geoEl).find((c) => c.local === 'mxPoint' && attr(c, 'as') === 'offset');
       geo = {
+        offset: off ? { x: num(off, 'x'), y: num(off, 'y') } : null,
+        attrNames: geoEl.attrs.map((a) => a.name), childNames: elementChildren(geoEl).map((c) => `${c.local}${attr(c, 'as') ? `[as=${attr(c, 'as')}]` : ''}`),
         x: num(geoEl, 'x'), y: num(geoEl, 'y'), w: num(geoEl, 'width'), h: num(geoEl, 'height'),
         relative: attr(geoEl, 'relative') === '1',
         points: arr ? elementChildren(arr).filter((p) => p.local === 'mxPoint').map((p) => ({ x: num(p, 'x'), y: num(p, 'y') })) : [],
@@ -207,9 +221,10 @@ export function readDrawio(xml: string): { cells: Cell[]; issues: Issue[] } {
       id, value, style: attr(cell, 'style') ?? '', parent: attr(cell, 'parent') ?? '',
       vertex: attr(cell, 'vertex') === '1', edge: attr(cell, 'edge') === '1',
       source: attr(cell, 'source'), target: attr(cell, 'target'), geo, props,
+      attrNames: cell.attrs.map((a) => a.name), objectAttrNames, wrapped,
     });
   }
-  return { cells, issues };
+  return { cells, issues, modelAttrs };
 }
 
 /** Звірка .drawio з пакетом і з перевіреним .bpmn: підписи, ролі, переходи, ID, геометрія, зайва нотація. */
@@ -348,6 +363,81 @@ export function verifyDrawio(xml: string, pkg: ApprovedPackage, bpmn: BpmnModel)
     const ax = origin.x + g.x, ay = origin.y + g.y;
     if (Math.abs(ax - want.x) > 0.6 || Math.abs(ay - want.y) > 0.6 || Math.abs(g.w - want.w) > 0.6 || Math.abs(g.h - want.h) > 0.6) {
       issues.push(err('DRAWIO_GEOMETRY', `Геометрія клітинки ${ref(c.id)} у .drawio не збігається зі схемою .bpmn.`, [c.id]));
+    }
+  }
+  // ── зображення має передавати процес так само, як зміст: стиль, видимість, напрямок стрілок, службові атрибути ──
+  const modelAttrs = read.modelAttrs;
+  for (const [k, want] of Object.entries(GRAPH_MODEL_ATTRS)) {
+    if (modelAttrs.get(k) !== want) issues.push(err('DRAWIO_MODEL_ATTR', `Параметр діаграми «${k}» = «${modelAttrs.get(k) ?? '—'}», а в еталонному експорті «${want}».`));
+  }
+  for (const k of modelAttrs.keys()) {
+    if (!(k in GRAPH_MODEL_ATTRS)) issues.push(err('DRAWIO_MODEL_ATTR', `У діаграмі є сторонній параметр «${k}» (наприклад, колір тла чи розмір сторінки може сховати вміст).`));
+  }
+  const core0 = byId.get('0'), core1 = byId.get('1');
+  if (core0 && (core0.attrNames.join(',') !== 'id' || core0.style !== '')) issues.push(err('DRAWIO_CELL_ATTR', 'Службова клітинка 0 має сторонні параметри.', ['0']));
+  if (core1 && (core1.attrNames.slice().sort().join(',') !== 'id,parent' || core1.parent !== '0' || core1.style !== '')) {
+    issues.push(err('DRAWIO_CELL_ATTR', 'Службова клітинка 1 (шар із усім вмістом) має сторонні параметри, наприклад «visible», «style»: шар може бути схований чи прозорий.', ['1']));
+  }
+  const kindOf = (id: string): CellKind | null => {
+    if (id === poolId) return 'pool';
+    if (lanes.some((l) => l.id === id)) return 'lane';
+    const nd = bpmn.nodes.get(id);
+    if (nd) return nd.tag;
+    return bpmn.flows.some((f) => f.id === id) ? 'edge' : null;
+  };
+  const sameSet = (a: string[], b: string[]): boolean => a.length === b.length && [...a].sort().join('|') === [...b].sort().join('|');
+  const flowById = new Map(bpmn.flows.map((f) => [f.id, f]));
+  for (const c of cells) {
+    if (c.id === '0' || c.id === '1') continue;
+    const kind = kindOf(c.id);
+    if (!kind) continue; // зайві клітинки вже відхилено
+    const label = kind === 'edge' ? `лінії ${c.id}` : `${ref(c.id)}`;
+    let ports: { exitX: number; exitY: number; entryX: number; entryY: number } | undefined;
+    const f = kind === 'edge' ? flowById.get(c.id) : undefined;
+    const pts = f ? bpmn.edges.get(f.id)?.[0] : undefined;
+    if (f && pts && pts.length >= 2) {
+      const s0 = bpmn.shapes.get(f.source)?.[0], t0 = bpmn.shapes.get(f.target)?.[0];
+      if (s0 && t0) {
+        const a = relPoint(pts[0]!, s0), b = relPoint(pts[pts.length - 1]!, t0);
+        ports = { exitX: a.x, exitY: a.y, entryX: b.x, entryY: b.y };
+      }
+    }
+    issues.push(...checkCellStyle({ cellId: c.id, label, kind, style: c.style, ...(ports ? { ports } : {}) }));
+    // службові параметри клітинки (visible, collapsed, connectable …)
+    const wantAttrs = kind === 'edge' ? ['id', 'value', 'style', 'edge', 'parent', 'source', 'target'] : kind === 'pool' ? ['style', 'vertex', 'parent'] : ['id', 'value', 'style', 'vertex', 'parent'];
+    if (!sameSet(c.attrNames, wantAttrs)) {
+      const extra = c.attrNames.filter((n) => !wantAttrs.includes(n));
+      issues.push(err('DRAWIO_CELL_ATTR', `Клітинка ${label} має сторонні службові параметри (${extra.join(', ') || 'набір параметрів відрізняється'}): наприклад «visible» ховає елемент.`, [c.id]));
+    }
+    if (kind === 'pool') {
+      const wantObj = ['label', 'cx_version_id', 'cx_content_hash', 'cx_origin', 'cx_generator', 'id'];
+      if (!c.wrapped || !sameSet(c.objectAttrNames, wantObj)) issues.push(err('DRAWIO_CELL_ATTR', 'Обгортка пулу має сторонні чи відсутні параметри.', [c.id]));
+    } else if (c.wrapped) issues.push(err('DRAWIO_CELL_ATTR', `Клітинка ${label} має зайву обгортку object.`, [c.id]));
+    // службові параметри геометрії
+    if (c.geo) {
+      const wantG = kind === 'edge' ? ['relative', 'as', 'x'] : ['x', 'y', 'width', 'height', 'as'];
+      const extraG = c.geo.attrNames.filter((n) => !wantG.includes(n));
+      const extraC = c.geo.childNames.filter((n) => !(kind === 'edge' && (n === 'mxPoint[as=offset]' || n === 'Array[as=points]')));
+      if (extraG.length || extraC.length) issues.push(err('DRAWIO_GEOMETRY_ATTR', `Геометрія ${label} має сторонні параметри чи вкладені елементи (${[...extraG, ...extraC].join(', ')}).`, [c.id]));
+    }
+    // лінія: проміжні точки й положення підпису — як у схемі .bpmn
+    if (kind === 'edge' && f && pts && c.geo) {
+      const want = pts.slice(1, -1);
+      const got = c.geo.points;
+      if (got.length !== want.length || want.some((w, i) => Math.abs(w.x - got[i]!.x) > 0.6 || Math.abs(w.y - got[i]!.y) > 0.6)) {
+        issues.push(err('DRAWIO_GEOMETRY', `Маршрут стрілки ${f.id} у .drawio не збігається зі схемою .bpmn: стрілка піде не туди, куди в схемі.`, [c.id]));
+      }
+      const lb = bpmn.edgeLabels.get(f.id);
+      const gx = Number.isFinite(c.geo.x) ? c.geo.x : 0;
+      if (f.name && lb) {
+        const place = placeLabel(pts, { x: lb.x + lb.w / 2, y: lb.y + lb.h / 2 });
+        const off = c.geo.offset ?? { x: 0, y: 0 };
+        if (Math.abs(gx - place.gx) > 0.01 || Math.abs(off.x - place.dx) > 1 || Math.abs(off.y - place.dy) > 1) {
+          issues.push(err('DRAWIO_GEOMETRY', `Підпис стрілки ${f.id} у .drawio стоїть не там, де в схемі .bpmn (його може бути не видно чи не зрозуміло, до якої стрілки він належить).`, [c.id]));
+        }
+      } else if (Math.abs(gx) > 0.01 || c.geo.offset) {
+        issues.push(err('DRAWIO_GEOMETRY', `Стрілка ${f.id} без підпису має зсув підпису.`, [c.id]));
+      }
     }
   }
   return issues;
