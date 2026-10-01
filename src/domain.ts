@@ -1084,6 +1084,66 @@ export function criticalGaps(blockers: Blocker[]): Blocker[] {
   return blockers.filter((b) => b.severity === 'critical' && GAP_CODES.has(b.code));
 }
 
+export interface GapItem {
+  key: string;
+  kind: 'question_with_transitions' | 'question' | 'transition' | 'other';
+  /** Коди програмних перевірок, що лежать в основі цієї прогалини (самі перевірки лишаються окремо). */
+  codes: string[];
+  title: string;
+  text: string;
+  question_id: string | null;
+  impact: string;
+  /** Наслідки для кроків процесу. */
+  consequences: { step_id: string; condition: string; step_action: string; text: string }[];
+  ref: string | null;
+}
+
+/**
+ * Змістовні прогалини для людини: критичне питання й невизначений перехід, які стосуються одного місця опису,
+ * показуються як ОДНА прогалина з наслідками для кроків. Програмні перевірки (blockers, flow) лишаються окремо й не змінюються.
+ */
+export function gapItems(gaps: Blocker[], c: Content): GapItem[] {
+  const unresolved: { step_id: string; condition: string; action: string; open: Question[] }[] = [];
+  for (const st of c.steps) {
+    for (const n of st.next) {
+      if (n.to !== UNKNOWN) continue;
+      const open = questionsAffecting(c, st.id, n.condition).filter((q) => q.status === 'open');
+      if (open.length) unresolved.push({ step_id: st.id, condition: n.condition, action: st.action, open });
+    }
+  }
+  const critIds = new Set(gaps.filter((g) => g.code === 'CRITICAL_QUESTION').map((g) => g.ref));
+  const out: GapItem[] = [];
+  for (const g of gaps) {
+    if (g.code === 'CRITICAL_QUESTION') {
+      const q = c.questions.find((x) => x.id === g.ref);
+      const cons = unresolved.filter((u) => u.open.some((x) => x.id === g.ref));
+      out.push({
+        key: `q:${g.ref}`, kind: cons.length ? 'question_with_transitions' : 'question',
+        codes: cons.length ? ['CRITICAL_QUESTION', 'UNRESOLVED_TRANSITION'] : ['CRITICAL_QUESTION'],
+        title: cons.length ? 'Критичне питання з наслідками для кроків' : 'Критичне питання',
+        text: q ? `${q.id}: ${q.text}` : g.message, question_id: g.ref ?? null, impact: q?.impact ?? '',
+        consequences: cons.map((u) => ({
+          step_id: u.step_id, condition: u.condition, step_action: u.action,
+          text: `Крок ${u.step_id}${u.condition ? ` (${u.condition})` : ''}: далі — невідомо; процес після цього моменту не з’ясовано.`,
+        })),
+        ref: g.ref ?? null,
+      });
+    } else if (g.code === 'UNRESOLVED_TRANSITION') {
+      const mine = unresolved.filter((u) => u.step_id === g.ref && g.message.includes(condText(u.condition)));
+      if (mine.length && mine.every((u) => u.open.some((x) => critIds.has(x.id)))) continue; // уже показано разом із питанням
+      out.push({
+        key: `t:${g.ref}:${mine[0]?.condition ?? ''}`, kind: 'transition', codes: [g.code], title: 'Невизначений перехід', text: g.message,
+        question_id: mine[0]?.open[0]?.id ?? null, impact: '',
+        consequences: mine.map((u) => ({ step_id: u.step_id, condition: u.condition, step_action: u.action, text: `Крок ${u.step_id}${u.condition ? ` (${u.condition})` : ''}: далі — невідомо.` })),
+        ref: g.ref ?? null,
+      });
+    } else {
+      out.push({ key: `${g.code}:${g.ref ?? ''}`, kind: 'other', codes: [g.code], title: 'Прогалина', text: g.message, question_id: null, impact: '', consequences: [], ref: g.ref ?? null });
+    }
+  }
+  return out;
+}
+
 export interface ReviewCheck {
   key: string;
   label: string;
@@ -1210,6 +1270,7 @@ export function buildCard(db: DB, caseId: string, mode: string) {
     changes,
     blockers,
     gaps: criticalGaps(blockers),
+    gap_items: gapItems(criticalGaps(blockers), content),
     unknown_transitions: unknownTransitions(content),
     review: draftReview(blockers, {
       accepted, integrityOk,

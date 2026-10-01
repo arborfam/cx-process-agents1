@@ -219,3 +219,29 @@ test('Текстовий формат: «?» і «невідомо» розби�
   assert.equal(steps[0]!.next[1]!.to, UNKNOWN);
   assert.equal(stepsToText(steps).split('\n')[0], 'S1 | А | дія | рез | S2 (так); ? (ні)');
 });
+
+test('Прогалини для людини: критичне питання й невизначений перехід — ОДНА прогалина з наслідками для кроків; програмні перевірки лишаються окремо', () => {
+  const { db, id, card } = seeded();
+  const c = card();
+  // програмні перевірки не змінилися: два окремі блокери
+  assert.deepEqual(c.gaps.map((g) => g.code).filter((x) => ['CRITICAL_QUESTION', 'UNRESOLVED_TRANSITION'].includes(x)).sort(), ['CRITICAL_QUESTION', 'UNRESOLVED_TRANSITION']);
+  // для людини — одна змістовна прогалина
+  const items = c.gap_items.filter((g) => g.kind === 'question_with_transitions' || g.kind === 'transition');
+  assert.equal(items.length, 1, JSON.stringify(items.map((i) => i.key)));
+  const it = items[0]!;
+  assert.equal(it.kind, 'question_with_transitions');
+  assert.equal(it.question_id, 'Q1');
+  assert.match(it.text, /Q1/);
+  assert.ok(it.impact.length > 0);
+  assert.deepEqual(it.consequences.map((x) => [x.step_id, x.condition]), [['S5', 'відхилено']]);
+  assert.match(it.consequences[0]!.text, /невідомо/);
+  assert.deepEqual(it.codes.sort(), ['CRITICAL_QUESTION', 'UNRESOLVED_TRANSITION']);
+
+  // якщо питання стало некритичним, невизначений перехід лишається окремою прогалиною
+  setQuestionCritical(db, human, id, { baseVersionId: c.head.id, questionId: 'Q1', critical: false, note: 'Спроба обійти' });
+  const c2 = card();
+  assert.ok(!c2.gap_items.some((g) => g.kind === 'question_with_transitions'));
+  const tr = c2.gap_items.find((g) => g.kind === 'transition');
+  assert.ok(tr, 'невизначений перехід показано окремо');
+  assert.equal(tr!.question_id, 'Q1');
+});

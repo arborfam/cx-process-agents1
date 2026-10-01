@@ -70,3 +70,6 @@ mark { background: #ffe066; color: #111; padding: 0 2px; border-radius: 3px; }
 .review-sum { margin: 0 0 6px; }
 details > summary { cursor: pointer; }
 @media (max-width: 600px) { .kv { grid-template-columns: 1fr; } }
+.chip.real { background: #fff4d6; border-color: #b7791f; color: #744210; }
+.banner.real { background: #fff4d6; color: #744210; border-color: #b7791f; }
+.runbox { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line, #ccc); }
