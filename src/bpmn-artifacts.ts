@@ -97,6 +97,21 @@ function checkArtifact(row: ArtifactRow): string[] {
   return bad;
 }
 
+/**
+ * Повний успішний результат: є перевірений `.bpmn` І перевірений `.drawio`. Лише такий артефакт використовується
+ * ПОВТОРНО без перегенерації. Невдала побудова (`verification_failed`, `blocked`, `unsupported`) і частковий успіх
+ * (`.bpmn` є, `.drawio` не пройшов власної звірки) повторною спробою МАЮТЬ перебудовуватись: інакше технічна помилка
+ * «залипала» б і виправити її можна було лише новим — платним — запуском смислової перевірки (дефект D75).
+ */
+const isComplete = (row: ArtifactRow): boolean => row.status === 'ok' && row.drawio_status === 'ok';
+
+/**
+ * Відбиток НАСЛІДКУ побудови: що саме вийшло. Потрібен, щоб повторні спроби з тим самим результатом
+ * не плодили однакових записів в історії (генератор детермінований, тож однаковий вхід дає однаковий відбиток).
+ */
+const outcomeKey = (r: Pick<ArtifactRow, 'status' | 'bpmn_sha256' | 'drawio_status' | 'drawio_sha256' | 'map_json' | 'detail_json'>): string =>
+  canonical([r.status, r.bpmn_sha256, r.drawio_status, r.drawio_sha256, r.map_json, r.detail_json]);
+
 function viewOf(db: DB, row: ArtifactRow): ArtifactView {
   const untrustedReasons = checkArtifact(row);
   const stale = untrustedReasons.length > 0 ? [] : staleReasons(db, row.case_id, row.approval_id, row.version_id, row.content_hash);
@@ -208,19 +223,25 @@ export interface BuildOutcome {
 }
 
 /**
- * Побудова схеми для погодженого пакета. Ідемпотентна: якщо для цього самого запису перевірки, версії й хеша
- * артефакт уже є й він чинний, повертається він (повторний клік чи повторений HTTP-запит не створює другого
- * результату й нічого не перегенеровує). Виклику моделі в цьому шляху немає.
+ * Побудова схеми для погодженого пакета. Повторний клік і повторений HTTP-запит другого результату не створюють:
+ *  • ПОВНИЙ успішний артефакт (є перевірені `.bpmn` і `.drawio`) повертається як є, без перегенерації;
+ *  • після технічної помилки (`verification_failed`, `blocked`) чи невдалого експорту `.drawio` побудова
+ *    виконується ЗАНОВО на тій самій збереженій смисловій перевірці — нового виклику моделі не відбувається,
+ *    а невдала спроба лишається в історії;
+ *  • якщо повтор дав точно той самий наслідок, нового запису в історії не з'являється.
+ * Усі перевірки (дозвіл, довірена перевірка, шлюз, актуальність) виконуються заново й повтором не обходяться.
  */
 export async function buildArtifact(db: DB, actor: Actor, caseId: string, instruction?: InstructionInfo, fault: GenerateFaultInjection = {}): Promise<BuildOutcome> {
   requireHuman(actor, 'побудова схеми BPMN');
   const pre = buildPreflight(db, caseId, instruction);
   if (!pre.ok) throw new DomainError(pre.code, pre.message, 409, pre.reasons ? { reasons: pre.reasons } : undefined);
 
+  // Повторно використовуємо лише ПОВНИЙ успішний результат. Після технічної помилки (зокрема невдалого .drawio)
+  // побудова виконується заново — на тій самій збереженій смисловій перевірці, без нового виклику моделі.
   const existing = one<ArtifactRow>(db,
     'SELECT * FROM bpmn_artifact WHERE case_id = ? AND review_id = ? AND version_id = ? AND content_hash = ? ORDER BY rowid DESC LIMIT 1',
     caseId, pre.reviewId, pre.pkg.versionId, pre.pkg.contentHash);
-  if (existing) {
+  if (existing && isComplete(existing)) {
     const v = viewOf(db, existing);
     if (v.trusted && v.staleReasons.length === 0) return { artifact: v, reused: true };
   }
@@ -237,10 +258,10 @@ export async function buildArtifact(db: DB, actor: Actor, caseId: string, instru
     const dup = one<ArtifactRow>(db,
       'SELECT * FROM bpmn_artifact WHERE case_id = ? AND review_id = ? AND version_id = ? AND content_hash = ? ORDER BY rowid DESC LIMIT 1',
       caseId, pre.reviewId, pre.pkg.versionId, pre.pkg.contentHash);
-    if (dup) {
-      const v = viewOf(db, dup);
-      if (v.trusted && v.staleReasons.length === 0) return { artifact: v, reused: true };
-    }
+    const dupView = dup ? viewOf(db, dup) : null;
+    const dupUsable = !!dupView && dupView.trusted && dupView.staleReasons.length === 0;
+    // Паралельний запит міг уже зберегти ПОВНИЙ успішний результат — другого такого не створюємо.
+    if (dup && dupUsable && isComplete(dup)) return { artifact: dupView!, reused: true };
 
     const base = {
       id: newId('art'), case_id: caseId, review_id: pre.reviewId, run_id: pre.runId, approval_id: pre.approvalId,
@@ -272,6 +293,8 @@ export async function buildArtifact(db: DB, actor: Actor, caseId: string, instru
       row = { ...base, status: 'verification_failed', bpmn_xml: null, bpmn_sha256: null, drawio_status: 'none', drawio_xml: null, drawio_sha256: null,
         map_json: '[]', detail_json: JSON.stringify({ stage: result.stage, issues: result.issues, layoutWarnings: result.layoutWarnings } satisfies ArtifactDetail) };
     }
+    // Повтор із тим самим наслідком (наприклад, та сама технічна помилка) нового запису в історії не створює.
+    if (dup && dupUsable && outcomeKey(dup) === outcomeKey(row)) return { artifact: dupView!, reused: true };
     run(db,
       `INSERT INTO bpmn_artifact (id, case_id, review_id, run_id, approval_id, version_id, content_hash, process_name, status,
          bpmn_xml, bpmn_sha256, drawio_status, drawio_xml, drawio_sha256, map_json, detail_json, generator, created_by, created_at, record_hash)

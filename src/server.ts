@@ -232,6 +232,8 @@ export function createApp(opts: ServerOptions): Server {
           resolution: v.resolution ? { explanation: v.resolution.explanation, decided_by: v.resolution.decided_by, decided_at: v.resolution.decided_at } : null,
         })),
         earlier_resolutions: (r.earlierResolutions ?? []).map((x) => ({ explanation: x.explanation, decided_by: x.decided_by, decided_at: x.decided_at })),
+        // Записи рішень, яким не довіряємо: блокування вони не знімають, причина названа.
+        invalid_resolutions: (r.invalidResolutions ?? []).map((x) => ({ id: x.id, decided_at: x.decided_at, reasons: x.reasons })),
         generation_gate: r.gate ? (r.gate.ok ? { ok: true } : { ok: false, code: r.gate.code, message: r.gate.message }) : { ok: false, code: 'NO_COMPLETED_REVIEW', message: 'Немає завершеної й довіреної смислової перевірки.' },
       });
     }

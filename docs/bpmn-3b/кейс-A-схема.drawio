@@ -4,7 +4,7 @@
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <object label="Обробка запиту (синтетичний процес)" cx_version_id="ver_cf5988f546f7" cx_content_hash="69a8ecef8ec55cab8310d79b74c20402e3b7f67f1ec1c147e187b15f0f41740e" cx_origin="product" cx_generator="cx-bpmn-generator-3a" id="Participant_1">
+        <object label="Обробка запиту (синтетичний процес)" cx_version_id="ver_bb677ad33ab1" cx_content_hash="ffe19fd18921b36743859f6a6996e9d1c31a35fa5ff183861880fa6c1e1d31f8" cx_origin="product" cx_generator="cx-bpmn-generator-3a" id="Participant_1">
           <mxCell style="swimlane;html=0;childLayout=stackLayout;horizontal=0;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;collapsible=0;swimlaneFillColor=#ffffff;whiteSpace=wrap;fontStyle=0;fontSize=12;" vertex="1" parent="1"><mxGeometry x="80" y="80" width="1232" height="640" as="geometry" /></mxCell>
         </object>
         <mxCell id="Lane_0" value="Замовник" style="swimlane;html=0;startSize=30;horizontal=0;collapsible=0;swimlaneLine=1;swimlaneFillColor=#ffffff;fillColor=none;whiteSpace=wrap;fontStyle=0;fontSize=12;" vertex="1" parent="Participant_1"><mxGeometry x="30" y="0" width="1202" height="240" as="geometry" /></mxCell>

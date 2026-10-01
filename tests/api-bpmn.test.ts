@@ -4,12 +4,13 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { all, type DB } from '../src/db.ts';
+import { all, one, type DB } from '../src/db.ts';
 import { sha256 } from '../src/hash.ts';
 import { sessionToken } from '../src/server.ts';
 import {
   acceptDraft, approve, headVersion, returnToResearch, saveAnalystVersion, submitForApproval,
 } from '../src/domain.ts';
+import { buildArtifact } from '../src/bpmn-artifacts.ts';
 import { ACCESS_CODE, approvedCase, freshDb, human, startTestServer } from './helpers.ts';
 import { FakeReviewClient, finding, okStep, policyOf, reviewer, type Step } from './review-helpers.ts';
 
@@ -282,5 +283,65 @@ test('HTTP: без підключеної моделі перевірка не �
     const b = await s.call('POST', `/api/cases/${c.id}/bpmn/build`, {});
     assert.equal(b.body.error.code, 'NO_REVIEW');
     assert.equal(all(db, 'SELECT id FROM bpmn_artifact').length, 0);
+  } finally { await s.close(); }
+});
+
+// ───────── 8. Повтор після технічної помилки й недовірені рішення (D75) ─────────
+
+test('HTTP: невдалу побудову можна повторити тією самою дією — без нового виклику моделі; успішний результат і далі не перегенеровується', async () => {
+  const db = freshDb();
+  const { s, caseId, client } = await server(db);
+  try {
+    await s.call('POST', `/api/cases/${caseId}/bpmn/review`, {});
+    await waitReview(s, caseId, ['clear']);
+
+    // Невдалу спробу моделюємо на доменному рівні (у продукту немає входу для пошкодження) — далі працюємо через HTTP.
+    const bad = await buildArtifact(db, human, caseId, undefined, { tamperBpmn: (x) => x.replace(/<bpmn:task /, '<bpmn:task name="ЗІПСОВАНО" ') });
+    assert.equal(bad.artifact.status, 'verification_failed');
+    assert.equal((await raw(s, `/api/cases/${caseId}/bpmn/file/bpmn`)).status, 409);
+
+    const retry = await s.call('POST', `/api/cases/${caseId}/bpmn/build`, {});
+    assert.equal(retry.status, 201, 'повтор має створити новий результат, а не повернути невдалий');
+    assert.equal(retry.body.reused, false);
+    assert.equal(retry.body.artifact.status, 'ok');
+    assert.equal((await raw(s, `/api/cases/${caseId}/bpmn/file/bpmn`)).status, 200);
+
+    const again = await s.call('POST', `/api/cases/${caseId}/bpmn/build`, {});
+    assert.equal(again.body.reused, true, 'повний успішний результат не перегенеровується');
+    assert.equal(client.calls, 1, 'жодного додаткового виклику моделі');
+    const rows = all(db, 'SELECT status FROM bpmn_artifact WHERE case_id = ? ORDER BY rowid', caseId) as { status: string }[];
+    assert.deepEqual(rows.map((r) => r.status), ['verification_failed', 'ok'], 'невдала спроба лишається в історії');
+  } finally { await s.close(); }
+});
+
+test('HTTP: запис рішення, якому не довіряємо, блокування не знімає й показується з причиною', async () => {
+  const db = freshDb();
+  const { s, caseId } = await server(db, [okStep([finding()])]);
+  try {
+    await s.call('POST', `/api/cases/${caseId}/bpmn/review`, {});
+    const rev = await waitReview(s, caseId, ['awaiting_analyst']);
+    const key = rev.findings_view[0].key;
+
+    // Пряме втручання в базу (у продукті такого входу немає).
+    const r0 = one<Record<string, any>>(db, 'SELECT * FROM bpmn_review WHERE id = ?', rev.review_id)!;
+    db.prepare(`INSERT INTO finding_resolution (id, case_id, review_id, run_id, approval_id, version_id, content_hash,
+        finding_key, finding_json, decision, explanation, decided_by, decided_at, record_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run('fres_http_forged', caseId, rev.review_id, r0.run_id, r0.approval_id, r0.version_id, r0.content_hash,
+        key, '{}', 'rejected', '', 'хтось', '2026-01-01T00:00:00.000Z', 'ЗІПСОВАНИЙ-ХЕШ');
+
+    const after = (await s.call('GET', `/api/cases/${caseId}/bpmn/review`)).body;
+    assert.equal(after.generation_gate.ok, false, 'підроблений запис не має відкривати шлюз');
+    assert.equal(after.findings_view[0].resolution, null, 'він не показується як рішення людини');
+    assert.equal(after.invalid_resolutions.length, 1);
+    assert.match(after.invalid_resolutions[0].reasons.join(' '), /сума|поясн/i);
+    const b = await s.call('POST', `/api/cases/${caseId}/bpmn/build`, {});
+    assert.equal(b.status, 409);
+    assert.equal(b.body.error.code, 'BLOCKING_FINDINGS');
+    assert.equal(all(db, 'SELECT id FROM bpmn_artifact').length, 0);
+
+    // Людина не може «перекрити» пошкоджений запис — отримує зрозуміле пояснення, а не помилку бази.
+    const rj = await s.call('POST', `/api/cases/${caseId}/bpmn/findings/reject`, { review_id: rev.review_id, finding_key: key, explanation: EXPL });
+    assert.equal(rj.status, 409);
+    assert.equal(rj.body.error.code, 'RESOLUTION_DAMAGED');
   } finally { await s.close(); }
 });

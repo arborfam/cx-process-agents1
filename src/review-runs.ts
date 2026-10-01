@@ -23,6 +23,7 @@ import { NOTATION_KIND_LABEL, type Content } from './schema.ts';
 import { actualCostUsd, preflight, reserveRetry, type ModelPolicy } from './ai/budget.ts';
 import {
   buildReviewMessage, findingKey, generationGate, contentFingerprint, reissueReview, reviewJsonSchema, reviewOutcome, runBpmnReview,
+  ReviewFindingSchema,
   type AttemptCost, type BpmnReviewClient, type GateResult, type ReviewFinding, type ReviewPackage, type ReviewResult,
 } from './ai/bpmn-review.ts';
 import { loadBpmnInstruction } from './ai/prompt.ts';
@@ -313,8 +314,10 @@ export interface CaseReview {
   findingsView?: FindingView[];
   warnings?: readonly string[];
   requirements?: UnsupportedRequirement[];
-  /** Рішення аналітикині щодо знахідок саме цього запису перевірки. */
+  /** Рішення аналітикині щодо знахідок саме цього запису перевірки — лише ті, що пройшли перевірку. */
   resolutions?: ResolutionRow[];
+  /** Записи рішень, яким не довіряємо (і чому). Блокування вони не знімають. */
+  invalidResolutions?: InvalidResolution[];
   /** Рішення з попередніх записів перевірки того ж кейсу — лише контекст (D31), на шлюз не впливають. */
   earlierResolutions?: ResolutionRow[];
   /** Чому результат застарів або запису не довіряємо. */
@@ -402,14 +405,25 @@ export function getCaseReview(db: DB, caseId: string, instruction: InstructionIn
     return untrusted(['Знахідки в записі не збігаються з повторною перевіркою збереженої відповіді.']);
   }
   if (reviewOutcome(r.findings) !== row.outcome) return untrusted(['Висновок у записі не відповідає знахідкам.']);
-  // Рішення читаються з незмінних записів сервера (не від браузера) і звіряються з відновленими знахідками.
-  const mine = listResolutions(db, caseId).filter((x) => x.review_id === row.id);
-  const resolved = new Set(mine.map((x) => x.finding_key));
+  // Рішення читаються з незмінних записів сервера (не від браузера) і ПЕРЕВІРЯЮТЬСЯ перед використанням:
+  // цілісність запису, прив'язка до цього кейсу/перевірки/запуску/погодження/версії/хеша, збіг копії знахідки
+  // з її ключем і з відновленою знахідкою, допустимість рішення для класу й коду, пояснення за чинними правилами.
+  const all_ = listResolutions(db, caseId);
+  const valid: ResolutionRow[] = [];
+  const invalid: InvalidResolution[] = [];
+  for (const res of all_.filter((x) => x.review_id === row.id)) {
+    const reasons = checkResolution(res, row, r.findings);
+    if (reasons.length === 0) valid.push(res);
+    else invalid.push({ id: res.id, finding_key: res.finding_key, decided_at: res.decided_at, reasons });
+  }
+  const resolved = new Set(valid.map((x) => x.finding_key));
   return {
     state: row.outcome as 'clear' | 'awaiting_analyst', ...base, review: r,
     gate: generationGate(r, pkg, instruction, resolved),
-    findings: r.findings, findingsView: findingsView(r.findings, mine), warnings: r.warnings,
-    resolutions: mine, earlierResolutions: listResolutions(db, caseId).filter((x) => x.review_id !== row.id),
+    findings: r.findings, findingsView: findingsView(r.findings, valid), warnings: r.warnings,
+    resolutions: valid, invalidResolutions: invalid,
+    // Рішення з інших записів перевірки — лише контекст (D31). Показуємо ті, чия цілісність не порушена.
+    earlierResolutions: all_.filter((x) => x.review_id !== row.id && resolutionIntact(x)),
   };
 }
 
@@ -429,6 +443,70 @@ export function resolutionHash(r: Omit<ResolutionRow, 'record_hash'>): string {
   const o: Record<string, unknown> = {};
   for (const k of RESOLUTION_FIELDS) o[k] = r[k];
   return sha256(canonical(o));
+}
+
+export interface InvalidResolution {
+  id: string;
+  finding_key: string;
+  decided_at: string;
+  /** Зрозумілі людині причини, чому цьому запису не довіряємо. */
+  reasons: string[];
+}
+
+/** Чи збігається контрольна сума запису з його змістом. */
+export function resolutionIntact(r: ResolutionRow): boolean {
+  const { record_hash, ...rest } = r;
+  return resolutionHash(rest) === record_hash;
+}
+
+/**
+ * Перевірка збереженого рішення ПЕРЕД тим, як воно зніме блокування (D75).
+ *
+ * МЕЖА ЗАХИСТУ, чесно: це контроль цілісності, а не підпис. Він виявляє зіпсований чи частково відредагований
+ * запис, запис не для цього пакета, не для цієї знахідки, недопустимий за класом чи без пояснення. Він НЕ
+ * захищає від того, хто може довільно переписати файл бази й перерахувати всі контрольні суми узгоджено:
+ * такий запис буде внутрішньо несуперечливим. Захист від цього — підпис із секретом поза базою; його свідомо
+ * не додано (окреме рішення, якщо знадобиться). Через інтерфейс і API цього шляху немає: рішення створює лише
+ * `rejectFinding` від імені людини.
+ */
+export function checkResolution(res: ResolutionRow, review: RecordRow, findings: readonly ReviewFinding[]): string[] {
+  const bad: string[] = [];
+  if (!resolutionIntact(res)) bad.push('Контрольна сума запису не збігається з його змістом: запис змінено.');
+  if (res.decision !== 'rejected') bad.push(`Невідоме рішення «${res.decision}».`);
+
+  // Прив'язка: той самий кейс, запис перевірки, запуск, погодження, версія й хеш пакета.
+  if (res.case_id !== review.case_id) bad.push('Рішення належить іншому кейсу.');
+  if (res.review_id !== review.id) bad.push('Рішення належить іншій перевірці.');
+  if (res.run_id !== review.run_id) bad.push('Запуск у рішенні не збігається із запуском перевірки.');
+  if (res.approval_id !== review.approval_id) bad.push('Погодження в рішенні не збігається з погодженням перевірки.');
+  if (res.version_id !== review.version_id) bad.push('Версія в рішенні не збігається з версією перевірки.');
+  if (res.content_hash !== review.content_hash) bad.push('Хеш пакета в рішенні не збігається з хешем перевіреної версії.');
+
+  // Копія знахідки має відповідати своєму ключу і саме тій знахідці, що є в перевірці.
+  let stored: ReviewFinding | null = null;
+  try {
+    stored = ReviewFindingSchema.parse(JSON.parse(res.finding_json));
+  } catch {
+    bad.push('Збережена копія зауваження не читається або не відповідає схемі.');
+  }
+  if (stored) {
+    if (findingKey(stored) !== res.finding_key) bad.push('Ключ рішення не відповідає збереженій копії зауваження.');
+    const actual = findings.find((f) => findingKey(f) === res.finding_key);
+    if (!actual) bad.push('Зауваження з таким ключем у цій перевірці немає.');
+    else {
+      if (canonical(actual) !== canonical(stored)) bad.push('Збережена копія зауваження не збігається із зауваженням перевірки.');
+      // Допустимість: відхиляти можна лише те, що блокує потік, і ніколи — кандидата на непідтримувану нотацію (D21).
+      if (actual.code === 'UNSUPPORTED_CANDIDATE') bad.push('Кандидата на непідтримувану нотацію відхилити не можна (D21).');
+      else if (actual.class !== 'blocks_flow') bad.push('Зауваження не блокує потік: рішення щодо нього не приймається.');
+    }
+  }
+
+  // Пояснення — за тими самими правилами, що й під час прийняття рішення людиною.
+  const expl = res.explanation.trim();
+  if (expl.length < MIN_EXPLANATION_CHARS) bad.push(`Пояснення порожнє або коротше за ${MIN_EXPLANATION_CHARS} символів.`);
+  if (expl.length > 2000) bad.push('Пояснення довше за допустиме.');
+  if (!res.decided_by.trim()) bad.push('Не вказано, хто ухвалив рішення.');
+  return bad;
 }
 
 export interface FindingView {
@@ -492,6 +570,13 @@ export function rejectFinding(db: DB, actor: Actor, caseId: string, args: { revi
     if (!view) throw new DomainError('NOT_FOUND', 'Такого зауваження в поточній перевірці немає. Оновіть сторінку.', 404);
     if (!view.can_reject) throw new DomainError('CANNOT_REJECT', view.reject_blocked_reason ?? 'Це зауваження відхилити не можна.', 409);
     if (view.resolution) throw new DomainError('ALREADY_DECIDED', 'Щодо цього зауваження рішення вже записано: змінити його не можна (запис незмінний).', 409);
+    // Слот рішення зайнятий пошкодженим записом (таке можливе лише при прямому втручанні в базу): запис незмінний,
+    // перезаписати його не можна, тому чесно кажемо, що робити далі.
+    const damaged = (r.invalidResolutions ?? []).find((x) => x.finding_key === args.findingKey);
+    if (damaged) {
+      throw new DomainError('RESOLUTION_DAMAGED',
+        `Для цього зауваження в базі вже є запис рішення, якому не можна довіряти (${damaged.reasons.join(' ')}). Записи незмінні, тож замінити його не можна: виконайте смислову перевірку заново — тоді рішення приймаються наново.`, 409);
+    }
 
     const rev = one<{ run_id: string; approval_id: string; version_id: string; content_hash: string }>(
       db, 'SELECT run_id, approval_id, version_id, content_hash FROM bpmn_review WHERE id = ?', args.reviewId)!;

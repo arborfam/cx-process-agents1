@@ -919,6 +919,13 @@ PANELS.diagram = (card) => {
       out.push(el('details', {}, el('summary', { class: 'small' }, `Попередження перевірки цитат і відповіді (${review.warnings.length})`),
         el('ul', { class: 'small' }, review.warnings.map((w) => el('li', {}, w)))));
     }
+    if ((review.invalid_resolutions || []).length) {
+      // Технічна помилка, а не зауваження агента й не рішення людини: окремий блок.
+      out.push(el('div', { class: 'warnbox' },
+        el('strong', {}, `Записам рішень не довіряємо (${review.invalid_resolutions.length}). `),
+        'Блокування вони не знімають. Такі записи не створюються застосунком — вони з’являються лише при прямому втручанні в базу.',
+        el('ul', { class: 'small' }, review.invalid_resolutions.map((x) => el('li', {}, `${x.decided_at}: ${x.reasons.join(' ')}`)))));
+    }
     if ((review.earlier_resolutions || []).length) {
       out.push(el('details', {}, el('summary', { class: 'small' }, `Ваші рішення з попередніх перевірок — лише контекст (${review.earlier_resolutions.length})`),
         el('ul', { class: 'small' }, review.earlier_resolutions.map((r) => el('li', {}, `${r.decided_at}: відхилено — ${r.explanation}`)))));
