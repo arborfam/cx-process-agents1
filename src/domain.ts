@@ -1435,9 +1435,13 @@ export function bpmnGuard(db: DB, caseId: string, opts: { ignoreActiveRun?: bool
 }
 
 /**
- * Зріз 1: перевіряє дозвіл і записує запуск. Побудови BPMN ще немає (зріз 3),
- * тому запуск має технічний стан not_implemented. Вхід береться з бази за погодженням,
- * а не із запиту.
+ * Проба серверного дозволу: перевіряє `bpmnGuard` і записує відмітку в журнал, нічого не будуючи
+ * (технічний стан `not_implemented` — «дозвіл перевірено, роботи не виконано»). Вхід береться з бази
+ * за погодженням, а не із запиту.
+ *
+ * Від 3b-4 продуктовий шлях інший: смислова перевірка (`POST bpmn/review`) → рішення аналітикині
+ * (`POST bpmn/findings/reject`) → побудова (`POST bpmn/build`). Ця функція лишається саме як проба
+ * дозволу (нею користуються перевірки приймання) і до генерації доступу не має.
  */
 export function requestBpmnStart(db: DB, actor: Actor, caseId: string, mode: string): { runId: string; versionId: string; approvalId: string } {
   requireHuman(actor, 'запуск створення BPMN');
@@ -1452,7 +1456,7 @@ export function requestBpmnStart(db: DB, actor: Actor, caseId: string, mode: str
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       id, caseId, 'bpmn', 'bpmn-v0.1', mode, 'немає (зріз 1)', a.version_id, a.id,
       getVersion(db, a.version_id).covered_json, 'not_implemented', now(), now(),
-      'Дозвіл підтверджено сервером. Побудову BPMN буде додано у зрізі 3.');
+      'Дозвіл підтверджено сервером. Побудова виконується окремою дією після смислової перевірки.');
     audit(db, caseId, actor, 'bpmn_start_permitted', { run_id: id, approval_id: a.id, version_id: a.version_id });
     return { runId: id, versionId: a.version_id, approvalId: a.id };
   });
@@ -1774,8 +1778,8 @@ function computeNextAction(state: CaseState, blockers: Blocker[], accepted: bool
         hint: 'Погоджений опис не дозволяє побудувати коректний потік. Виправлення створює нову версію й потребує нового погодження.',
         disabledReason: bpmn.reasons.map((r) => r.message).join(' ') };
     }
-    return { key: 'start_bpmn', enabled: bpmn.ok, label: 'Дозволити створення BPMN',
-      hint: 'У зрізі 1 перевіряється лише дозвіл сервера; побудова схеми з’явиться у зрізі 3.',
+    return { key: 'start_bpmn', enabled: bpmn.ok, label: 'Перейти до схеми: смислова перевірка й побудова',
+      hint: 'Серверний дозвіл надано. Далі — смислова перевірка опису моделлю, ваші рішення щодо зауважень і побудова схеми (вкладка «Схема»).',
       disabledReason: bpmn.ok ? undefined : bpmn.reasons.map((r) => r.message).join(' ') };
   }
   return { key: 'none', enabled: false, label: 'Немає дій', hint: '' };

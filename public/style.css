@@ -73,3 +73,17 @@ details > summary { cursor: pointer; }
 .chip.real { background: #fff4d6; border-color: #b7791f; color: #744210; }
 .banner.real { background: #fff4d6; color: #744210; border-color: #b7791f; }
 .runbox { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line, #ccc); }
+
+/* Вкладка «Схема» (3b-5). Нічого предметного: лише стани результату, зауваження, рішення й переглядач. */
+.diagram { height: 60vh; min-height: 320px; border: 1px solid var(--line); border-radius: 6px; background: #fff; position: relative; }
+.diagram-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.finding { border: 1px solid var(--line); border-left: 4px solid var(--warn); border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
+.finding.blocking { border-left-color: var(--danger); }
+.finding.resolved { border-left-color: var(--muted); }
+.finding.info { border-left-color: var(--line); }
+.finding blockquote { margin: 6px 0; padding-left: 10px; border-left: 3px solid var(--line); color: var(--muted); overflow-wrap: anywhere; }
+.decision { background: #f3f6f9; border-radius: 6px; padding: 6px 8px; margin-top: 6px; font-size: .9rem; }
+.artifact-state { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+.stale { background: #fff4d6; border: 1px solid #b7791f; color: #744210; border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+.group-h { margin: 16px 0 4px; padding-top: 10px; border-top: 1px solid var(--line); }
+.group-h:first-child { margin-top: 0; padding-top: 0; border-top: 0; }

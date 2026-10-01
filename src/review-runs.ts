@@ -22,7 +22,7 @@ import { canonical, sha256 } from './hash.ts';
 import { NOTATION_KIND_LABEL, type Content } from './schema.ts';
 import { actualCostUsd, preflight, reserveRetry, type ModelPolicy } from './ai/budget.ts';
 import {
-  buildReviewMessage, generationGate, contentFingerprint, reissueReview, reviewJsonSchema, reviewOutcome, runBpmnReview,
+  buildReviewMessage, findingKey, generationGate, contentFingerprint, reissueReview, reviewJsonSchema, reviewOutcome, runBpmnReview,
   type AttemptCost, type BpmnReviewClient, type GateResult, type ReviewFinding, type ReviewPackage, type ReviewResult,
 } from './ai/bpmn-review.ts';
 import { loadBpmnInstruction } from './ai/prompt.ts';
@@ -309,8 +309,14 @@ export interface CaseReview {
   /** Рішення шлюзу до генерації. Генерація можлива лише коли `gate.ok`. */
   gate?: GateResult;
   findings?: readonly ReviewFinding[];
+  /** Знахідки з ключем, рішенням людини (якщо є) і тим, чи вони блокують далі. */
+  findingsView?: FindingView[];
   warnings?: readonly string[];
   requirements?: UnsupportedRequirement[];
+  /** Рішення аналітикині щодо знахідок саме цього запису перевірки. */
+  resolutions?: ResolutionRow[];
+  /** Рішення з попередніх записів перевірки того ж кейсу — лише контекст (D31), на шлюз не впливають. */
+  earlierResolutions?: ResolutionRow[];
   /** Чому результат застарів або запису не довіряємо. */
   reasons?: string[];
   error?: string;
@@ -396,7 +402,113 @@ export function getCaseReview(db: DB, caseId: string, instruction: InstructionIn
     return untrusted(['Знахідки в записі не збігаються з повторною перевіркою збереженої відповіді.']);
   }
   if (reviewOutcome(r.findings) !== row.outcome) return untrusted(['Висновок у записі не відповідає знахідкам.']);
-  return { state: row.outcome as 'clear' | 'awaiting_analyst', ...base, review: r, gate: generationGate(r, pkg, instruction), findings: r.findings, warnings: r.warnings };
+  // Рішення читаються з незмінних записів сервера (не від браузера) і звіряються з відновленими знахідками.
+  const mine = listResolutions(db, caseId).filter((x) => x.review_id === row.id);
+  const resolved = new Set(mine.map((x) => x.finding_key));
+  return {
+    state: row.outcome as 'clear' | 'awaiting_analyst', ...base, review: r,
+    gate: generationGate(r, pkg, instruction, resolved),
+    findings: r.findings, findingsView: findingsView(r.findings, mine), warnings: r.warnings,
+    resolutions: mine, earlierResolutions: listResolutions(db, caseId).filter((x) => x.review_id !== row.id),
+  };
+}
+
+// ───────────────────────── рішення аналітикині щодо знахідок (3b-3, D31) ─────────────────────────
+
+export interface ResolutionRow {
+  id: string; case_id: string; review_id: string; run_id: string; approval_id: string; version_id: string;
+  content_hash: string; finding_key: string; finding_json: string; decision: 'rejected'; explanation: string;
+  decided_by: string; decided_at: string; record_hash: string;
+}
+
+const RESOLUTION_FIELDS = ['id', 'case_id', 'review_id', 'run_id', 'approval_id', 'version_id', 'content_hash',
+  'finding_key', 'finding_json', 'decision', 'explanation', 'decided_by', 'decided_at'] as const;
+
+/** Хеш цілісності рішення: контроль цілісності, не підпис (та сама межа, що й для запису перевірки). */
+export function resolutionHash(r: Omit<ResolutionRow, 'record_hash'>): string {
+  const o: Record<string, unknown> = {};
+  for (const k of RESOLUTION_FIELDS) o[k] = r[k];
+  return sha256(canonical(o));
+}
+
+export interface FindingView {
+  key: string;
+  finding: ReviewFinding;
+  /** Чи ця знахідка сама по собі закриває шлюз, доки її не вирішено. */
+  blocking: boolean;
+  /** Чи її взагалі можна відхилити: `UNSUPPORTED_CANDIDATE` — ніколи (D21). */
+  can_reject: boolean;
+  resolution: ResolutionRow | null;
+  /** Чому відхилити не можна (коли `can_reject` = false). */
+  reject_blocked_reason: string | null;
+}
+
+export function findingsView(findings: readonly ReviewFinding[], resolutions: readonly ResolutionRow[]): FindingView[] {
+  const byKey = new Map(resolutions.map((r) => [r.finding_key, r]));
+  return findings.map((f) => {
+    const unsupported = f.code === 'UNSUPPORTED_CANDIDATE';
+    const key = findingKey(f);
+    return {
+      key, finding: f, blocking: unsupported || f.class === 'blocks_flow', can_reject: !unsupported && f.class === 'blocks_flow',
+      resolution: byKey.get(key) ?? null,
+      reject_blocked_reason: unsupported
+        ? 'Кандидата на непідтримувану нотацію відхилити не можна (D21): схема не спрощується. Потрібне рішення щодо вимоги до нотації або зміна опису.'
+        : f.class === 'blocks_flow' ? null : 'Зауваження не блокує потік: рішення не потрібне.',
+    };
+  });
+}
+
+export function listResolutions(db: DB, caseId: string): ResolutionRow[] {
+  return all<ResolutionRow>(db, 'SELECT * FROM finding_resolution WHERE case_id = ? ORDER BY rowid', caseId);
+}
+
+export const MIN_EXPLANATION_CHARS = 10;
+
+/**
+ * Відхилення знахідки `blocks_flow` аналітикинею з обов'язковим поясненням (D31). Незмінний запис, прив'язаний до
+ * конкретної знахідки (її ключ), запису перевірки, запуску, погодження, версії й хеша пакета.
+ *
+ * Чого ця дія НЕ робить: не змінює AS-IS, не скасовує погодження, не чіпає знахідку й не відкриває генерацію сама.
+ * Шлюз і всі програмні перевірки виконуються заново при побудові (`buildArtifact`). `UNSUPPORTED_CANDIDATE` і
+ * `informational` відхилити не можна. «Уточнити AS-IS» рішенням тут не є: це звичайна нова версія AS-IS.
+ */
+export function rejectFinding(db: DB, actor: Actor, caseId: string, args: { reviewId: string; findingKey: string; explanation: string }): ResolutionRow {
+  requireHuman(actor, 'рішення щодо зауваження смислової перевірки');
+  const explanation = args.explanation.trim();
+  if (explanation.length < MIN_EXPLANATION_CHARS) {
+    throw new DomainError('EXPLANATION_REQUIRED',
+      `Щоб відхилити зауваження, потрібне пояснення (не менше ${MIN_EXPLANATION_CHARS} символів): чому ви вважаєте опис однозначним. Воно зберігається в історії й у звіті.`, 400);
+  }
+  if (explanation.length > 2000) throw new DomainError('VALIDATION', 'Пояснення задовге (максимум 2000 символів).', 400);
+  return tx(db, () => {
+    const r = getCaseReview(db, caseId);
+    if (r.state !== 'awaiting_analyst') {
+      throw new DomainError('BAD_STATE', 'Рішення приймаються лише тоді, коли перевірка завершена й чекає на вас. Поточний стан інший — відкрийте вкладку «Схема» й подивіться, що потрібно зробити.', 409);
+    }
+    if (r.reviewId !== args.reviewId) {
+      throw new DomainError('REVIEW_MISMATCH', 'Рішення стосується іншої (не поточної) перевірки. Оновіть сторінку: показані зауваження могли змінитися.', 409);
+    }
+    const view = (r.findingsView ?? []).find((v) => v.key === args.findingKey);
+    if (!view) throw new DomainError('NOT_FOUND', 'Такого зауваження в поточній перевірці немає. Оновіть сторінку.', 404);
+    if (!view.can_reject) throw new DomainError('CANNOT_REJECT', view.reject_blocked_reason ?? 'Це зауваження відхилити не можна.', 409);
+    if (view.resolution) throw new DomainError('ALREADY_DECIDED', 'Щодо цього зауваження рішення вже записано: змінити його не можна (запис незмінний).', 409);
+
+    const rev = one<{ run_id: string; approval_id: string; version_id: string; content_hash: string }>(
+      db, 'SELECT run_id, approval_id, version_id, content_hash FROM bpmn_review WHERE id = ?', args.reviewId)!;
+    const row: Omit<ResolutionRow, 'record_hash'> = {
+      id: newId('fres'), case_id: caseId, review_id: args.reviewId, run_id: rev.run_id, approval_id: rev.approval_id,
+      version_id: rev.version_id, content_hash: rev.content_hash, finding_key: args.findingKey,
+      finding_json: JSON.stringify(view.finding), decision: 'rejected', explanation,
+      decided_by: actor.name, decided_at: new Date().toISOString(),
+    };
+    run(db,
+      `INSERT INTO finding_resolution (id, case_id, review_id, run_id, approval_id, version_id, content_hash, finding_key,
+         finding_json, decision, explanation, decided_by, decided_at, record_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      row.id, row.case_id, row.review_id, row.run_id, row.approval_id, row.version_id, row.content_hash, row.finding_key,
+      row.finding_json, row.decision, row.explanation, row.decided_by, row.decided_at, resolutionHash(row));
+    audit(db, caseId, actor, 'bpmn_finding_rejected', { review_id: args.reviewId, finding_key: args.findingKey, code: view.finding.code, explanation_chars: explanation.length });
+    return { ...row, record_hash: resolutionHash(row) };
+  });
 }
 
 /** Короткий перелік завершених запусків перевірки (для журналу/інтерфейсу). */

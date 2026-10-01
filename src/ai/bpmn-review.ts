@@ -312,6 +312,13 @@ export interface RunReviewOptions {
 
 /** Відбиток змісту пакета: SHA-256 канонічного JSON. */
 export const contentFingerprint = (c: Content): string => sha256(canonical(c));
+
+/**
+ * Стабільний ключ знахідки: SHA-256 її канонічного змісту (код, кроки, цитата, питання, клас, варіанти).
+ * Рішення аналітикині (3b-3) прив'язується до цього ключа І до ID запису перевірки: якщо модель у новому запуску
+ * сформулює знахідку інакше, старе рішення до неї не застосовується (D31).
+ */
+export const findingKey = (f: ReviewFinding): string => sha256(canonical(f));
 const fingerprintOf = contentFingerprint;
 const fmt = (v: Violation) => `${v.code} ${v.path}: ${v.message}`;
 
@@ -419,12 +426,14 @@ export type GateResult =
  * Шлюз перед генерацією: без завершеної смислової перевірки саме цього пакета саме цією інструкцією генерація неможлива.
  * Перевіряє: результат видано модулем (не підроблено); перевірку завершено; її виконав не деморежим (D32); версія, хеш і відбиток
  * змісту збігаються з пакетом, що йде в генератор (відбиток шлюз перераховує сам); інструкція — поточна; немає знахідок, що блокують.
- * У 3b-1 будь-яка `blocks_flow` і будь-який `UNSUPPORTED_CANDIDATE` блокують завжди: рішення аналітика (відхилення з поясненням, D31)
- * з'явиться в 3b-3, а `UNSUPPORTED_CANDIDATE` відхилити не можна ніколи (D21).
+ * Знахідки `blocks_flow` блокують, доки аналітикиня не відхилила КОЖНУ з них із поясненням (D31): їхні ключі передаються
+ * у `resolvedKeys` — і це єдине, що цей набір може зробити. `UNSUPPORTED_CANDIDATE` відхилити не можна ніколи (D21):
+ * він блокує навіть якщо його ключ є в `resolvedKeys`. Набір формує лише сервер із незмінних записів `finding_resolution`;
+ * від браузера він не приходить.
  * Межа довіри: `versionId` і `contentHash` шлюз приймає від викликача; їхню справжність (погодження, хеш версії з базою) підтверджує
  * серверний дозвіл `bpmnGuard`, який виконується окремо й не замінюється цим шлюзом.
  */
-export function generationGate(review: ReviewResult | null | undefined, pkg: ReviewPackage, instruction: InstructionInfo): GateResult {
+export function generationGate(review: ReviewResult | null | undefined, pkg: ReviewPackage, instruction: InstructionInfo, resolvedKeys: ReadonlySet<string> = new Set()): GateResult {
   if (!review || typeof review !== 'object' || !issued.has(review)) {
     return { ok: false, code: 'REVIEW_NOT_ISSUED', message: 'Немає результату смислової перевірки, виданого модулем перевірки. Генерація без неї неможлива.' };
   }
@@ -444,8 +453,9 @@ export function generationGate(review: ReviewResult | null | undefined, pkg: Rev
   if (review.findings.some((f) => f.code === 'UNSUPPORTED_CANDIDATE')) {
     return { ok: false, code: 'UNSUPPORTED_CANDIDATE', message: 'Знайдено кандидата на непідтримувану нотацію; його не можна відхилити (D21).' };
   }
-  if (review.findings.some((f) => f.class === 'blocks_flow')) {
-    return { ok: false, code: 'BLOCKING_FINDINGS', message: 'Є знахідки, що блокують потік; потрібне рішення аналітика.' };
+  const unresolved = review.findings.filter((f) => f.class === 'blocks_flow' && !resolvedKeys.has(findingKey(f)));
+  if (unresolved.length > 0) {
+    return { ok: false, code: 'BLOCKING_FINDINGS', message: `Є знахідки, що блокують потік (${unresolved.length}); потрібне рішення аналітикині щодо кожної.` };
   }
   return { ok: true };
 }

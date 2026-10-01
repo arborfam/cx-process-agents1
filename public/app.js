@@ -3,7 +3,7 @@
 // Дані завжди вставляються через textContent (без innerHTML), щоб текст джерел не міг виконатися як код.
 
 const app = document.getElementById('app');
-const state = { config: null, tab: 'context', card: null, caseId: null };
+const state = { config: null, tab: 'context', card: null, caseId: null, diagram: null, viewer: null };
 
 function el(tag, attrs, ...children) {
   const n = document.createElement(tag);
@@ -329,11 +329,7 @@ async function nextAction(card) {
   else if (k === 'clarify_entry') { const sel = document.getElementById('entry-select'); if (sel) { sel.scrollIntoView({ block: 'center' }); sel.focus(); } else showTab('edit'); }
   else if (k === 'clarify_process_name') { showTab('edit'); setTimeout(() => { const i = document.getElementById('process-name-input'); if (i) { i.scrollIntoView({ block: 'center' }); i.focus(); } }, 50); }
   else if (k === 'fix_flow') showTab('edit');
-  else if (k === 'start_bpmn') {
-    const r = await act(() => api('POST', `/api/cases/${card.case.id}/bpmn/start`, {}));
-    if (r) toast('Сервер підтвердив дозвіл (запуск ' + r.run_id + '). Побудову BPMN буде додано у зрізі 3.', true);
-    await refresh();
-  }
+  else if (k === 'start_bpmn') { showTab('diagram'); }
 }
 
 const dlg = document.getElementById('dlg');
@@ -374,8 +370,148 @@ function returnDialog(card) {
 // ───────────── вкладки деталей ─────────────
 const TABS = [
   ['context', 'Бізнес-контекст і межі'], ['steps', 'Кроки процесу'], ['claims', 'Твердження й докази'], ['problems', 'Проблеми й вплив'], ['hypotheses', 'Гіпотези'],
-  ['questions', 'Питання'], ['sources', 'Джерела'], ['edit', 'Редагувати'], ['history', 'Історія'],
+  ['questions', 'Питання'], ['sources', 'Джерела'], ['diagram', 'Схема'], ['edit', 'Редагувати'], ['history', 'Історія'],
 ];
+
+// ───────────── вкладка «Схема»: смислова перевірка → рішення → побудова → перегляд (3b-3…3b-7) ─────────────
+// Тут немає нічого предметного: ні ролей, ні назв кроків, ні термінів конкретного процесу.
+// Три різні за природою речі показані окремо: зауваження агента, рішення людини, технічні помилки.
+
+const REVIEW_STATE_LABEL = {
+  none: 'перевірки ще не було', running: 'виконується…', failed: 'помилка запуску',
+  unsupported: 'потрібна нотація, якої інструмент не будує', awaiting_analyst: 'чекає ваших рішень',
+  clear: 'зауважень, що блокують, немає', stale: 'застаріла', untrusted: 'запису не довіряємо',
+};
+const ARTIFACT_STATUS_LABEL = {
+  ok: 'схему побудовано й перевірено', blocked: 'не побудовано: структурні обмеження',
+  unsupported: 'не побудовано: потрібна непідтримувана нотація', verification_failed: 'не побудовано: перевірка файлу не пройшла',
+};
+const FINDING_CODE_LABEL = {
+  GATEWAY_SEMANTICS: 'сенс розгалуження', CONDITIONS_NOT_EXHAUSTIVE: 'умови не покривають усі випадки',
+  TEXT_STRUCTURE_MISMATCH: 'текст не відповідає структурі', MULTIPLE_ACTORS: 'кілька виконавців в одному кроці',
+  ENTRY_TRIGGER_MISMATCH: 'початок не відповідає тригеру', UNSUPPORTED_CANDIDATE: 'кандидат на непідтримувану нотацію',
+};
+
+async function loadDiagram() {
+  const id = state.caseId;
+  const [review, art] = await Promise.all([
+    api('GET', `/api/cases/${id}/bpmn/review`).catch((e) => ({ error: e })),
+    api('GET', `/api/cases/${id}/bpmn/artifact`).catch((e) => ({ error: e })),
+  ]);
+  state.diagram = { review, art };
+  if (state.tab === 'diagram') renderTabs();
+}
+
+function rejectDialog(card, reviewId, view) {
+  const ta = el('textarea', { rows: '4', placeholder: 'Чому ви вважаєте опис однозначним (не менше 10 символів). Пояснення зберігається незмінно й буде у звіті.' });
+  openDialog(
+    el('h3', {}, 'Відхилити зауваження з поясненням'),
+    el('p', { class: 'small muted' }, 'Відхилення не скасовує програмних перевірок: їх буде виконано заново під час побудови. Опис AS-IS і погодження не змінюються.'),
+    el('blockquote', {}, view.finding.question),
+    ta,
+    el('div', { class: 'row' },
+      el('button', { class: 'primary', onclick: async () => {
+        dlg.close();
+        await act(() => api('POST', `/api/cases/${card.case.id}/bpmn/findings/reject`,
+          { review_id: reviewId, finding_key: view.key, explanation: ta.value }), 'Рішення записано');
+        await loadDiagram();
+      } }, 'Відхилити з поясненням'),
+      el('button', { onclick: () => dlg.close() }, 'Скасувати')));
+}
+
+function findingBox(card, reviewId, view, canDecide) {
+  const f = view.finding;
+  const cls = view.resolution ? 'finding resolved' : view.blocking ? 'finding blocking' : 'finding info';
+  return el('div', { class: cls },
+    el('div', {},
+      el('span', { class: 'chip' }, view.blocking ? 'блокує побудову' : 'зауваження'),
+      ' ', el('strong', {}, FINDING_CODE_LABEL[f.code] || f.code),
+      ' · кроки: ', f.step_ids.join(', ')),
+    el('div', {}, el('strong', {}, 'Питання агента: '), f.question),
+    el('blockquote', {}, '«', f.quote, '»'),
+    (f.options || []).length ? el('div', { class: 'small' }, 'Варіанти від агента (не підставляються в опис автоматично): ' + f.options.join(' · ')) : null,
+    view.resolution
+      ? el('div', { class: 'decision' },
+          el('strong', {}, 'Ваше рішення: відхилено. '), view.resolution.explanation,
+          el('div', { class: 'small muted' }, `${view.resolution.decided_by}, ${view.resolution.decided_at}. Запис незмінний.`))
+      : view.can_reject
+        ? (canDecide ? el('div', { class: 'row' },
+            el('button', { onclick: () => rejectDialog(card, reviewId, view) }, 'Відхилити з поясненням'),
+            el('button', { onclick: () => showTab('edit') }, 'Уточнити опис (нова версія)')) : null)
+        : el('div', { class: 'small muted' }, view.reject_blocked_reason));
+}
+
+function mountViewer(host, caseId, artifactId) {
+  if (!window.BpmnJS) { host.replaceChildren(el('p', { class: 'muted' }, 'Переглядач не завантажився. Файл усе одно можна завантажити кнопкою нижче.')); return null; }
+  host.replaceChildren();
+  const viewer = new window.BpmnJS({ container: host });
+  const q = artifactId ? `?artifact_id=${encodeURIComponent(artifactId)}` : '';
+  fetch(`/api/cases/${caseId}/bpmn/file/bpmn${q}`, { headers: { 'x-requested-with': 'cx' } })
+    .then((r) => (r.ok ? r.text() : Promise.reject(new Error('Сервер не віддав файл: ' + r.status))))
+    .then((xml) => viewer.importXML(xml))
+    .then(() => viewer.get('canvas').zoom('fit-viewport'))
+    .catch((e) => host.replaceChildren(el('p', { class: 'warnbox' }, 'Схему не показано: ' + e.message)));
+  return viewer;
+}
+
+function artifactBlock(card, a, isHistory) {
+  const dl = (kind, label) => el('a', {
+    class: 'btn', href: `/api/cases/${card.case.id}/bpmn/file/${kind}?artifact_id=${encodeURIComponent(a.id)}`, download: '',
+  }, label);
+  const host = el('div', { class: 'diagram' });
+  const rows = a.map || [];
+  return el('div', {},
+    el('div', { class: 'artifact-state' },
+      el('span', { class: 'chip' }, ARTIFACT_STATUS_LABEL[a.status] || a.status),
+      a.current ? el('span', { class: 'chip ok' }, 'чинна') : el('span', { class: 'chip' }, a.label || 'не чинна'),
+      el('span', { class: 'small muted' }, `${a.created_at} · ${a.generator}`)),
+    el('div', { class: 'kv' }, el('div', { class: 'k' }, 'Назва процесу'), el('div', { class: 'v' }, a.process_name || el('span', { class: 'notset' }, 'не зазначено'))),
+    el('div', { class: 'kv' }, el('div', { class: 'k' }, 'Версія опису'), el('div', { class: 'v' }, a.version_id + ' · хеш ' + a.content_hash.slice(0, 12) + '…')),
+    !a.trusted ? el('div', { class: 'warnbox' }, 'Запису не довіряємо: ' + a.untrusted_reasons.join(' ')) : null,
+    a.stale_reasons.length ? el('div', { class: 'stale' }, el('strong', {}, (a.label || 'Застаріла') + '. '), a.stale_reasons.join(' '),
+      el('div', { class: 'small' }, 'Як чинний результат вона не видається й не завантажується. Щоб отримати схему для поточного опису, погодьте версію, виконайте смислову перевірку й побудуйте схему заново.')) : null,
+    a.detail.explanation ? el('div', { class: 'warnbox' }, a.detail.explanation) : null,
+    (a.detail.findings || []).length ? el('div', {}, el('h4', {}, 'Технічні обмеження, через які файл не створено'),
+      el('ul', { class: 'small' }, a.detail.findings.map((f) => el('li', {}, `${f.code} (${f.class}): ${f.message}${f.refs && f.refs.length ? ' — ' + f.refs.join(', ') : ''}`)))) : null,
+    (a.detail.issues || []).length ? el('div', {}, el('h4', {}, 'Помилки перевірки файлу' + (a.detail.stage ? ` (етап: ${a.detail.stage})` : '')),
+      el('ul', { class: 'small' }, a.detail.issues.map((i) => el('li', {}, `${i.code}: ${i.message}`)))) : null,
+    // Переглядач і завантаження показуємо лише для ЧИННОГО результату: для застарілого сервер файл не віддасть,
+    // тож порожнє полотно з помилкою нічого не пояснює — пояснює позначка вище.
+    a.status === 'ok' && a.current ? el('div', {},
+      el('div', { class: 'diagram-bar' },
+        el('button', { onclick: () => { if (state.viewer) { state.viewer.get('canvas').zoom('fit-viewport'); } } }, 'Показати всю схему'),
+        el('button', { onclick: () => { if (state.viewer) { const c = state.viewer.get('canvas'); c.zoom(c.zoom() * 1.2); } } }, 'Збільшити'),
+        el('button', { onclick: () => { if (state.viewer) { const c = state.viewer.get('canvas'); c.zoom(c.zoom() / 1.2); } } }, 'Зменшити'),
+        a.downloads.bpmn ? dl('bpmn', 'Завантажити .bpmn') : el('span', { class: 'small muted' }, 'Файл .bpmn недоступний'),
+        a.downloads.drawio ? dl('drawio', 'Завантажити .drawio') : el('span', { class: 'small muted' }, 'Перевірений .drawio недоступний')),
+      a.drawio_status === 'failed' ? el('div', { class: 'warnbox' },
+        el('strong', {}, 'Експорт .drawio не пройшов власної звірки, тому не видається. '),
+        'Файл .bpmn це не скасовує: він перевірений і чинний.',
+        (a.detail.drawioIssues || []).length ? el('ul', { class: 'small' }, a.detail.drawioIssues.map((i) => el('li', {}, `${i.code}: ${i.message}`))) : null) : null,
+      el('p', { class: 'small warnbox' }, 'Технічна перевірка доводить лише, що файл коректний і відповідає погодженому опису. Вона не доводить, що опис процесу правильний по суті: це вирішує людина.'),
+      (!isHistory ? el('div', {}, host) : null),
+      (a.detail.layoutWarnings || []).length ? el('details', {}, el('summary', { class: 'small' }, 'Попередження розкладки (' + a.detail.layoutWarnings.length + ')'),
+        el('ul', { class: 'small' }, a.detail.layoutWarnings.map((w) => el('li', {}, w)))) : null,
+      (a.detail.knownLimits || []).length ? el('details', {}, el('summary', { class: 'small' }, 'Відомі обмеження показу (' + a.detail.knownLimits.length + ')'),
+        el('ul', { class: 'small' }, a.detail.knownLimits.map((f) => el('li', {}, `${f.code}: ${f.message}`)))) : null,
+      rows.length ? el('details', { open: !isHistory }, el('summary', {}, 'Відповідність кроків опису елементам схеми (' + rows.length + ')'),
+        el('table', {}, el('thead', {}, el('tr', {}, ['Крок', 'Роль', 'Дія', 'Елемент схеми', 'Доріжка', 'Шлюз'].map((h) => el('th', {}, h)))),
+          el('tbody', {}, rows.map((r) => el('tr', {}, el('td', {}, r.step_id), el('td', {}, r.role), el('td', {}, r.action),
+            el('td', {}, r.bpmn_task_id), el('td', {}, r.lane_id), el('td', {}, r.gateway_id || '—')))))) : null,
+      (!isHistory ? el('div', { class: 'small muted' }, 'Переглядач bpmn.io; водяний знак bpmn.io є частиною ліцензії й не вилучається.') : null),
+    ) : null,
+    a.status === 'ok' && !a.current
+      ? el('p', { class: 'small muted' }, 'Схему не показуємо: вона побудована за іншою версією опису. Нижче — відповідність кроків тієї версії елементам тієї схеми.')
+      : null,
+    (a.status === 'ok' && !a.current && (a.map || []).length
+      ? el('details', {}, el('summary', {}, 'Відповідність кроків опису елементам схеми (' + a.map.length + ')'),
+          el('table', {}, el('thead', {}, el('tr', {}, ['Крок', 'Роль', 'Дія', 'Елемент схеми', 'Доріжка', 'Шлюз'].map((h) => el('th', {}, h)))),
+            el('tbody', {}, a.map.map((r) => el('tr', {}, el('td', {}, r.step_id), el('td', {}, r.role), el('td', {}, r.action),
+              el('td', {}, r.bpmn_task_id), el('td', {}, r.lane_id), el('td', {}, r.gateway_id || '—'))))))
+      : null),
+    (!isHistory && a.status === 'ok' && a.current ? (() => { setTimeout(() => { state.viewer = mountViewer(host, card.case.id, a.id); }, 0); return null; })() : null));
+}
+
 
 function renderTabs() {
   const card = state.card; if (!card) return;
@@ -709,7 +845,7 @@ async function showSource(sourceId, quote) {
 }
 
 // ───────────── запуск ─────────────
-async function refresh() { await route(); }
+async function refresh() { state.diagram = null; state.viewer = null; await route(); }
 
 async function route() {
   try {
@@ -730,3 +866,89 @@ async function route() {
 }
 window.addEventListener('hashchange', route);
 route();
+
+PANELS.diagram = (card) => {
+  const d = state.diagram;
+  if (!d) { void loadDiagram(); return el('p', { class: 'muted' }, 'Завантаження стану схеми…'); }
+  const review = d.review || {};
+  const art = d.art || {};
+  // Доступність саме агента 2: смислову перевірку виконує він, а не агент 1 (різні клієнти).
+  const ai = (card.ai && card.ai.review) || { available: false, reason: 'Стан смислової перевірки невідомий.' };
+  const out = [];
+
+  // 1) Зауваження агента й стан смислової перевірки
+  out.push(el('h3', { class: 'group-h' }, 'Смислова перевірка опису'));
+  if (review.error) out.push(el('div', { class: 'warnbox' }, 'Стан перевірки не прочитано: ' + review.error.message));
+  else {
+    out.push(el('div', { class: 'kv' }, el('div', { class: 'k' }, 'Стан'),
+      el('div', { class: 'v' }, REVIEW_STATE_LABEL[review.state] || review.state,
+        review.created_at ? el('span', { class: 'small muted' }, ' · ' + review.created_at) : null)));
+    if (review.state === 'none' || review.state === 'stale' || review.state === 'failed' || review.state === 'untrusted') {
+      if ((review.reasons || []).length) out.push(el('div', { class: 'warnbox' }, review.reasons.join(' ')));
+      if (review.error) out.push(el('div', { class: 'warnbox' }, String(review.error)));
+      out.push(el('p', { class: 'small' }, ai.available
+        ? 'Наступна дія: запустити смислову перевірку опису моделлю. Схему вона не будує — лише шукає неоднозначності.'
+        : 'Наступна дія недоступна: смислову перевірку виконує модель, а вона не підключена. Демо-відповіді для цієї перевірки не вигадуються.'));
+      out.push(el('button', { class: 'primary', disabled: !ai.available, onclick: async () => {
+        const r = await act(() => api('POST', `/api/cases/${card.case.id}/bpmn/review`, {}), 'Перевірку запущено');
+        if (r) { await loadDiagram(); setTimeout(loadDiagram, 1500); }
+      } }, 'Запустити смислову перевірку'));
+      if (!ai.available && ai.reason) out.push(el('p', { class: 'small muted' }, ai.reason));
+    }
+    if (review.state === 'running') out.push(el('div', {}, el('p', { class: 'small' }, 'Перевірка виконується. Опис і погодження не змінюються.'),
+      el('button', { onclick: loadDiagram }, 'Оновити стан')));
+    if (review.state === 'unsupported') {
+      out.push(el('div', { class: 'warnbox' },
+        el('strong', {}, 'Потрібна нотація, якої інструмент не будує. '),
+        'Схему не створюємо й не спрощуємо; погодження опису лишається чинним.',
+        el('ul', { class: 'small' }, (review.requirements || []).map((r) => el('li', {}, `${r.label} (крок ${r.step_id}): ${r.detail}`)))));
+    }
+    const views = review.findings_view || [];
+    const blocking = views.filter((v) => v.blocking);
+    const infos = views.filter((v) => !v.blocking);
+    if (blocking.length) {
+      out.push(el('h4', {}, `Зауваження, що блокують побудову (${blocking.length})`));
+      out.push(...blocking.map((v) => findingBox(card, review.review_id, v, review.state === 'awaiting_analyst')));
+    }
+    if (infos.length) {
+      out.push(el('details', {}, el('summary', {}, `Зауваження без блокування (${infos.length})`),
+        ...infos.map((v) => findingBox(card, review.review_id, v, false))));
+    }
+    if (review.state === 'clear' && !blocking.length) out.push(el('p', { class: 'small' }, 'Зауважень, що блокують побудову, немає.'));
+    if ((review.warnings || []).length) {
+      out.push(el('details', {}, el('summary', { class: 'small' }, `Попередження перевірки цитат і відповіді (${review.warnings.length})`),
+        el('ul', { class: 'small' }, review.warnings.map((w) => el('li', {}, w)))));
+    }
+    if ((review.earlier_resolutions || []).length) {
+      out.push(el('details', {}, el('summary', { class: 'small' }, `Ваші рішення з попередніх перевірок — лише контекст (${review.earlier_resolutions.length})`),
+        el('ul', { class: 'small' }, review.earlier_resolutions.map((r) => el('li', {}, `${r.decided_at}: відхилено — ${r.explanation}`)))));
+    }
+  }
+
+  // 2) Побудова схеми
+  out.push(el('h3', { class: 'group-h' }, 'Побудова схеми'));
+  if (art.error) out.push(el('div', { class: 'warnbox' }, 'Стан схеми не прочитано: ' + art.error.message));
+  else {
+    if (art.can_build) {
+      out.push(el('p', { class: 'small' }, 'Усі перевірки пройдено. Побудова не звертається до моделі: схема створюється зі змісту погодженої версії.'));
+      out.push(el('button', { class: 'primary', onclick: async (ev) => {
+        ev.target.disabled = true;
+        const r = await act(() => api('POST', `/api/cases/${card.case.id}/bpmn/build`, {}), 'Схему побудовано');
+        ev.target.disabled = false;
+        if (r) await loadDiagram();
+      } }, 'Побудувати схему'));
+    } else if (art.build_block) {
+      out.push(el('div', { class: 'warnbox' }, el('strong', {}, 'Побудова зараз недоступна. '), art.build_block.message,
+        (art.build_block.reasons || []).length ? el('ul', { class: 'small' }, art.build_block.reasons.map((x) => el('li', {}, x))) : null));
+    }
+    if (art.artifact) out.push(artifactBlock(card, art.artifact, false));
+    else out.push(el('p', { class: 'muted' }, 'Схему для цього кейсу ще не будували.'));
+    const hist = (art.history || []).filter((h) => !art.artifact || h.id !== art.artifact.id);
+    if (hist.length) {
+      out.push(el('h3', { class: 'group-h' }, `Історія схем (${hist.length})`));
+      out.push(el('p', { class: 'small muted' }, 'Попередні побудови лишаються видимими. Як чинний результат вони не видаються.'));
+      out.push(...hist.map((h) => el('details', {}, el('summary', {}, `${h.created_at} · ${ARTIFACT_STATUS_LABEL[h.status] || h.status} · ${h.label || 'чинна'}`), artifactBlock(card, h, true))));
+    }
+  }
+  return el('div', {}, ...out);
+};

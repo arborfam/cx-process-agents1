@@ -597,8 +597,10 @@ test('модуль агента 2 не має доступу до бази, ге
   for (const re of [/\bfetch\s*\(/, /process\.env/, /node:(fs|http|https|net|child_process)/, /\.run\(|\.exec\(|INSERT|UPDATE/]) assert.ok(!re.test(code), String(re));
   const walk = (d: string): string[] => readdirSync(d).flatMap((f) => (statSync(join(d, f)).isDirectory() ? walk(join(d, f)) : [join(d, f)]));
   // Від 3b-2 модуль підключено, але лише через явний перелік: клієнт Anthropic і серверне керування запуском (`src/review-runs.ts`).
-  // Усі інші файли (зокрема генератор `src/bpmn/` і браузерні шляхи) його не імпортують.
-  const allowed = new Set(['src/ai/anthropic-bpmn-client.ts', 'src/review-runs.ts']);
+  // Від 3b-4 до переліку додано шлюзований модуль побудови (`src/bpmn-artifacts.ts`): він бере звідси `findingKey`
+  // і `generationGate` — без них шлюз неможливо застосувати. Усі інші файли (зокрема сам генератор `src/bpmn/`
+  // і браузерні шляхи) модуль агента 2 не імпортують.
+  const allowed = new Set(['src/ai/anthropic-bpmn-client.ts', 'src/review-runs.ts', 'src/bpmn-artifacts.ts']);
   for (const f of walk(join(ROOT, 'src')).filter((x) => x.endsWith('.ts') && !x.endsWith('bpmn-review.ts'))) {
     const rel = f.slice(ROOT.length + 1);
     if (!/bpmn-review/.test(readFileSync(f, 'utf8'))) continue;

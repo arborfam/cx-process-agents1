@@ -133,11 +133,58 @@ CREATE TABLE IF NOT EXISTS bpmn_review (
   record_hash TEXT NOT NULL
 );
 
+-- Незмінне рішення аналітикині щодо знахідки агента 2 (3b-3, D31). Лише «відхилено» з обов'язковим поясненням:
+-- «уточнити AS-IS» рішенням не є (це нова версія AS-IS, і вона проходить звичайний шлях погодження).
+-- Прив'язка: конкретна знахідка (finding_key = хеш її змісту) у конкретному записі перевірки, запуску, погодженні, версії й хеші пакета.
+CREATE TABLE IF NOT EXISTS finding_resolution (
+  id TEXT PRIMARY KEY,
+  case_id TEXT NOT NULL REFERENCES "case"(id),
+  review_id TEXT NOT NULL REFERENCES bpmn_review(id),
+  run_id TEXT NOT NULL REFERENCES run(id),
+  approval_id TEXT NOT NULL REFERENCES approval(id),
+  version_id TEXT NOT NULL REFERENCES as_is_version(id),
+  content_hash TEXT NOT NULL,
+  finding_key TEXT NOT NULL,
+  finding_json TEXT NOT NULL,
+  decision TEXT NOT NULL CHECK (decision IN ('rejected')),
+  explanation TEXT NOT NULL,
+  decided_by TEXT NOT NULL,
+  decided_at TEXT NOT NULL,
+  record_hash TEXT NOT NULL,
+  UNIQUE (review_id, finding_key)
+);
+
+-- Незмінний артефакт схеми (3b-4). Файли зберігаються лише коли їхня власна перевірка пройшла:
+-- status='ok' → є перевірений .bpmn; drawio_status='ok' → є ще й перевірений .drawio (інакше .bpmn лишається чинним).
+-- status='blocked'/'unsupported'/'verification_failed' → файлів немає, лишається пояснення; погодження AS-IS не змінюється (D21).
+CREATE TABLE IF NOT EXISTS bpmn_artifact (
+  id TEXT PRIMARY KEY,
+  case_id TEXT NOT NULL REFERENCES "case"(id),
+  review_id TEXT NOT NULL REFERENCES bpmn_review(id),
+  run_id TEXT NOT NULL REFERENCES run(id),
+  approval_id TEXT NOT NULL REFERENCES approval(id),
+  version_id TEXT NOT NULL REFERENCES as_is_version(id),
+  content_hash TEXT NOT NULL,
+  process_name TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('ok','blocked','unsupported','verification_failed')),
+  bpmn_xml TEXT,
+  bpmn_sha256 TEXT,
+  drawio_status TEXT NOT NULL CHECK (drawio_status IN ('ok','failed','none')),
+  drawio_xml TEXT,
+  drawio_sha256 TEXT,
+  map_json TEXT NOT NULL,
+  detail_json TEXT NOT NULL,
+  generator TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  record_hash TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_source_case ON source(case_id, seq);
 CREATE INDEX IF NOT EXISTS idx_version_case ON as_is_version(case_id, number);
 `;
 
-const IMMUTABLE_TABLES = ['source', 'as_is_version', 'version_acceptance', 'approval', 'approval_revocation', 'audit_log', 'bpmn_review'];
+const IMMUTABLE_TABLES = ['source', 'as_is_version', 'version_acceptance', 'approval', 'approval_revocation', 'audit_log', 'bpmn_review', 'finding_resolution', 'bpmn_artifact'];
 
 function immutabilityTriggers(): string {
   return IMMUTABLE_TABLES.map(

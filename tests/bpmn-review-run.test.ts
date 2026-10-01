@@ -842,18 +842,22 @@ test('підставного/демо-клієнта агента 2 у прод�
   assert.ok(!/mode:\s*'demo'/.test(readFileSync(join(ROOT, 'src', 'ai', 'anthropic-bpmn-client.ts'), 'utf8')));
 });
 
-test('відновлення (reissueReview) і запис результату доступні лише серверному модулю; браузерні маршрути не мають входу для результату; генератор не підключено', () => {
+// Від 3b-4 генератор підключено до продукту через ОДИН шлюзований модуль; за цим інваріантом стежить
+// `tests/bpmn-isolation.test.ts`. Тут лишається його власний предмет: хто може відновлювати й писати результат
+// перевірки, і те, що браузер не має входу для результату.
+test('відновлення (reissueReview) і запис результату доступні лише серверному модулю; браузерні маршрути не мають входу для результату', () => {
   for (const f of srcFiles) {
     const code = readFileSync(f, 'utf8');
     if (/reissueReview/.test(code)) assert.ok(['src/ai/bpmn-review.ts', 'src/review-runs.ts'].includes(rel(f)), `${rel(f)}: використовує reissueReview`);
     if (/INSERT INTO bpmn_review/.test(code)) assert.equal(rel(f), 'src/review-runs.ts', `${rel(f)}: пише в bpmn_review`);
-    if (rel(f).startsWith('src/bpmn/')) continue;
-    assert.ok(!/from\s+['"][^'"]*\bbpmn\//.test(code), `${rel(f)}: імпортує генератор`);
   }
   const server = readFileSync(join(ROOT, 'src', 'server.ts'), 'utf8');
   const block = server.slice(server.indexOf("case 'bpmn/review'"), server.indexOf("default:", server.indexOf("case 'bpmn/review'")));
   assert.ok(!/\bb\.(findings|outcome|state|review|run_id|response)\b/.test(block), 'POST bpmn/review не читає результат із тіла запиту');
-  assert.ok(!/generateBpmn|packageFromApproval/.test(server));
+  // Сервер генератор не викликає: усе через шлюзований модуль.
+  assert.ok(!/generateBpmn|packageFromApproval|exportDrawio|buildSemantic/.test(server));
+  const buildBlock = server.slice(server.indexOf("case 'bpmn/build'"), server.indexOf("case 'bpmn/review'", server.indexOf("case 'bpmn/build'")));
+  assert.ok(!/\bb\.\w+/.test(buildBlock), 'POST bpmn/build не читає нічого з тіла запиту');
 });
 
 test('вартість двох агентів рахується в одній таблиці запусків: spentUsd бачить і analyst, і bpmn', async () => {

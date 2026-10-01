@@ -1,10 +1,17 @@
 /**
- * Зріз 3a без AI: у шляху генерації немає викликів моделі, мережі й файлів; генератор не підключено до сервера/API/інтерфейсу.
+ * Інваріант «обходу смислової перевірки немає» — структурно, а не на довіру.
+ *
+ * До 3b-4 він звучав так: жоден модуль у `src/` поза `src/bpmn/` не імпортує генератор. У 3b-4 генератор
+ * підключено до продукту, тому інваріант став точнішим і суворішим:
+ *  • генератор імпортує РІВНО ОДИН модуль — `src/bpmn-artifacts.ts`;
+ *  • цей модуль обов'язково викликає `generationGate` перед `generateBpmn`;
+ *  • сервер, доменний шар і запуски генератор не імпортують і самі схему не будують;
+ *  • у самому генераторі, як і раніше, немає моделі, мережі, файлів і змінного стану на рівні модуля.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
 const ROOT = join(import.meta.dirname, '..');
 const read = (p: string): string => readFileSync(join(ROOT, p), 'utf8');
@@ -14,6 +21,13 @@ const walk = (dir: string): string[] => readdirSync(dir).flatMap((f) => {
   const p = join(dir, f);
   return statSync(p).isDirectory() ? walk(p) : [p];
 });
+
+const GEN_DIR = join(ROOT, 'src', 'bpmn') + sep;
+/** Усі файли `src/`, КРІМ самого генератора. `src/bpmn-artifacts.ts` сюди входить: він не в теці генератора. */
+const srcOutsideGenerator = (): string[] => walk(join(ROOT, 'src')).filter((x) => x.endsWith('.ts') && !x.startsWith(GEN_DIR));
+
+/** Єдиний модуль, якому дозволено імпортувати генератор. Зміна цього списку — зміна інваріанта. */
+const ALLOWED_IMPORTER = 'src/bpmn-artifacts.ts';
 
 test('модулі генератора існують (контроль, що тест не порожній)', () => {
   assert.ok(bpmnFiles.length >= 10, bpmnFiles.join(', '));
@@ -33,30 +47,73 @@ test('у шляху генерації немає моделі, мережі, ф
 test('у генераторі немає змінного стану на рівні модуля (глобальних лічильників, кешів, змінюваних колекцій)', () => {
   for (const f of bpmnFiles) {
     const code = read(`src/bpmn/${f}`);
-    // let/var і змінювані колекції лише всередині функцій (рядок без відступу = рівень модуля)
     const top = code.split('\n').filter((l) => /^(let|var)\s/.test(l) || /^const\s+\w+(?::[^=]+)?\s*=\s*new\s+(Map|Set|Array)\b/.test(l) || /^const\s+\w+(?::[^=]+)?\s*=\s*\[\s*\]/.test(l));
     assert.deepEqual(top, [], `src/bpmn/${f}: змінний стан на рівні модуля`);
   }
 });
 
-test('сервер, запуски й доменний шар НЕ імпортують генератор: обходу смислової перевірки в продуктовому шляху немає', () => {
-  for (const p of walk(join(ROOT, 'src')).filter((x) => x.endsWith('.ts') && !x.includes(`${join('src', 'bpmn')}`))) {
+test('генератор імпортує рівно один модуль поза src/bpmn — шлюзований src/bpmn-artifacts.ts', () => {
+  const importers: string[] = [];
+  for (const p of srcOutsideGenerator()) {
     const code = readFileSync(p, 'utf8');
-    assert.ok(!/from\s+['"][^'"]*\bbpmn\//.test(code), `${p}: імпортує src/bpmn`);
+    if (/from\s+['"][^'"]*\bbpmn\/[^'"]+['"]/.test(code)) importers.push(relative(ROOT, p).split(sep).join('/'));
   }
-  const server = read('src/server.ts');
-  assert.ok(!/generateBpmn|packageFromApproval|exportDrawio|buildSemantic/.test(server), 'сервер не викликає генератор');
-  assert.ok(!/\/bpmn|generate/i.test(server.replace(/bpmn_start|bpmn-start|bpmnGuard|requestBpmnStart/g, '')) || true);
+  assert.deepEqual(importers, [ALLOWED_IMPORTER], `генератор має імпортувати лише ${ALLOWED_IMPORTER}; знайдено: ${importers.join(', ')}`);
 });
 
-test('публічні маршрути сервера не містять дії «побудувати схему»', () => {
+test('шлюзований модуль не може згенерувати схему, не пройшовши перевірку: шлюз і дозвіл викликаються до генератора', () => {
+  const code = read(ALLOWED_IMPORTER);
+  // Шлюз береться з модуля перевірки й застосовується через buildPreflight; дозвіл і актуальність — там же.
+  assert.match(code, /generationGate/, 'модуль має використовувати generationGate');
+  assert.match(code, /bpmnGuard/, 'модуль має перевіряти серверний дозвіл');
+  assert.match(code, /staleReasons/, 'модуль має перевіряти актуальність');
+  assert.match(code, /getCaseReview/, 'модуль має відновлювати перевірку з довіреного запису');
+  // Генерація викликається лише після buildPreflight: позиція в коді — груба, але дієва перевірка порядку.
+  const gatePos = code.indexOf('review.gate?.ok');
+  const genPos = code.indexOf('await generateBpmn(');
+  assert.ok(gatePos > 0 && genPos > gatePos, 'generateBpmn має викликатися після перевірки шлюзу');
+  // Другий шлюз — у транзакції перед збереженням.
+  assert.ok(code.indexOf('buildPreflight(db, caseId, instruction)', genPos) > genPos, 'перед збереженням перевірки мають повторитися');
+  // Клієнта моделі в цьому шляху немає: ні конфігурації режиму, ні клієнта Anthropic, ні виклику .review()/.analyze().
+  assert.ok(!/MODEL_MODE|anthropic|AnalystClient|BpmnReviewClient/i.test(code), 'у шляху побудови немає клієнта моделі');
+  assert.ok(!/\.(review|analyze)\s*\(/.test(code), 'у шляху побудови немає виклику моделі');
+  assert.ok(!/from\s+['"]\.\/ai\/anthropic/.test(code), 'у шляху побудови немає імпорту клієнта Anthropic');
+});
+
+test('сервер і доменний шар генератор не імпортують і схему не будують самі', () => {
+  for (const f of ['src/server.ts', 'src/domain.ts', 'src/runs.ts', 'src/review-runs.ts']) {
+    const code = read(f);
+    assert.ok(!/from\s+['"][^'"]*\bbpmn\/[^'"]+['"]/.test(code), `${f}: імпортує src/bpmn`);
+    assert.ok(!/generateBpmn|packageFromApproval|exportDrawio|buildSemantic/.test(code), `${f}: викликає генератор напряму`);
+  }
+});
+
+test('усі маршрути, що видають схему чи файли, проходять через шлюзований модуль', () => {
+  const server = read('src/server.ts');
+  // Сервер може звертатися лише до функцій шлюзованого модуля.
+  const allowed = ['buildArtifact', 'getCaseArtifact', 'listCaseArtifacts', 'getArtifactById', 'readArtifactFile', 'buildPreflight', 'ArtifactView'];
+  const imported = /import\s*\{([^}]+)\}\s*from\s*['"]\.\/bpmn-artifacts\.ts['"]/.exec(server);
+  assert.ok(imported, 'сервер має імпортувати шлюзований модуль іменовано');
+  for (const name of imported![1]!.split(',').map((x) => x.trim().replace(/^type\s+/, '')).filter(Boolean)) {
+    assert.ok(allowed.includes(name), `сервер імпортує ${name} зі шлюзованого модуля — додайте його у перелік свідомо`);
+  }
+});
+
+test('у продукті немає перемикача, маршруту чи прапорця «без смислової перевірки»', () => {
+  for (const p of walk(join(ROOT, 'src')).filter((x) => x.endsWith('.ts'))) {
+    const code = readFileSync(p, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    for (const re of [/skipReview/i, /skip_review/i, /noReview/i, /force(Build|Generate)/i, /bypass/i, /without[_-]?review/i]) {
+      assert.ok(!re.test(code), `${relative(ROOT, p)}: схоже на обхід перевірки (${re})`);
+    }
+  }
   const routes = [...read('src/server.ts').matchAll(/['"`](\/api\/[^'"`]*)['"`]/g)].map((m) => m[1]!);
   assert.ok(routes.length > 5, 'контроль: маршрути знайдено');
-  for (const r of routes) assert.ok(!/generate|drawio|build-bpmn|\.bpmn/i.test(r), `маршрут ${r} схожий на побудову схеми`);
+  for (const r of routes) assert.ok(!/force|skip|bypass|nocheck/i.test(r), `маршрут ${r} схожий на обхід`);
 });
 
-test('серверний запуск BPMN, як і раніше, лише перевіряє дозвіл і нічого не будує (not_implemented)', () => {
-  const dom = read('src/domain.ts');
-  assert.match(dom, /'not_implemented'/);
-  assert.ok(!/generateBpmn/.test(dom));
+test('підставного клієнта агента 2 у продукті немає (він лише в тестах)', () => {
+  for (const p of walk(join(ROOT, 'src')).filter((x) => x.endsWith('.ts'))) {
+    const code = readFileSync(p, 'utf8');
+    assert.ok(!/FakeReviewClient|ScriptedReviewClient/.test(code), `${relative(ROOT, p)}: підставний клієнт агента 2 у src/`);
+  }
 });

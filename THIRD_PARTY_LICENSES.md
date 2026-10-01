@@ -7,7 +7,7 @@
 | `bpmn-auto-layout` | 2.0.0-alpha.2 | генератор схем (виконання) | MIT. Поле `license` пакета й README — MIT; окремого файлу LICENSE в опублікованому пакеті немає. Текст і копірайт — у гілці за замовчуванням репозиторію bpmn-io: «Copyright (c) 2016-present Camunda Services GmbH» |
 | `bpmn-moddle` 10.3.1, `moddle` 8.2.1, `moddle-xml` 12.3.1, `min-dash` 5.1.0 | — | залежності лейаутера | MIT (Camunda Services GmbH) |
 | `saxen` | 11.2.0 | залежність `moddle-xml` | MIT (Vopilovskii Konstantin; Nico Rehwaldt) |
-| `bpmn-js` | 18.30.1 | **лише розробка**: переглядач тестових схем і знімки (`scripts/lib/viewer.ts`) | Файл LICENSE: MIT-подібна ліцензія (Camunda Services GmbH) **з умовою**: код, що показує водяний знак bpmn.io з посиланням на https://bpmn.io, **не можна видаляти чи змінювати**; під час використання в сайті чи застосунку знак має бути повністю видимим і не перекритим іншими елементами (D30) |
+| `bpmn-js` | 18.30.1 | **виконання** (від 3b-5, D65): переглядач схеми в застосунку — `bpmn-navigated-viewer.production.min.js`, CSS і шрифт вендоровані в `public/vendor/bpmn-js/`; також переглядач тестових схем і знімки (`scripts/lib/viewer.ts`) | Файл LICENSE: MIT-подібна ліцензія (Camunda Services GmbH) **з умовою**: код, що показує водяний знак bpmn.io з посиланням на https://bpmn.io, **не можна видаляти чи змінювати**; під час використання в сайті чи застосунку знак має бути повністю видимим і не перекритим іншими елементами (D30) |
 | переглядач draw.io `viewer-static` (jgraph/drawio) | з гілки `dev`, 01.10.2026 | **лише для знімків `.drawio`** у тимчасовій теці; **у репозиторій не додається** і не поширюється | Apache-2.0 (за репозиторієм jgraph/drawio) |
 
 ## Текст MIT (для `bpmn-auto-layout` і його залежностей)
@@ -32,4 +32,4 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-Водяний знак у наших переглядачах (`docs/bpmn-3a/schemes/*.html`) — стандартний знак `bpmn-js`; його не вилучено й не перекрито (див. знімки).
+Водяний знак у наших переглядачах (`docs/bpmn-3a/schemes/*.html` і вкладка «Схема» в застосунку) — стандартний знак `bpmn-js`; його не вилучено, не змінено й не перекрито (див. знімки). Вендоровані файли в `public/vendor/bpmn-js/` — незмінені копії з опублікованого пакета (`bpmn-navigated-viewer.production.min.js`, `assets/bpmn-js.css`, `assets/diagram-js.css`, `assets/bpmn-font/`).

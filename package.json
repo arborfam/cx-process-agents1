@@ -17,11 +17,11 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
     "bpmn-auto-layout": "2.0.0-alpha.2",
+    "bpmn-js": "18.30.1",
     "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
-    "bpmn-js": "18.30.1",
     "playwright-core": "^1.63.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"

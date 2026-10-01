@@ -4,14 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CX AS-IS → BPMN (прототип)</title>
+  <link rel="stylesheet" href="/vendor/bpmn-js/diagram-js.css">
+  <link rel="stylesheet" href="/vendor/bpmn-js/bpmn-js.css">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div id="banner" class="banner" role="status" hidden></div>
-  <header class="topbar"><a href="#/" class="brand">CX AS-IS → BPMN <span class="muted">прототип · зріз 2</span></a></header>
+  <header class="topbar"><a href="#/" class="brand">CX AS-IS → BPMN <span class="muted">прототип</span></a></header>
   <main id="app" class="wrap"><p class="muted">Завантаження…</p></main>
   <div id="toast" class="toast" role="alert" hidden></div>
   <dialog id="dlg"></dialog>
+  <!-- Переглядач bpmn-js (вендорована копія, 3b-5/D65). Водяний знак bpmn.io лишається видимим і не перекривається (D30). -->
+  <script src="/vendor/bpmn-js/bpmn-navigated-viewer.production.min.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -17,11 +17,15 @@ import { redact } from './ai/redact.ts';
 import { beginAnalystRun, executeAnalystRun, type RunOptions } from './runs.ts';
 import { budgetLeftUsd, spentUsd, unknownCostRuns, type ModelPolicy } from './ai/budget.ts';
 import type { AnalystClient, InstructionInfo } from './ai/types.ts';
-import { beginBpmnReview, executeBpmnReview, getCaseReview, type Reviewer } from './review-runs.ts';
+import { beginBpmnReview, executeBpmnReview, getCaseReview, rejectFinding, type Reviewer } from './review-runs.ts';
+import { buildArtifact, buildPreflight, getCaseArtifact, listCaseArtifacts, readArtifactFile, type ArtifactView } from './bpmn-artifacts.ts';
 import { addExplicitClarification, advanceScenario, createScenarioCase, scenarioInfo, TOTAL_STAGES } from './scenarios.ts';
 
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
-const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.eot': 'application/vnd.ms-fontobject', '.svg': 'image/svg+xml',
+};
 
 export interface ServerOptions {
   db: DB;
@@ -112,10 +116,52 @@ function pickFields(raw: unknown): EditFields {
   return out;
 }
 
+/** URL запиту (для читання параметрів): той самий розбір, що й у маршрутизаторі. */
+const url0 = (req: IncomingMessage): URL => new URL(req.url ?? '/', 'http://localhost');
+
+/**
+ * Артефакт для інтерфейсу: метадані, карта «крок ↔ елемент», стан файлів і позначка застарілої схеми.
+ * XML тут не передається: переглядач і завантаження беруть файл окремим маршрутом, де працюють серверні перевірки.
+ */
+function artifactJson(v: ArtifactView) {
+  return {
+    id: v.row.id, status: v.status, process_name: v.row.process_name, version_id: v.row.version_id,
+    review_id: v.row.review_id, run_id: v.row.run_id, approval_id: v.row.approval_id, content_hash: v.row.content_hash,
+    created_at: v.row.created_at, created_by: v.row.created_by, generator: v.row.generator,
+    drawio_status: v.row.drawio_status, bpmn_sha256: v.row.bpmn_sha256, drawio_sha256: v.row.drawio_sha256,
+    current: v.trusted && v.staleReasons.length === 0, label: v.label, trusted: v.trusted,
+    untrusted_reasons: v.untrustedReasons, stale_reasons: v.staleReasons,
+    downloads: v.downloads, map: v.map, detail: v.detail,
+  };
+}
+
+/** Чи можна зараз будувати схему — без побічних дій (та сама функція, що й у самій побудові). */
+function buildPreflightState(db: DB, caseId: string, instruction?: InstructionInfo) {
+  const p = buildPreflight(db, caseId, instruction);
+  return p.ok ? { ok: true as const } : { ok: false as const, code: p.code, message: p.message, reasons: p.reasons };
+}
+
 export function createApp(opts: ServerOptions): Server {
   const { db, mode } = opts;
   const token = sessionToken(opts.accessCode);
   const human: Actor = { kind: 'human', name: 'Аналітикиня' };
+
+  /**
+   * Доступність агента 2 (смислова перевірка) — окремо від агента 1: це різні агенти з різними клієнтами.
+   * Деморежим перевірку не імітує (D32), тому без клієнта дія недоступна з поясненням, а не з підставною відповіддю.
+   */
+  function reviewerState() {
+    const r = opts.reviewer;
+    if (!r) {
+      return {
+        available: false, model: null,
+        reason: mode === 'demo'
+          ? 'Смислову перевірку опису виконує модель, а вона не підключена (деморежим). Демо-відповіді для цієї перевірки не вигадуються: без моделі схема не будується.'
+          : 'Клієнт смислової перевірки не налаштовано.',
+      };
+    }
+    return { available: true, model: r.client.model, reason: null };
+  }
 
   function aiState() {
     const a = opts.analyst;
@@ -125,11 +171,13 @@ export function createApp(opts: ServerOptions): Server {
         reason: mode === 'demo'
           ? 'Застосунок працює в деморежимі: справжню модель не підключено. Щоб увімкнути, налаштуйте ключ і модель (docs/model-setup.md) та запустіть у режимі real.'
           : 'Модель не підключено.',
+        review: reviewerState(),
       };
     }
     const p = a.policy;
     return {
       available: true, kind: a.client.mode === 'real' ? 'real' : 'scripted_demo', reason: null,
+      review: reviewerState(),
       model: a.client.model, effort: opts.modelInfo?.effort ?? null,
       budget: p ? { total_usd: p.budgetTotalUsd, spent_usd: spentUsd(db), left_usd: budgetLeftUsd(db, p), unknown_cost_runs: unknownCostRuns(db), per_run_usd: p.budgetPerRunUsd, pricing_verified_at: p.pricingVerifiedAt } : null,
     };
@@ -177,8 +225,41 @@ export function createApp(opts: ServerOptions): Server {
       return json(res, 200, {
         state: r.state, run_id: r.runId ?? null, review_id: r.reviewId ?? null, created_at: r.createdAt ?? null,
         findings: r.findings ?? [], warnings: r.warnings ?? [], requirements: r.requirements ?? [], reasons: r.reasons ?? [], error: r.error ?? null,
+        // Знахідки з ключем, рішенням людини й тим, чи їх узагалі можна відхилити (UNSUPPORTED_CANDIDATE — ніколи, D21).
+        findings_view: (r.findingsView ?? []).map((v) => ({
+          key: v.key, finding: v.finding, blocking: v.blocking, can_reject: v.can_reject,
+          reject_blocked_reason: v.reject_blocked_reason,
+          resolution: v.resolution ? { explanation: v.resolution.explanation, decided_by: v.resolution.decided_by, decided_at: v.resolution.decided_at } : null,
+        })),
+        earlier_resolutions: (r.earlierResolutions ?? []).map((x) => ({ explanation: x.explanation, decided_by: x.decided_by, decided_at: x.decided_at })),
         generation_gate: r.gate ? (r.gate.ok ? { ok: true } : { ok: false, code: r.gate.code, message: r.gate.message }) : { ok: false, code: 'NO_COMPLETED_REVIEW', message: 'Немає завершеної й довіреної смислової перевірки.' },
       });
+    }
+
+    // Схема: метадані чинного артефакту + історія. Жодних даних від браузера; усі перевірки — на сервері.
+    if ((m = /^\/api\/cases\/([\w-]+)\/bpmn\/artifact$/.exec(path)) && method === 'GET') {
+      getCase(db, m[1]!);
+      const cur = getCaseArtifact(db, m[1]!);
+      const pre = buildPreflightState(db, m[1]!, opts.reviewer?.instruction);
+      return json(res, 200, {
+        artifact: cur ? artifactJson(cur) : null,
+        history: listCaseArtifacts(db, m[1]!).map(artifactJson),
+        can_build: pre.ok, build_block: pre.ok ? null : { code: pre.code, message: pre.message, reasons: pre.reasons ?? [] },
+      });
+    }
+
+    // Файл віддається лише після серверних перевірок (цілісність запису, актуальність, власна перевірка файлу, хеш).
+    if ((m = /^\/api\/cases\/([\w-]+)\/bpmn\/file\/(bpmn|drawio)$/.exec(path)) && method === 'GET') {
+      getCase(db, m[1]!);
+      const artifactId = url0(req).searchParams.get('artifact_id') ?? undefined;
+      const f = readArtifactFile(db, m[1]!, m[2]! as 'bpmn' | 'drawio', artifactId);
+      res.writeHead(200, {
+        'content-type': 'application/xml; charset=utf-8',
+        'content-disposition': `attachment; filename="${f.filename}"`,
+        'x-content-sha256': f.sha256, 'cache-control': 'no-store',
+      });
+      res.end(f.xml);
+      return;
     }
 
     if ((m = /^\/api\/cases\/([\w-]+)\/sources\/([\w-]+)$/.exec(path)) && method === 'GET') {
@@ -317,7 +398,19 @@ export function createApp(opts: ServerOptions): Server {
           // Тіло запиту свідомо ігнорується: вхід агента 2 сервер бере з бази за чинним погодженням.
           const r = requestBpmnStart(db, human, caseId, mode);
           return json(res, 202, { permitted: true, run_id: r.runId, version_id: r.versionId, approval_id: r.approvalId,
-            note: 'Дозвіл підтверджено сервером. Побудову BPMN реалізовано не буде до зрізу 3.' });
+            note: 'Дозвіл підтверджено сервером. Побудова виконується окремою дією після смислової перевірки (вкладка «Схема»).' });
+        }
+        case 'bpmn/findings/reject': {
+          // Рішення людини: лише ключ знахідки й пояснення. Самої знахідки, висновку чи стану від браузера не приймаємо.
+          const r = rejectFinding(db, human, caseId, {
+            reviewId: str(b.review_id, 'review_id'), findingKey: str(b.finding_key, 'finding_key'), explanation: str(b.explanation, 'explanation'),
+          });
+          return json(res, 201, { resolution_id: r.id, note: 'Рішення записано незмінно. Програмні перевірки воно не скасовує: їх буде виконано заново при побудові.' });
+        }
+        case 'bpmn/build': {
+          // Тіло свідомо ігнорується. Побудова ідемпотентна: повторний клік повертає той самий артефакт.
+          const out = await buildArtifact(db, human, caseId, opts.reviewer?.instruction);
+          return json(res, out.reused ? 200 : 201, { artifact: artifactJson(out.artifact), reused: out.reused });
         }
         case 'bpmn/review': {
           // Тіло свідомо ігнорується: ні знахідок, ні висновку, ні стану від браузера не приймаємо. Пакет бере сервер із бази.
