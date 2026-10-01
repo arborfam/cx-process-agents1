@@ -91,7 +91,7 @@ export const CHECKS: Check[] = [
     id: 'G1', stage: 'all', kind: 'forbidden', title: 'Числа, яких немає в джерелах (SLA, метрики, частки, строки)',
     run: (c) => {
       const known = digitsIn(sourcesText(c));
-      const used = digitsIn(everything(c) + '\n' + JSON.stringify(c.content.problems));
+      const used = digitsIn(everything(c.content) + '\n' + JSON.stringify(c.content.problems));
       const invented = [...used].filter((d) => !known.has(d));
       return invented.length ? bad(`числа без опори в джерелах: ${invented.slice(0, 6).join(', ')}`) : ok('усі числа є в джерелах');
     },

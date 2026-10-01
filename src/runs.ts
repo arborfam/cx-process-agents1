@@ -59,6 +59,18 @@ export interface RunCtx {
 
 /** Перевіряє дозволи й ліміти, фіксує запуск. Нічого не надсилає моделі. */
 export function beginAnalystRun(db: DB, caseId: string, client: AnalystClient, opts: RunOptions = {}): RunCtx {
+  try {
+    return beginInner(db, caseId, client, opts);
+  } catch (e) {
+    // Відмову записуємо поза скасованою транзакцією: видно, що запуск не виконано й чому.
+    if (e instanceof DomainError && ['INPUT_TOO_LARGE', 'RUN_LIMIT_CASE', 'RUN_LIMIT_DAY', 'BUDGET_PER_RUN', 'BUDGET_TOTAL', 'REAL_DATA_BLOCKED', 'AI_UNAVAILABLE'].includes(e.code)) {
+      audit(db, caseId, AGENT_SYSTEM_ACTOR, 'run_refused', { code: e.code });
+    }
+    throw e;
+  }
+}
+
+function beginInner(db: DB, caseId: string, client: AnalystClient, opts: RunOptions): RunCtx {
   return tx(db, () => {
     const c = getCase(db, caseId);
     if (one(db, `SELECT id FROM run WHERE case_id = ? AND technical_state = 'running'`, caseId)) {
@@ -81,12 +93,7 @@ export function beginAnalystRun(db: DB, caseId: string, client: AnalystClient, o
           'У кейсі є джерела з позначкою «реальні дані». У цьому прототипі вони не надсилаються постачальнику моделі (рішення D18). Запуск не виконано.', 409);
       }
       if (!opts.policy) throw new DomainError('AI_UNAVAILABLE', 'Для справжньої моделі не задано ліміти й ціни; запуск не виконано.', 409);
-      try {
-        preflight(db, caseId, opts.policy, instruction.text.length + buildUserMessage(input).length);
-      } catch (e) {
-        audit(db, caseId, AGENT_SYSTEM_ACTOR, 'run_refused', { code: e instanceof DomainError ? e.code : 'ERROR' });
-        throw e;
-      }
+      preflight(db, caseId, opts.policy, instruction.text.length + buildUserMessage(input).length);
     }
     const runId = `run_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
     const sourceIds = readable.map((s) => s.id);
