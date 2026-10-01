@@ -46,12 +46,13 @@ const A: [string, string, string, number | null, string, string, string, Entry['
   ['SRC-00', 'Навчальна межа від аналітика', 'analyst_note', 1, 'додано аналітиком як рамку вправи; не з оригіналу', 'sources', authored('SRC-00.md'), 'both'],
   ['SRC-08p', 'Синтетичне уточнення від аналітика (вигадано для тесту)', 'clarification', 5, 'вигадано для тесту; не з оригіналу; позитивний сценарій', 'sources', common + '\n' + moved, 'positive'],
   ['SRC-08n', 'Синтетичне уточнення від аналітика (вигадано для тесту)', 'clarification', 5, 'вигадано для тесту; не з оригіналу; без відповіді про перенесення/вилучення', 'sources', common, 'negative'],
-  ['SRC-09', 'Явне уточнення від аналітика (вигадано для тесту)', 'clarification', null, 'вигадано для тесту; подається лише явною дією аналітика', 'hidden', moved, 'negative'],
+  ['SRC-09', 'Явне уточнення від аналітика (вигадано для тесту)', 'clarification', null, 'вигадано для тесту; подається лише явною дією аналітика', 'hidden', 'Вигадано для тесту (явне уточнення від аналітика; описує поточну практику навчального випадку й не переписує оригінальних матеріалів).\n\n' + moved, 'negative'],
 ];
 for (const [id, title, kind, stage, provenance, dir, text, variant] of A) {
   write(dir, id, text);
   manifest.push({ id, title, kind, origin: 'synthetic', stage, variant, provenance, file: `${dir}/${id}.md`, sha256: sha(text) });
 }
+manifest.sort((a, b) => (a.id === 'SRC-00' ? -1 : b.id === 'SRC-00' ? 1 : 0));
 writeFileSync(join(root, 'manifest.json'), JSON.stringify({
   original: { file: 'original/CX_ASIS_discovery_inputs_draft1.md', sha256: sha(original) },
   sources: manifest,

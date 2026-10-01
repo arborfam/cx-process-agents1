@@ -5,6 +5,17 @@
   },
   "sources": [
     {
+      "id": "SRC-00",
+      "title": "Навчальна межа від аналітика",
+      "kind": "analyst_note",
+      "origin": "synthetic",
+      "stage": 1,
+      "variant": "both",
+      "provenance": "додано аналітиком як рамку вправи; не з оригіналу",
+      "file": "sources/SRC-00.md",
+      "sha256": "aba7acac578dbad87f3e691d1563cf6fb24710825ce30973f2a6813151bca38b"
+    },
+    {
       "id": "SRC-01",
       "title": "Jira-запит",
       "kind": "request",
@@ -110,17 +121,6 @@
       "sha256": "c113707ccffbbdfbd0e1afa24190eb755bd2577f9113acfd000e1690e746620e"
     },
     {
-      "id": "SRC-00",
-      "title": "Навчальна межа від аналітика",
-      "kind": "analyst_note",
-      "origin": "synthetic",
-      "stage": 1,
-      "variant": "both",
-      "provenance": "додано аналітиком як рамку вправи; не з оригіналу",
-      "file": "sources/SRC-00.md",
-      "sha256": "aba7acac578dbad87f3e691d1563cf6fb24710825ce30973f2a6813151bca38b"
-    },
-    {
       "id": "SRC-08p",
       "title": "Синтетичне уточнення від аналітика (вигадано для тесту)",
       "kind": "clarification",
@@ -151,7 +151,7 @@
       "variant": "negative",
       "provenance": "вигадано для тесту; подається лише явною дією аналітика",
       "file": "hidden/SRC-09.md",
-      "sha256": "eaa8f6ed625dc7b762627f4a479d257fdf3ed4b4c31c1f9f13011b1a8aa7a3f6"
+      "sha256": "51197571c4ed0a7522c1b06cf9127161313e5ba410b1f980110afd0192521cf7"
     }
   ]
 }
