@@ -246,6 +246,7 @@ function runBox(card) {
   const usage = (() => { try { return JSON.parse(r.usage_json || '{}'); } catch { return {}; } })();
   const st = { running: 'виконується…', done: 'завершено', error: 'помилка', queued: 'у черзі' }[r.technical_state] || r.technical_state;
   const w = (() => { try { return JSON.parse(r.checks_json || '{}').warnings || []; } catch { return []; } })();
+  const fa = (() => { try { return JSON.parse(r.checks_json || '{}').failed_attempts || []; } catch { return []; } })();
   return el('div', { class: 'runbox', 'data-block': 'lastrun' },
     el('div', { class: 'small' }, el('strong', {}, 'Останній запуск аналізу: '), st, ' · ', r.mode === 'real' ? r.model : 'підставний клієнт (не AI)', ' · інструкція ' + r.instruction_version,
       r.duration_ms != null ? ` · ${(r.duration_ms / 1000).toFixed(1)} с` : '',
@@ -253,7 +254,9 @@ function runBox(card) {
       costText(r), r.attempts > 1 ? ` · спроб: ${r.attempts}` : ''),
     r.technical_state === 'running' ? el('div', { class: 'small' }, 'Поточну версію не змінено; результат з’явиться після перевірки.') : null,
     r.error ? el('div', { class: 'small', style: 'color:var(--danger)' }, 'Помилка: ' + r.error + ' Поточну версію не змінено.') : null,
-    w.length ? el('details', {}, el('summary', { class: 'small' }, 'Попередження перевірки відповіді (' + w.length + ')'), el('ul', { class: 'small' }, w.map((x) => el('li', {}, x)))) : null);
+    w.length ? el('details', {}, el('summary', { class: 'small' }, 'Попередження перевірки відповіді (' + w.length + ')'), el('ul', { class: 'small' }, w.map((x) => el('li', {}, x)))) : null,
+    fa.length ? el('details', {}, el('summary', { class: 'small' }, 'Відхилені спроби та їхні причини (' + fa.length + ')'),
+      el('ul', { class: 'small' }, fa.map((x) => el('li', {}, 'Спроба ' + x.attempt + ': ' + (x.message || x.kind))))) : null);
 }
 
 // ───────────── навчальний сценарій ─────────────
@@ -445,10 +448,26 @@ const PANELS = {
         c.conflicts.map((x) => el('div', { class: 'warnbox' }, el('strong', {}, x.key), ': ', x.note, el('div', {}, 'Збережено: ' + x.kept), el('div', {}, 'Запропоновано агентом: ' + x.proposed)))) : null);
   },
   problems: (card) => {
-    const p = card.head.content.problems;
+    const p = card.problems_view || card.head.content.problems;
     if (!p.length) return el('p', { class: 'muted' }, 'Проблем ще не описано.');
+    const labels = card.cause_statuses || {};
+    const causeCell = (x) => {
+      // Підстава причини видима окремо від тексту: «не з'ясовано» не маскується формулюванням (D70).
+      if (x.cause_status === 'not_established') return el('td', {}, el('span', { class: 'muted' }, labels.not_established || 'причину не з’ясовано'));
+      if (!x.cause_status) return el('td', {}, x.cause || '—', x.cause ? el('div', { class: 'small muted' }, 'підставу не зазначено (запис до D70)') : null);
+      return el('td', {}, x.cause || '—',
+        el('div', { class: 'small' }, labels[x.cause_status] || x.cause_status,
+          x.cause_status === 'source_stated' && x.cause_source_id
+            ? el('span', {}, ' · ', x.cause_source_title || x.cause_source_id, ' · ',
+                x.cause_quote_check === 'quote_not_found' ? '⚠ фрагмент НЕ знайдено · ' : 'фрагмент знайдено · ',
+                el('button', { class: 'link', onclick: () => showSource(x.cause_source_id, x.cause_quote) }, 'Показати фрагмент у джерелі'))
+            : null,
+          x.cause_status === 'agent_hypothesis' && x.cause_hypothesis_id
+            ? el('span', {}, ' · гіпотеза ' + x.cause_hypothesis_id + (x.cause_hypothesis_check === 'missing' ? ' ⚠ без способу перевірки' : ''))
+            : null));
+    };
     return el('table', {}, el('thead', {}, el('tr', {}, ['ID', 'Симптом', 'Можлива причина', 'Вплив'].map((h) => el('th', {}, h)))),
-      el('tbody', {}, p.map((x) => el('tr', {}, el('td', {}, x.id), el('td', {}, x.symptom), el('td', {}, x.cause || '—'), el('td', {}, x.impact + (x.impact_is_estimate ? ' (оцінка)' : ''))))));
+      el('tbody', {}, p.map((x) => el('tr', {}, el('td', {}, x.id), el('td', {}, x.symptom), causeCell(x), el('td', {}, x.impact + (x.impact_is_estimate ? ' (оцінка)' : ''))))));
   },
   hypotheses: (card) => {
     const h = card.head.content.hypotheses;

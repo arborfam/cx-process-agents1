@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { all, one, run, tx, type DB } from './db.ts';
 import { DomainError } from './errors.ts';
 import { canonical, sha256 } from './hash.ts';
-import { CLAIM_TYPE_LABEL, ContentSchema, LINK_KIND_LABEL, NOTATION_KIND_LABEL, NotationKind, UNKNOWN, emptyContent, parseContent, type Content, type LinkKindT, type NotationRequirementT, type Question, type Step, type StepProposalT } from './schema.ts';
+import { CAUSE_STATUS_LABEL, CLAIM_TYPE_LABEL, ContentSchema, LINK_KIND_LABEL, NOTATION_KIND_LABEL, NotationKind, UNKNOWN, emptyContent, parseContent, type Content, type LinkKindT, type NotationRequirementT, type Question, type Step, type StepProposalT } from './schema.ts';
 import { findQuote } from './ai/quote.ts';
 import { parseProblems, parseRoles, parseSteps, problemsToText, rolesToText, stepsToText } from './text-format.ts';
 
@@ -1854,6 +1854,20 @@ export function buildCard(db: DB, caseId: string, mode: string) {
     audit: all(db, 'SELECT at, actor, action, details_json FROM audit_log WHERE case_id = ? ORDER BY id DESC LIMIT 40', caseId),
     proposal_previews: previewProposals(content, { caseId, versionId: head.id }),
     link_kinds: LINK_KIND_LABEL,
+    cause_statuses: CAUSE_STATUS_LABEL,
+    // Підстава причини проблеми (D70): видно, що сказало джерело, що є гіпотезою агента, а де причину не з'ясовано.
+    problems_view: content.problems.map((p) => {
+      const src = p.cause_source_id ? byId.get(p.cause_source_id) : undefined;
+      const m = src && p.cause_quote ? findQuote(src.content, p.cause_quote) : null;
+      return {
+        ...p,
+        cause_source_title: src?.title ?? null,
+        cause_quote_check: m ? (m.kind === 'not_found' ? 'quote_not_found' : 'quote_found') : null,
+        cause_hypothesis_check: p.cause_hypothesis_id
+          ? content.hypotheses.find((h) => h.id === p.cause_hypothesis_id && h.check_method.trim()) ? 'ok' : 'missing'
+          : null,
+      };
+    }),
     step_proposals: (content.step_proposals ?? []).map((p) => {
       const src = byId.get(p.evidence_source_id);
       const m = src && p.evidence_quote ? findQuote(src.content, p.evidence_quote) : null;

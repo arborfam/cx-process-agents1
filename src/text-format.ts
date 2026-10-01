@@ -111,7 +111,14 @@ export function parseProblems(text: string, previous: Problem[]): Problem[] {
     if (used.has(id)) throw new DomainError('VALIDATION', `ID проблеми повторюється: ${id}`, 400);
     used.add(id);
     const prev = prevById.get(id);
-    return { id, symptom, cause: prev?.cause ?? '', impact, impact_is_estimate: prev?.impact_is_estimate ?? false };
+    // Причина та її підстава у формі не редагуються: беруться з попередньої версії без змін (D70).
+    return {
+      id, symptom, cause: prev?.cause ?? '', impact, impact_is_estimate: prev?.impact_is_estimate ?? false,
+      ...(prev?.cause_status ? { cause_status: prev.cause_status } : {}),
+      ...(prev?.cause_source_id !== undefined ? { cause_source_id: prev.cause_source_id } : {}),
+      ...(prev?.cause_quote !== undefined ? { cause_quote: prev.cause_quote } : {}),
+      ...(prev?.cause_hypothesis_id !== undefined ? { cause_hypothesis_id: prev.cause_hypothesis_id } : {}),
+    };
   });
 }
 

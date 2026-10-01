@@ -200,7 +200,7 @@ function negativeDraft(ids: Record<string, string>, resolved: boolean): (base: C
       { id: 'S2', role: 'Відповідальна за підготовку в CX', action: 'Публікує повідомлення', entry_condition: '', input_artifact: '', result: 'Повідомлення опубліковане', next: [{ to: 'END', condition: '' }], source_ids: [ids['SRC-01']!] },
       ...(resolved ? [{ id: 'S3', role: 'Відповідальна за підготовку в CX', action: 'Публікує коротке виправлення або припиняє підготовку', entry_condition: '', input_artifact: '', result: 'Агентів не введено в оману', next: [{ to: 'END', condition: '' }], source_ids: [ids['SRC-09']!] }] : []),
     ];
-    c.problems = [{ id: 'P1', symptom: 'Пізні повідомлення', cause: '', impact: 'Агенти можуть відповісти неправильно (оцінка, метрик немає)', impact_is_estimate: true }];
+    c.problems = [{ id: 'P1', symptom: 'Пізні повідомлення', cause: '', cause_status: 'not_established', impact: 'Агенти можуть відповісти неправильно (оцінка, метрик немає)', impact_is_estimate: true }];
     c.questions = [
       { id: 'Q1', text: 'Що робить CX, коли повідомлення підготовлене, а запуск перенесено або вилучено?', critical: true, impact: 'Визначає гілку переходу S1 і завершення процесу', addressee: 'Відповідальна в CX', status: resolved ? 'closed' : 'open', answer: resolved ? 'За явним уточненням SRC-09.' : '', closed_by_source_id: resolved ? ids['SRC-09']! : null, origin: 'agent', criticality_note: '', affects_transitions: [{ step_id: 'S1', condition: 'запуск перенесено або вилучено' }] },
     ];

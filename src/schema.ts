@@ -32,6 +32,15 @@ const Step = z
   })
   .strict();
 
+/** Підстава причини проблеми (D70). Немає поля = «не зазначено» (старі записи); для нових і змінених агентом — обов'язкове. */
+export const CauseStatus = z.enum(['source_stated', 'agent_hypothesis', 'not_established']);
+export type CauseStatusT = z.infer<typeof CauseStatus>;
+export const CAUSE_STATUS_LABEL: Record<CauseStatusT, string> = {
+  source_stated: 'причина зі слів джерела',
+  agent_hypothesis: 'можлива причина (гіпотеза, потребує перевірки)',
+  not_established: 'причину не з’ясовано',
+};
+
 const Problem = z
   .object({
     id: z.string().min(1).max(40),
@@ -39,6 +48,17 @@ const Problem = z
     cause: z.string(),
     impact: z.string(),
     impact_is_estimate: z.boolean(),
+    /**
+     * Звідки взялась причина. `source_stated` — джерело прямо її називає (потрібні `cause_source_id` і дослівна
+     * `cause_quote`); `agent_hypothesis` — висновок агента (потрібна гіпотеза `cause_hypothesis_id` зі способом
+     * перевірки); `not_established` — причину не з'ясовано, текст `cause` порожній. Переказ симптому замість
+     * причини («механізму немає», «позначки немає») підстави не має: це `not_established`.
+     * Необов'язкові поля: старі версії їх не мають, читаються й хешуються як раніше.
+     */
+    cause_status: CauseStatus.optional(),
+    cause_source_id: z.string().optional(),
+    cause_quote: z.string().optional(),
+    cause_hypothesis_id: z.string().optional(),
   })
   .strict();
 

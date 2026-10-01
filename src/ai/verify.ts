@@ -93,6 +93,52 @@ export function verifyAgentOutput(raw: unknown, ctx: VerifyContext): VerifyResul
     }
   });
 
+  // Причина проблеми має підставу (D70): слова джерела з дослівною цитатою, гіпотеза зі способом перевірки
+  // або прямо «причину не з'ясовано» (порожній текст). Перевіряється лише те, що агент створив або змінив.
+  // Програма перевіряє НАЯВНІСТЬ підстави, а не те, чи цитата справді об'яснює причину: це оцінює людина.
+  const baseProblems = new Map(base.problems.map((p) => [p.id, canonical(p)]));
+  const outHypIds = new Map(out.hypotheses.map((h) => [h.id, h]));
+  out.problems.forEach((p, i) => {
+    if (baseProblems.get(p.id) === canonical(p)) return;
+    const path = `problems[${i}] (${p.id})`;
+    const hasRef = !!(p.cause_source_id || p.cause_quote?.trim() || p.cause_hypothesis_id);
+    if (!p.cause_status) {
+      v.push({ code: 'PROBLEM_CAUSE_NO_BASIS', path, message:
+        'не вказано підставу причини (`cause_status`): «source_stated» — слова джерела з дослівною цитатою, «agent_hypothesis» — ' +
+        'твоя можлива причина як гіпотеза зі способом перевірки, «not_established» — причину не з’ясовано (текст причини порожній). ' +
+        'Переказ симптому («механізму немає», «позначки немає») причиною не є' });
+      return;
+    }
+    if (p.cause_status === 'not_established') {
+      if (p.cause.trim() || hasRef) {
+        v.push({ code: 'PROBLEM_CAUSE_NO_BASIS', path, message:
+          'причину позначено як не з’ясовану, але текст причини чи посилання не порожні: лиши `cause` порожнім, а обґрунтовану можливу причину оформи гіпотезою' });
+      }
+      return;
+    }
+    if (!p.cause.trim()) v.push({ code: 'PROBLEM_CAUSE_NO_BASIS', path, message: 'порожня причина з підставою, відмінною від «not_established»' });
+    if (p.cause_status === 'source_stated') {
+      if (p.cause_hypothesis_id) v.push({ code: 'PROBLEM_CAUSE_NO_BASIS', path, message: 'причина зі слів джерела не посилається на гіпотезу' });
+      if (!p.cause_source_id || !p.cause_quote?.trim()) {
+        v.push({ code: 'PROBLEM_CAUSE_NO_EVIDENCE', path, message: 'для причини зі слів джерела потрібні `cause_source_id` і дослівна `cause_quote`' });
+      } else {
+        checkRef(p.cause_source_id, path + '.cause_source_id');
+        if (provided.has(p.cause_source_id) && findQuote(provided.get(p.cause_source_id)!, p.cause_quote).kind === 'not_found') {
+          v.push({ code: 'QUOTE_NOT_FOUND', path, message: `цитати причини немає в джерелі ${p.cause_source_id}: «${p.cause_quote.slice(0, 80)}»` });
+        }
+      }
+    } else {
+      if (p.cause_source_id || p.cause_quote?.trim()) {
+        v.push({ code: 'PROBLEM_CAUSE_NO_BASIS', path, message: 'можлива причина від агента — не слова джерела: цитату вкажи в гіпотезі, а не в причині' });
+      }
+      const h = p.cause_hypothesis_id ? outHypIds.get(p.cause_hypothesis_id) : undefined;
+      if (!h || !h.check_method.trim()) {
+        v.push({ code: 'PROBLEM_CAUSE_NO_HYPOTHESIS', path, message:
+          'можлива причина від агента оформлюється гіпотезою: `cause_hypothesis_id` має вказувати на наявну гіпотезу з непорожнім `check_method`' });
+      }
+    }
+  });
+
   // Пропозиції вилучення/заміни кроків: причина й доказ обов’язкові; рішення агент не приймає.
   const baseProps = new Map((base.step_proposals ?? []).map((p) => [p.id, canonical(p)]));
   const outProps = out.step_proposals ?? [];

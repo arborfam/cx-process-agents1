@@ -51,7 +51,7 @@ function demoContent(reqId: string, trId: string): Content {
     { id: 'S5', role: 'Керівник відділу', action: 'Вирішує, погодити чи відхилити виняток', entry_condition: 'Оператор передав заявку', input_artifact: '', result: 'Рішення щодо винятку', next: [{ to: 'S4', condition: 'погоджено' }, { to: UNKNOWN, condition: 'відхилено' }], source_ids: [trId] },
   ];
   c.problems = [
-    { id: 'P1', symptom: 'Клієнти скаржаться на тривале очікування', cause: '', impact: 'Невдоволення клієнтів; тривалість не виміряно (метрик немає)', impact_is_estimate: true },
+    { id: 'P1', symptom: 'Клієнти скаржаться на тривале очікування', cause: '', cause_status: 'not_established', impact: 'Невдоволення клієнтів; тривалість не виміряно (метрик немає)', impact_is_estimate: true },
   ];
   c.claims = [
     { id: 'C1', text: 'Менеджерка перевіряє повноту заявки й за нестачі документів повертає її клієнту', type: 'source_fact', source_id: trId, quote: 'Якщо не вистачає документів, повертаю заявку клієнту на доповнення.', scope: 'Зі слів менеджерки, власна ділянка роботи' },
