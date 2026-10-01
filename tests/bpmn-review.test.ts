@@ -460,6 +460,106 @@ test('текст питання й варіантів — це текст для
   assert.match(INSTR.text, /не для схеми|не підставляється/i, 'інструкція прямо каже, що питання й варіанти не змінюють AS-IS');
 });
 
+// ───────── Дефект зовнішньої перевірки: усунення повторів не повинно знижувати критичність ─────────
+
+const Q = 'Що відбувається в інших випадках?';
+const base = (over: Record<string, unknown> = {}) => finding({ question: Q, ...over });
+
+test('однакові код, кроки, цитата й питання, різний class: в обох порядках лишається blocks_flow, шлюз закритий, є попередження про суперечність', async () => {
+  for (const order of [['informational', 'blocks_flow'], ['blocks_flow', 'informational']]) {
+    const input = order.map((class_) => base({ class: class_ }));
+    const v = verifyReviewOutput({ findings: input }, pkg());
+    assert.ok(v.ok);
+    assert.equal(v.ok && v.findings.length, 1, order.join('→'));
+    assert.equal(v.ok && v.findings[0]!.class, 'blocks_flow', order.join('→'));
+    assert.ok(v.ok && v.warnings.some((w) => /суперечн/i.test(w)), order.join('→'));
+    const r = await run(new FakeClient([ok(input)]));
+    assert.equal(r.status, 'completed');
+    const g = gate(r, pkg());
+    assert.ok(!g.ok && g.code === 'BLOCKING_FINDINGS', `${order.join('→')}: шлюз має бути закритий`);
+    assert.ok(r.status === 'completed' && r.warnings.some((w) => /суперечн/i.test(w)), 'попередження доходить до результату');
+  }
+});
+
+test('повний дублікат (усе однакове, у т.ч. class) відкидається з попередженням; різні питання чи варіанти з тим самим кодом/кроками/цитатою — НЕ губляться', () => {
+  const dup = verifyReviewOutput({ findings: [base(), base()] }, pkg());
+  assert.ok(dup.ok && dup.findings.length === 1 && dup.warnings.some((w) => /повтор/.test(w)));
+  // порядок і регістр варіантів, пробіли й регістр питання не роблять знахідку «іншою»
+  const same = verifyReviewOutput({ findings: [base({ options: ['А', 'Б'] }), base({ question: '  що відбувається в інших випадках?  ', options: ['б', 'а'] })] }, pkg());
+  assert.ok(same.ok && same.findings.length === 1);
+  // інше питання → окрема знахідка
+  const q2 = verifyReviewOutput({ findings: [base(), base({ question: 'А якщо сума дорівнює ліміту?' })] }, pkg());
+  assert.ok(q2.ok && q2.findings.length === 2 && q2.findings.map((f) => f.question).includes('А якщо сума дорівнює ліміту?'));
+  // інші варіанти відповіді → окрема знахідка
+  const o2 = verifyReviewOutput({ findings: [base({ options: ['так'] }), base({ options: ['ні'] })] }, pkg());
+  assert.ok(o2.ok && o2.findings.length === 2);
+  // немає варіантів проти порожнього списку варіантів — це одне й те саме
+  const empty = verifyReviewOutput({ findings: [base(), base({ options: [] })] }, pkg());
+  assert.ok(empty.ok && empty.findings.length === 1);
+});
+
+test('різні питання з різним class не зливаються: обидві лишаються зі своїм class, є попередження про суперечність; шлюз закритий в обох порядках', async () => {
+  for (const order of [['informational', 'blocks_flow'], ['blocks_flow', 'informational']]) {
+    const input = [base({ class: order[0], question: 'Питання перше?' }), base({ class: order[1], question: 'Питання друге?' })];
+    const v = verifyReviewOutput({ findings: input }, pkg());
+    assert.ok(v.ok && v.findings.length === 2 && v.findings.some((f) => f.class === 'blocks_flow'));
+    assert.ok(v.ok && v.warnings.some((w) => /суперечн/i.test(w)));
+    assert.ok(!gate(await run(new FakeClient([ok(input)])), pkg()).ok);
+  }
+});
+
+test('знахідки про РІЗНІ кроки (той самий код, цитата й питання) не зливаються, навіть коли один із класів — informational: blocks_flow для другого кроку не губиться', async () => {
+  for (const order of [['informational', 'blocks_flow'], ['blocks_flow', 'informational']]) {
+    const input = [base({ step_ids: ['S2'], class: order[0] }), base({ step_ids: ['S3'], class: order[1] })];
+    const v = verifyReviewOutput({ findings: input }, pkg());
+    assert.ok(v.ok && v.findings.length === 2, order.join('→'));
+    assert.deepEqual(v.ok && v.findings.map((f) => [f.step_ids[0], f.class]).sort(), [['S2', order[0]], ['S3', order[1]]].sort());
+    assert.ok(!gate(await run(new FakeClient([ok(input)])), pkg()).ok);
+  }
+  // порядок кроків усередині знахідки не робить її «іншою»
+  const same = verifyReviewOutput({ findings: [base({ step_ids: ['S2', 'S3'] }), base({ step_ids: ['S3', 'S2'] })] }, pkg());
+  assert.ok(same.ok && same.findings.length === 1);
+});
+
+test('UNSUPPORTED_CANDIDATE ніколи не губиться через усунення повторів (будь-який порядок і class), шлюз закритий', async () => {
+  const mk = (code: string, class_: string, question = Q) => base({ code, class: class_, question });
+  const sets = [
+    [mk('UNSUPPORTED_CANDIDATE', 'informational'), mk('UNSUPPORTED_CANDIDATE', 'blocks_flow')],
+    [mk('UNSUPPORTED_CANDIDATE', 'informational'), mk('CONDITIONS_NOT_EXHAUSTIVE', 'informational')],
+    [mk('CONDITIONS_NOT_EXHAUSTIVE', 'blocks_flow'), mk('UNSUPPORTED_CANDIDATE', 'informational'), mk('UNSUPPORTED_CANDIDATE', 'informational')],
+  ];
+  for (const set of sets) for (const input of [set, [...set].reverse()]) {
+    const v = verifyReviewOutput({ findings: input }, pkg());
+    assert.ok(v.ok && v.findings.some((f) => f.code === 'UNSUPPORTED_CANDIDATE'), JSON.stringify(input.map((f) => [f.code, f.class])));
+    const g = gate(await run(new FakeClient([ok(input)])), pkg());
+    assert.ok(!g.ok && ['UNSUPPORTED_CANDIDATE', 'BLOCKING_FINDINGS'].includes(g.code));
+    if (input.some((f) => f.code === 'UNSUPPORTED_CANDIDATE')) assert.ok(!g.ok && g.code === 'UNSUPPORTED_CANDIDATE', 'UNSUPPORTED має пріоритет');
+  }
+});
+
+test('вирішальна властивість: за ВСІМА перестановками набору знахідок blocks_flow і UNSUPPORTED із входу є у виході, а рішення шлюзу не залежить від порядку', async () => {
+  const items = [
+    base({ class: 'informational' }), base({ class: 'blocks_flow' }),
+    base({ class: 'informational', question: 'Інше питання?' }),
+    base({ code: 'UNSUPPORTED_CANDIDATE', class: 'informational' }),
+  ];
+  const perms = (a: unknown[]): unknown[][] => (a.length <= 1 ? [a] : a.flatMap((x, i) => perms([...a.slice(0, i), ...a.slice(i + 1)]).map((r) => [x, ...r])));
+  const all = perms(items);
+  assert.equal(all.length, 24);
+  const decisions = new Set<string>();
+  for (const input of all) {
+    const v = verifyReviewOutput({ findings: input }, pkg());
+    assert.ok(v.ok && v.findings.some((f) => f.class === 'blocks_flow') && v.findings.some((f) => f.code === 'UNSUPPORTED_CANDIDATE'));
+    const g = gate(await run(new FakeClient([ok(input)])), pkg());
+    decisions.add(JSON.stringify(g));
+  }
+  assert.equal(decisions.size, 1, 'рішення шлюзу не залежить від порядку знахідок');
+  // без blocks_flow і UNSUPPORTED порядок теж не змінює результату (відкритий шлюз для informational)
+  for (const input of [[base({ class: 'informational' }), base({ class: 'informational' })]]) {
+    assert.deepEqual(gate(await run(new FakeClient([ok(input)])), pkg()), { ok: true });
+  }
+});
+
 // ───────── Межі модуля ─────────
 
 test('модуль агента 2 не має доступу до бази, генератора, мережі, файлів і змінних середовища; сервер його ще не підключає', () => {

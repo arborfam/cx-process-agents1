@@ -170,8 +170,10 @@ export function verifyReviewOutput(raw: unknown, pkg: ReviewPackage): ReviewVeri
   const warnings: string[] = [];
   const stepIds = new Set(pkg.content.steps.map((s) => s.id));
   const fields = packageFields(pkg.content);
-  const seen = new Set<string>();
   const kept: ReviewFinding[] = [];
+  const byContent = new Map<string, number>();
+  const bySig = new Map<string, Set<ReviewFinding['class']>>();
+  const contradicted = new Set<string>();
 
   parsed.data.findings.forEach((f, i) => {
     const path = `findings[${i}] (${f.code})`;
@@ -199,10 +201,31 @@ export function verifyReviewOutput(raw: unknown, pkg: ReviewPackage): ReviewVeri
       }
     }
 
-    // Той самий код, кроки й цитата вдруге — зайвий шум: лишаємо перше, друге відкидаємо з попередженням.
-    const key = JSON.stringify([f.code, [...f.step_ids].sort(), normalizeText(f.quote)]);
-    if (seen.has(key)) warnings.push(`${path}: повтор попередньої знахідки (той самий код, кроки й цитата) — відкинуто`);
-    else { seen.add(key); kept.push(f); }
+    // Усунення повторів не повинно ні знижувати критичність, ні губити різні питання чи варіанти.
+    // «Зміст» знахідки = код + кроки + цитата + питання + варіанти (без class); чим вона відрізняється — те й окрема знахідка.
+    const sig = JSON.stringify([f.code, [...f.step_ids].sort(), normalizeText(f.quote)]);
+    const content = JSON.stringify([sig, normalizeText(f.question).toLowerCase(), [...new Set((f.options ?? []).map((o) => normalizeText(o).toLowerCase()))].sort()]);
+    const at = byContent.get(content);
+    const noteContradiction = () => {
+      if (contradicted.has(sig)) return;
+      contradicted.add(sig);
+      warnings.push(`${path}: суперечність класів: знахідки з однаковими кодом, кроками й цитатою мають різні класи (blocks_flow і informational) — blocks_flow збережено, блокування діє`);
+    };
+    const classes = bySig.get(sig) ?? new Set<ReviewFinding['class']>();
+    bySig.set(sig, classes);
+    if (at === undefined) {
+      byContent.set(content, kept.length);
+      kept.push(f);
+      classes.add(f.class);
+      if (classes.size > 1) noteContradiction();
+    } else if (kept[at]!.class === f.class) {
+      warnings.push(`${path}: повний повтор попередньої знахідки (той самий код, кроки, цитата, питання й варіанти) — відкинуто`);
+    } else {
+      // Однаковий зміст, різний class: критичність не знижуємо — лишається blocks_flow, незалежно від порядку.
+      if (kept[at]!.class !== 'blocks_flow') kept[at] = { ...kept[at]!, class: 'blocks_flow' };
+      classes.add('blocks_flow');
+      noteContradiction();
+    }
   });
 
   return v.length > 0 ? { ok: false, violations: v } : { ok: true, findings: kept, warnings };
