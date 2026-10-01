@@ -14,6 +14,13 @@ export const MAX_ACTION_CHARS = 160;
 const QREF = /\bQ\d+\b/;
 const kindOf = (a: { kind?: LinkKindT }): LinkKindT => a.kind ?? 'direction';
 
+/**
+ * Відпечаток ОПИСУ кроку — лише поля, які людина читає як опис дії. `source_ids` і цілі переходів (`to`)
+ * сюди не входять: це службові та структурні поля, і їхня зміна нічого не каже про актуальність опису (D73).
+ */
+const descriptionOf = (s: { role: string; action: string; entry_condition: string; input_artifact: string; result: string; details?: string; next: { condition: string }[] }): string =>
+  canonical([s.role, s.action, s.entry_condition, s.input_artifact, s.result, s.details ?? '', s.next.map((n) => n.condition)]);
+
 export function selfConsistency(base: Content, out: Content): { violations: Violation[]; warnings: string[] } {
   const v: Violation[] = [];
   const warnings: string[] = [];
@@ -71,8 +78,14 @@ export function selfConsistency(base: Content, out: Content): { violations: Viol
     }
   }
 
-  // 7. Часткове уточнення (D70): закриваючи питання відповіддю з джерела, агент не лишає опис прив'язаного кроку застарілим.
-  // Правило детерміноване й не оцінює змісту: або опис кроку змінився, або питання лишається відкритим (уточнено частково).
+  // 7. Місця для перевірки людиною після закритого питання (D70, переглянуто в D73).
+  //
+  // Раніше тут була безумовна ВІДМОВА, якщо об'єкт прив'язаного кроку не змінився. Незалежна перевірка показала,
+  // що це міряло не те: підтвердження вже правильного опису відхилялось (хибна відмова з платним повтором),
+  // а застарілий текст зі зміненими лише `source_ids` проходив (хибне приймання). Чи правильний опис тепер —
+  // питання ЗМІСТУ, і звичайний код його не встановлює: ні незмінність тексту не доводить застарілості,
+  // ні зміна тексту не доводить правильності. Тому тут ПОПЕРЕДЖЕННЯ для людини, назване чесно, а не блокування.
+  // Вимога оновлювати опис лишається в інструкції агента (п. 12) і в критеріях (B11) — не в коді.
   for (const q of out.questions) {
     if (q.status !== 'closed' || !q.closed_by_source_id) continue;
     const b = base.questions.find((x) => x.id === q.id);
@@ -80,13 +93,20 @@ export function selfConsistency(base: Content, out: Content): { violations: Viol
     const linked = new Set([...(b.affects_transitions ?? []), ...(q.affects_transitions ?? [])].map((a) => a.step_id));
     for (const id of linked) {
       const was = baseStep.get(id);
-      if (was === undefined) continue; // крок створено цим же запуском — застарілим бути не може
+      if (was === undefined) continue; // крок створено цим же запуском — попереднього опису не було
       const now = stepById.get(id);
-      if (!now || canonical(now) !== was) continue;
-      v.push({ code: 'STALE_STEP_AFTER_ANSWER', path: `questions (${q.id}) → крок ${id}`, message:
-        `питання про крок ${id} закрито відповіддю з джерела, але сам крок не змінився. Онови його опис так, щоб видно було, ` +
-        'що вже з’ясовано (зі вказівкою, чиї це слова) і що лишилось невідомим, — або лиши питання відкритим, якщо уточнено лише частину. ' +
-        'Наявність пропозиції вилучення чи заміни кроку застарілий опис актуальним не робить: рішення за аналітикинею, а опис читають до нього.' });
+      const old = base.steps.find((s) => s.id === id);
+      if (!now || !old) continue;
+      const changedText = descriptionOf(now) !== descriptionOf(old);
+      const changedObject = canonical(now) !== was;
+      const observed = changedText
+        ? 'опис кроку змінено (програма порівняла лише текст і не перевіряє, чи він тепер правильний)'
+        : changedObject
+          ? 'змінились лише службові поля (джерела чи зв’язки) — опис кроку той самий; зміна службового поля актуальності опису не доводить'
+          : 'опис кроку той самий (це може бути підтвердження вже правильного опису, а може бути застарілий текст)';
+      warnings.push(`Питання ${q.id} закрито відповіддю з джерела, і воно стосувалось кроку ${id}: ${observed}. ` +
+        'Перевірте, чи опис кроку відповідає відповіді: що вже з’ясовано (зі вказівкою, чиї це слова) і що лишилось невідомим. ' +
+        'Якщо з’ясовано лише частину, питання має лишитись відкритим. Відкрита пропозиція вилучити чи замінити крок застарілий опис актуальним не робить.');
     }
   }
 

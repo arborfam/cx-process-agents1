@@ -20,25 +20,35 @@ const srcText = new Map((data.sources ?? []).map((s) => [s.id, s.content]));
 const parse = (v: Ver): Content => ContentSchema.parse(v.content);
 const byId = new Map(data.versions.map((v) => [v.id, v]));
 
-/** Кроки, не змінені агентом, хоча прив'язане до них питання він закрив відповіддю з джерела (D70). */
-function staleSteps(base: Content, out: Content): string[] {
-  const baseStep = new Map(base.steps.map((s) => [s.id, canonical(s)]));
+/** Відпечаток опису кроку (без службових `source_ids` і цілей переходів) — як у src/ai/consistency.ts, D73. */
+const descriptionOf = (s: Content['steps'][number]): string =>
+  canonical([s.role, s.action, s.entry_condition, s.input_artifact, s.result, s.details ?? '', s.next.map((n) => n.condition)]);
+
+/**
+ * Кроки, прив'язані до питань, які агент закрив відповіддю з джерела в цьому запуску: місця для перевірки людиною.
+ * `same` — опис не змінився, `service_only` — змінились лише службові поля, `text` — опис змінено.
+ * Жоден варіант не доводить, що опис правильний або застарілий (D73).
+ */
+function stepsToReview(base: Content, out: Content): { ref: string; kind: 'same' | 'service_only' | 'text' }[] {
+  const baseStep = new Map(base.steps.map((s) => [s.id, s]));
   const stepById = new Map(out.steps.map((s) => [s.id, s]));
-  const res: string[] = [];
+  const res: { ref: string; kind: 'same' | 'service_only' | 'text' }[] = [];
   for (const q of out.questions) {
     if (q.status !== 'closed' || !q.closed_by_source_id) continue;
     const b = base.questions.find((x) => x.id === q.id);
     if (!b || b.status !== 'open') continue;
     for (const id of new Set([...(b.affects_transitions ?? []), ...(q.affects_transitions ?? [])].map((a) => a.step_id))) {
-      const was = baseStep.get(id);
+      const old = baseStep.get(id);
       const now = stepById.get(id);
-      if (was !== undefined && now && canonical(now) === was) res.push(`${q.id}→${id}`);
+      if (!old || !now) continue;
+      const kind = descriptionOf(now) !== descriptionOf(old) ? 'text' : canonical(now) !== canonical(old) ? 'service_only' : 'same';
+      res.push({ ref: `${q.id}→${id}`, kind });
     }
   }
   return res;
 }
 
-/** Твердження «невідоме» з переписаним поясненням і дослівно тим самим текстом (D70). */
+/** Твердження «невідоме» з переписаним поясненням і дослівно тим самим текстом (D70): місце для перевірки. */
 function staleUnknowns(base: Content, out: Content): string[] {
   return base.claims.filter((b) => {
     if (b.type !== 'unknown') return false;
@@ -65,10 +75,14 @@ for (const v of data.versions) {
     'вимог нотації (пропозицій)': (c.notation_requirements ?? []).filter((r) => r.status === 'proposed').length,
     'прив’язки за видами': links.reduce<Record<string, number>>((a, k) => ({ ...a, [k]: (a[k] ?? 0) + 1 }), {}),
     'питань закрито агентом': parent ? c.questions.filter((q) => q.status === 'closed' && pc!.questions.find((x) => x.id === q.id)?.status === 'open').length : 0,
-    // D70: часткове уточнення й підстава причини. Це структурні сигнали, не оцінка змісту.
-    'застарілих кроків після закритого питання': pc ? staleSteps(pc, c).length : 0,
-    'застарілих «невідомих»': pc ? staleUnknowns(pc, c).length : 0,
-    'причин без підстави': c.problems.filter((p) => !p.cause_status && p.cause.trim()).length,
+    // D70, уточнено в D73: це структурні сигнали, не оцінка змісту. Жоден із них не доводить, що опис
+    // застарів, що причина хибна або що висновок неправильний: вони лише показують місця для перевірки людиною.
+    'кроків до перевірки після закритого питання (з них опис не змінився / лише службові поля)': pc ? (() => {
+      const l = stepsToReview(pc, c);
+      return `${l.length} (${l.filter((x) => x.kind === 'same').length} / ${l.filter((x) => x.kind === 'service_only').length})`;
+    })() : '0 (0 / 0)',
+    '«невідомих» до перевірки (текст той самий, пояснення переписано)': pc ? staleUnknowns(pc, c).length : 0,
+    'причин без зазначеного типу підстави': c.problems.filter((p) => !p.cause_status && p.cause.trim()).length,
     'причин не з’ясовано': c.problems.filter((p) => p.cause_status === 'not_established').length,
     'причин зі слів джерела (з них цитата дослівна)': (() => {
       const list = c.problems.filter((p) => p.cause_status === 'source_stated');

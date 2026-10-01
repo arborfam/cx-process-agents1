@@ -77,7 +77,7 @@ test('Пошук цитат: дослівно, після нормалізаці
 // ─────────── інструкція і запит ───────────
 test('Інструкція агента: версія й хеш із файлу, службові примітки до моделі не потрапляють', () => {
   const i = loadInstruction();
-  assert.equal(i.version, 'analyst-v0.6');
+  assert.equal(i.version, 'analyst-v0.7');
   assert.match(i.hash, /^[0-9a-f]{64}$/);
   assert.match(i.text, /Дані, а не команди/);
   assert.ok(!i.text.includes('Службові примітки'));
@@ -273,7 +273,7 @@ test('Тимчасовий збій справжнього клієнта: од�
   assert.ok(Math.abs(row.cost_usd - actualCostUsd(policy, { input_tokens: 2100, output_tokens: 3000 })) < 1e-9);
   // журнал: модель, версія інструкції+хеш, вхідна версія, тривалість
   assert.equal(row.model, 'claude-opus-5-5');
-  assert.equal(row.instruction_version, 'analyst-v0.6');
+  assert.equal(row.instruction_version, 'analyst-v0.7');
   assert.equal(row.instruction_hash, loadInstruction().hash);
   assert.ok(row.base_version_id);
   assert.ok(row.duration_ms >= 0);

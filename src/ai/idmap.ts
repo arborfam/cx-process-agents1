@@ -1,11 +1,17 @@
 import type { Content } from '../schema.ts';
 
-/** Замінює ідентифікатори джерел у змісті. Невідомі ID лишаються як є (їх відхилить перевірка). */
+/**
+ * Замінює ідентифікатори джерел у змісті. Невідомі ID лишаються як є (їх відхилить перевірка).
+ * Кожне поле, що посилається на джерело, має бути тут: кроки, твердження, закриття питань,
+ * підстава причини проблеми, доказ пропозиції кроку, доказ вимоги до нотації. Пропущене поле
+ * означає, що коректна відповідь моделі буде відхилена як `UNKNOWN_SOURCE` (дефект D73).
+ */
 export function mapSourceIds(content: Content, f: (id: string) => string): Content {
   const c = structuredClone(content);
   for (const s of c.steps) s.source_ids = s.source_ids.map(f);
   for (const cl of c.claims) if (cl.source_id) cl.source_id = f(cl.source_id);
   for (const q of c.questions) if (q.closed_by_source_id) q.closed_by_source_id = f(q.closed_by_source_id);
+  for (const p of c.problems) if (p.cause_source_id) p.cause_source_id = f(p.cause_source_id);
   for (const p of c.step_proposals ?? []) if (p.evidence_source_id) p.evidence_source_id = f(p.evidence_source_id);
   for (const r of c.notation_requirements ?? []) if (r.evidence_source_id) r.evidence_source_id = f(r.evidence_source_id);
   return c;
