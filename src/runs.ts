@@ -127,7 +127,7 @@ export interface RunMeta {
  * Запис вартості: відома → cost_usd, резерв 0, cost_known=1. Невідома (є спроби без usage) → cost_usd = NULL,
  * cost_known=0, reserved_usd = відоме + консервативний резерв (не зникає, переживає перезапуск).
  */
-function writeMeta(db: DB, runId: string, m: RunMeta): void {
+export function writeMeta(db: DB, runId: string, m: RunMeta): void {
   const unknown = !!m.cost && m.cost.unknownReserveUsd > 0;
   const cost = m.cost ? (unknown ? null : m.cost.knownUsd) : null;
   const reserved = m.cost ? (unknown ? m.cost.knownUsd + m.cost.unknownReserveUsd : 0) : 0;
@@ -149,10 +149,13 @@ export function failRun(db: DB, runId: string, error: string, meta?: RunMeta, vi
  * Для справжньої моделі виклик міг бути оплачений, тому вартість — НЕВІДОМА: поточний резерв лишається (не звільняється).
  */
 export function recoverStuckRuns(db: DB): number {
-  const stuck = all<{ id: string; mode: string; cost_usd: number | null; reserved_usd: number }>(
-    db, `SELECT id, mode, cost_usd, reserved_usd FROM run WHERE technical_state = 'running'`);
+  const stuck = all<{ id: string; agent: string; mode: string; cost_usd: number | null; reserved_usd: number }>(
+    db, `SELECT id, agent, mode, cost_usd, reserved_usd FROM run WHERE technical_state = 'running'`);
   for (const r of stuck) {
-    failRun(db, r.id, 'Запуск перервано перезапуском застосунку. Поточну версію не змінено; запустіть аналіз знову.');
+    // Не відновлюємо й не повторюємо платно: запуск — помилка, результату немає, повтор лише за явною дією людини.
+    failRun(db, r.id, r.agent === 'bpmn'
+      ? 'Смислову перевірку перервано перезапуском застосунку. Результату немає, стан кейсу й погодження не змінено; повторіть перевірку вручну.'
+      : 'Запуск перервано перезапуском застосунку. Поточну версію не змінено; запустіть аналіз знову.');
     if (r.mode === 'real') {
       run(db, `UPDATE run SET cost_usd = NULL, reserved_usd = ?, cost_known = 0 WHERE id = ?`, (r.cost_usd ?? 0) + r.reserved_usd, r.id);
     }
@@ -233,8 +236,8 @@ function returnAfterAgentChange(db: DB, caseId: string): void {
   audit(db, caseId, AGENT_SYSTEM_ACTOR, 'state_changed', { to: 'research', reason: 'content_changed' });
 }
 
-const ZERO: Usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
-function addUsage(a: Usage, b?: Usage): Usage {
+export const ZERO: Usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+export function addUsage(a: Usage, b?: Usage): Usage {
   if (!b) return a;
   return {
     input_tokens: a.input_tokens + b.input_tokens, output_tokens: a.output_tokens + b.output_tokens,

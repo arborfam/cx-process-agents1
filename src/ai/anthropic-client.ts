@@ -69,26 +69,31 @@ export class AnthropicAnalystClient implements AnalystClient {
   }
 
   private classify(e: unknown): ModelFailure {
-    if (e instanceof ModelFailure) return e;
-    const clean = (s: string) => redact(s, [this.cfg.apiKey]);
-    if (e instanceof Anthropic.APIUserAbortError) return new ModelFailure('timeout', 'Запит перервано (тайм-аут або скасування).');
-    if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError) {
-      return new ModelFailure('auth', 'Доступ до моделі відхилено (ключ недійсний, відкликаний або без прав). Перевірте ключ у налаштуваннях; повторювати не буду.', undefined, 'none');
-    }
-    if (e instanceof Anthropic.BadRequestError || e instanceof Anthropic.NotFoundError || e instanceof Anthropic.UnprocessableEntityError) {
-      return new ModelFailure('bad_request', clean(`API відхилив запит (${e.status}): ${e.message}`), undefined, 'none');
-    }
-    if (e instanceof Anthropic.RateLimitError) return new ModelFailure('transient', 'Перевищено ліміт швидкості API (429). Спробуйте пізніше.', undefined, 'none');
-    if (e instanceof Anthropic.APIConnectionError) return new ModelFailure('transient', 'Немає зв’язку з API або тайм-аут з’єднання.');
-    if (e instanceof Anthropic.APIError) {
-      const pre = e.status !== undefined && e.status >= 400 && e.status < 500;
-      return new ModelFailure(e.status !== undefined && e.status >= 500 ? 'transient' : 'other', clean(`Помилка API (${e.status ?? '?'}): ${e.message}`), undefined, pre ? 'none' : 'unknown');
-    }
-    return new ModelFailure('other', clean(e instanceof Error ? e.message : String(e)));
+    return classifyAnthropicError(e, this.cfg.apiKey);
   }
 }
 
-function stripFences(t: string): string {
+/** Перетворює помилку SDK на ModelFailure (без ключа в тексті). Спільна для обох агентів. */
+export function classifyAnthropicError(e: unknown, apiKey: string): ModelFailure {
+  if (e instanceof ModelFailure) return e;
+  const clean = (s: string) => redact(s, [apiKey]);
+  if (e instanceof Anthropic.APIUserAbortError) return new ModelFailure('timeout', 'Запит перервано (тайм-аут або скасування).');
+  if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError) {
+    return new ModelFailure('auth', 'Доступ до моделі відхилено (ключ недійсний, відкликаний або без прав). Перевірте ключ у налаштуваннях; повторювати не буду.', undefined, 'none');
+  }
+  if (e instanceof Anthropic.BadRequestError || e instanceof Anthropic.NotFoundError || e instanceof Anthropic.UnprocessableEntityError) {
+    return new ModelFailure('bad_request', clean(`API відхилив запит (${e.status}): ${e.message}`), undefined, 'none');
+  }
+  if (e instanceof Anthropic.RateLimitError) return new ModelFailure('transient', 'Перевищено ліміт швидкості API (429). Спробуйте пізніше.', undefined, 'none');
+  if (e instanceof Anthropic.APIConnectionError) return new ModelFailure('transient', 'Немає зв’язку з API або тайм-аут з’єднання.');
+  if (e instanceof Anthropic.APIError) {
+    const pre = e.status !== undefined && e.status >= 400 && e.status < 500;
+    return new ModelFailure(e.status !== undefined && e.status >= 500 ? 'transient' : 'other', clean(`Помилка API (${e.status ?? '?'}): ${e.message}`), undefined, pre ? 'none' : 'unknown');
+  }
+  return new ModelFailure('other', clean(e instanceof Error ? e.message : String(e)));
+}
+
+export function stripFences(t: string): string {
   const s = t.trim();
   const m = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(s);
   return m ? m[1]! : s;

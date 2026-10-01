@@ -1101,7 +1101,7 @@ export interface GuardResult {
 }
 
 /** Сім умов із технічного плану §6. Викликається на сервері, а не з браузера. */
-export function bpmnGuard(db: DB, caseId: string): GuardResult {
+export function bpmnGuard(db: DB, caseId: string, opts: { ignoreActiveRun?: boolean } = {}): GuardResult {
   const reasons: GuardResult['reasons'] = [];
   const fail = (code: string, message: string) => reasons.push({ code, message });
   const c = getCase(db, caseId);
@@ -1131,7 +1131,7 @@ export function bpmnGuard(db: DB, caseId: string): GuardResult {
     }
   }
   const active = one<{ id: string }>(db, `SELECT id FROM run WHERE case_id = ? AND agent = 'bpmn' AND technical_state IN ('queued','running')`, caseId);
-  if (active) fail('RUN_ACTIVE', 'Для цього кейсу вже є активний запуск BPMN.');
+  if (active && !opts.ignoreActiveRun) fail('RUN_ACTIVE', 'Для цього кейсу вже є активний запуск BPMN.');
   return { ok: reasons.length === 0, reasons };
 }
 

@@ -8,8 +8,9 @@ import { createApp } from './server.ts';
 import { seedDemoCase } from './demo.ts';
 import { recoverStuckRuns } from './runs.ts';
 import { AnthropicAnalystClient } from './ai/anthropic-client.ts';
+import { AnthropicBpmnClient } from './ai/anthropic-bpmn-client.ts';
 import { makePolicy } from './ai/budget.ts';
-import { loadInstruction } from './ai/prompt.ts';
+import { loadBpmnInstruction, loadInstruction } from './ai/prompt.ts';
 
 function loadAccessCode(dbPath: string): string {
   if (process.env.CX_ACCESS_CODE) return process.env.CX_ACCESS_CODE;
@@ -32,12 +33,15 @@ try {
   }
   const code = loadAccessCode(cfg.dbPath);
   let analyst;
+  let reviewer;
   if (cfg.mode === 'real' && cfg.model) {
     const policy = makePolicy(cfg.model, loadPricing());
     analyst = { client: new AnthropicAnalystClient(cfg.model, policy), policy, instruction: loadInstruction() };
+    // Той самий бюджет, що й в агента 1: політика спільна, облік — по всіх запусках справжньої моделі.
+    reviewer = { client: new AnthropicBpmnClient(cfg.model, policy), policy, instruction: loadBpmnInstruction() };
   }
   const server = createApp({
-    db, mode: cfg.mode, accessCode: code, analyst,
+    db, mode: cfg.mode, accessCode: code, analyst, reviewer,
     modelInfo: cfg.model ? { model: cfg.model.model, effort: cfg.model.effort, budgetTotalUsd: cfg.model.budgetTotalUsd, budgetPerRunUsd: cfg.model.budgetPerRunUsd } : undefined,
   });
   server.listen(cfg.port, '127.0.0.1', () => {

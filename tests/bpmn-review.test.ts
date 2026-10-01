@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { loadInstruction } from '../src/ai/prompt.ts';
 import {
   FINDING_CODES, MAX_QUOTE_PARTS, MIN_QUOTE_PART_CHARS, MAX_FINDINGS, MIN_QUOTE_CHARS, ReviewResponseSchema, buildReviewMessage, generationGate, packageFields, packageText,
-  reviewJsonSchema, runBpmnReview, type GateResult, verifyReviewOutput, type BpmnReviewClient, type BpmnReviewInput, type ReviewPackage, type ReviewResult,
+  reissueReview, reviewJsonSchema, ReviewApiSchema, runBpmnReview, type GateResult, verifyReviewOutput, type BpmnReviewClient, type BpmnReviewInput, type ReviewPackage, type ReviewResult,
 } from '../src/ai/bpmn-review.ts';
 import { ModelFailure, type ModelCallResult } from '../src/ai/types.ts';
 import { clonePkg, allFixtures, pkgOf } from './bpmn-helpers.ts';
@@ -79,13 +79,22 @@ test('схема відхиляє: невідомий код/клас, поро�
   for (const b of bad) assert.ok(!ReviewResponseSchema.safeParse(b).success, JSON.stringify(b)?.slice(0, 80));
 });
 
-test('JSON-схема для API: без додаткових властивостей на корені й у знахідках, ліміт знахідок, обов’язкові поля', () => {
-  const s = reviewJsonSchema() as { additionalProperties?: boolean; properties: { findings: { maxItems: number; items: { additionalProperties?: boolean; required: string[] } } } };
+test('JSON-схема для API: та сама форма без обмежень довжини/кількості (їх не підтримує структурований вивід); межі повністю перевіряє код', async () => {
+  const s = reviewJsonSchema() as { additionalProperties?: boolean; properties: { findings: { items: { additionalProperties?: boolean; required: string[]; properties: Record<string, { enum?: string[] }> } } } };
   assert.equal(s.additionalProperties, false);
-  assert.equal(s.properties.findings.maxItems, MAX_FINDINGS);
   assert.equal(s.properties.findings.items.additionalProperties, false);
   for (const k of ['code', 'step_ids', 'quote', 'question', 'class']) assert.ok(s.properties.findings.items.required.includes(k), k);
   assert.ok(!s.properties.findings.items.required.includes('options'));
+  assert.deepEqual(s.properties.findings.items.properties.code!.enum, [...FINDING_CODES]);
+  const json = JSON.stringify(s);
+  assert.ok(!/"minLength"|"maxLength"|"minimum"|"maximum"|"maxItems"/.test(json), 'обмеження довжини/кількості заборонені структурованим виводом');
+  const { zodOutputFormat } = await import('@anthropic-ai/sdk/helpers/zod');
+  const f = zodOutputFormat(ReviewApiSchema) as { schema: unknown };
+  assert.ok(!/"minLength"|"maxLength"|"maxItems"/.test(JSON.stringify(f.schema)));
+  // відповідь, що пройшла б схему API, але вийшла за суворі межі, відхиляється кодом
+  const tooMany = { findings: Array.from({ length: MAX_FINDINGS + 1 }, () => finding()) };
+  assert.ok(ReviewApiSchema.safeParse(tooMany).success && !ReviewResponseSchema.safeParse(tooMany).success);
+  assert.ok(!verifyReviewOutput(tooMany, pkg()).ok);
 });
 
 // ───────── Перевірка відповіді ─────────
@@ -560,15 +569,39 @@ test('вирішальна властивість: за ВСІМА перест�
   }
 });
 
+test('reissueReview: збережену відповідь видає лише для того самого пакета — відбиток змісту, версія, хеш і повторна перевірка відповіді перевіряються кожне окремо', async () => {
+  const p = pkg();
+  const real = await run(new FakeClient([ok([finding()])]), p);
+  assert.equal(real.status, 'completed');
+  if (real.status !== 'completed') return;
+  const stored = { binding: real.binding, response: real.response, attempts: 1, usage: [], failedAttempts: [], attemptCosts: [] };
+  const good = reissueReview(stored, p);
+  assert.ok(good.ok && good.result.findings.length === 1);
+  assert.equal(gate(good.ok ? good.result : null, p).ok, false, 'відновлений результат проходить той самий шлюз (blocks_flow закриває)');
+  const bad = (binding: Record<string, string>, pk: ReviewPackage = p) => reissueReview({ ...stored, binding: { ...stored.binding, ...binding } }, pk);
+  assert.ok(!bad({ contentFingerprint: 'f'.repeat(64) }).ok, 'відбиток змісту');
+  assert.ok(!bad({ versionId: 'ІНША' }).ok, 'версія');
+  assert.ok(!bad({ contentHash: 'a'.repeat(64) }).ok, 'хеш');
+  assert.ok(!reissueReview({ ...stored, response: { findings: [finding({ quote: 'вигадана цитата, якої немає в пакеті' })] } }, p).ok, 'відповідь більше не проходить перевірку');
+  const edited = clonePkg(p as never) as ReviewPackage;
+  edited.content.steps[0]!.action += ' (змінено)';
+  assert.ok(!reissueReview(stored, edited).ok, 'зміст пакета змінено');
+});
+
 // ───────── Межі модуля ─────────
 
-test('модуль агента 2 не має доступу до бази, генератора, мережі, файлів і змінних середовища; сервер його ще не підключає', () => {
+test('модуль агента 2 не має доступу до бази, генератора, мережі, файлів і змінних середовища; імпортувати його можуть лише дозволені файли', () => {
   const code = readFileSync(join(ROOT, 'src', 'ai', 'bpmn-review.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   const imports = [...code.matchAll(/from\s+['"]([^'"]+)['"]/g)].map((m) => m[1]!);
   for (const i of imports) assert.ok(!/db|domain|bpmn\/|anthropic|server|runs/.test(i), `заборонений імпорт ${i}`);
   for (const re of [/\bfetch\s*\(/, /process\.env/, /node:(fs|http|https|net|child_process)/, /\.run\(|\.exec\(|INSERT|UPDATE/]) assert.ok(!re.test(code), String(re));
   const walk = (d: string): string[] => readdirSync(d).flatMap((f) => (statSync(join(d, f)).isDirectory() ? walk(join(d, f)) : [join(d, f)]));
+  // Від 3b-2 модуль підключено, але лише через явний перелік: клієнт Anthropic і серверне керування запуском (`src/review-runs.ts`).
+  // Усі інші файли (зокрема генератор `src/bpmn/` і браузерні шляхи) його не імпортують.
+  const allowed = new Set(['src/ai/anthropic-bpmn-client.ts', 'src/review-runs.ts']);
   for (const f of walk(join(ROOT, 'src')).filter((x) => x.endsWith('.ts') && !x.endsWith('bpmn-review.ts'))) {
-    assert.ok(!/bpmn-review/.test(readFileSync(f, 'utf8')), `${f}: у 3b-1 агент 2 у продукт не підключений`);
+    const rel = f.slice(ROOT.length + 1);
+    if (!/bpmn-review/.test(readFileSync(f, 'utf8'))) continue;
+    assert.ok(allowed.has(rel), `${rel}: імпортує модуль агента 2 поза переліком дозволених`);
   }
 });

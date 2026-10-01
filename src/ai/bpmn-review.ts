@@ -48,8 +48,25 @@ export const ReviewFindingSchema = z
 export const ReviewResponseSchema = z.object({ findings: z.array(ReviewFindingSchema).max(MAX_FINDINGS) }).strict();
 export type ReviewFinding = z.infer<typeof ReviewFindingSchema>;
 
-/** JSON-схема для структурованого виводу API (підключення — 3b-2; прийняття API без виклику перевірити неможливо). */
-export const reviewJsonSchema = (): unknown => z.toJSONSchema(ReviewResponseSchema);
+/**
+ * Схема для структурованого виводу API: ТА САМА форма, але без обмежень довжини й кількості (minLength/maxLength/maxItems) —
+ * структурований вивід їх не підтримує (як і для агента 1). Межі (≤ 20 знахідок, ≤ 10 кроків, довжини, `strict`) повністю
+ * перевіряє `verifyReviewOutput` за суворою `ReviewResponseSchema`: відповідь, що вийшла за межі, відхиляється кодом.
+ * Прийняття цієї схеми API без виклику перевірити неможливо; запасний режим — `CX_OUTPUT_MODE=text_json`.
+ */
+export const ReviewApiSchema = z
+  .object({
+    findings: z.array(z.object({
+      code: z.enum(FINDING_CODES),
+      step_ids: z.array(z.string()),
+      quote: z.string(),
+      question: z.string(),
+      class: z.enum(['blocks_flow', 'informational']),
+      options: z.array(z.string()).optional(),
+    }).strict()),
+  })
+  .strict();
+export const reviewJsonSchema = (): unknown => z.toJSONSchema(ReviewApiSchema);
 
 /** Вхід агента 2: конкретний погоджений пакет. Структурно сумісний з `ApprovedPackage`, але без імпорту з `src/bpmn/`. */
 export interface ReviewPackage {
@@ -246,9 +263,20 @@ export interface ReviewBinding {
 
 export interface AttemptLog { attempt: number; kind: FailureKind; message: string; violations: readonly Violation[] }
 
+/** Вартість спроби: `known` — є usage; `none` — помилка до генерації (API 4xx), нічого не оплачено; `unknown` — обрив, тайм-аут, мережа, відповідь без usage. */
+export interface AttemptCost { attempt: number; usage?: Usage; billing: 'known' | 'none' | 'unknown' }
+
 export type ReviewResult =
-  | { status: 'completed'; binding: ReviewBinding; findings: readonly ReviewFinding[]; warnings: readonly string[]; attempts: number; usage: readonly Usage[]; failedAttempts: readonly AttemptLog[] }
-  | { status: 'failed'; binding: ReviewBinding; kind: FailureKind; message: string; violations: readonly Violation[]; attempts: number; usage: readonly Usage[]; failedAttempts: readonly AttemptLog[] };
+  | {
+    status: 'completed'; binding: ReviewBinding; findings: readonly ReviewFinding[]; warnings: readonly string[]; attempts: number; usage: readonly Usage[];
+    failedAttempts: readonly AttemptLog[]; attemptCosts: readonly AttemptCost[];
+    /** Прийнята (пройшла програмну перевірку) відповідь моделі дослівно — для збереження в журналі й повторної перевірки після перезапуску. */
+    response: unknown;
+  }
+  | {
+    status: 'failed'; binding: ReviewBinding; kind: FailureKind; message: string; violations: readonly Violation[]; attempts: number; usage: readonly Usage[];
+    failedAttempts: readonly AttemptLog[]; attemptCosts: readonly AttemptCost[];
+  };
 
 /**
  * Результати, видані саме `runBpmnReview`. Підроблений вручну об'єкт `{ status: 'completed', findings: [] }` у шлюз не пройде:
@@ -275,9 +303,16 @@ export interface RunReviewOptions {
   timeoutMs?: number;
   /** Не більше однієї автоматичної повторної спроби (D32): лише для тимчасового збою й некоректної відповіді. */
   maxAttempts?: 1 | 2;
+  /**
+   * Викликається ПЕРЕД кожною спробою (з вартістю попередніх). Якщо кидає помилку (наприклад, бюджет), спробу не виконано,
+   * запуск завершується як «failed» без нового виклику моделі. Тут запускач резервує бюджет під повтор.
+   */
+  beforeAttempt?: (attempt: number, costs: readonly AttemptCost[]) => void;
 }
 
-const fingerprintOf = (c: Content): string => sha256(canonical(c));
+/** Відбиток змісту пакета: SHA-256 канонічного JSON. */
+export const contentFingerprint = (c: Content): string => sha256(canonical(c));
+const fingerprintOf = contentFingerprint;
 const fmt = (v: Violation) => `${v.code} ${v.path}: ${v.message}`;
 
 export async function runBpmnReview(client: BpmnReviewClient, instruction: InstructionInfo, pkg: ReviewPackage, opts: RunReviewOptions = {}): Promise<ReviewResult> {
@@ -288,11 +323,19 @@ export async function runBpmnReview(client: BpmnReviewClient, instruction: Instr
   };
   const usage: Usage[] = [];
   const failedAttempts: AttemptLog[] = [];
+  const costs: AttemptCost[] = [];
   let feedback: string[] | undefined;
   let attempts = 0;
   let last: { kind: FailureKind; message: string; violations: Violation[] } = { kind: 'other', message: 'Перевірку не виконано.', violations: [] };
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      opts.beforeAttempt?.(attempt, costs);
+    } catch (e) {
+      last = { kind: 'other', message: (e instanceof Error ? e.message : 'Спробу не дозволено.').slice(0, 600) + ' Повторну спробу не виконано.', violations: [] };
+      failedAttempts.push({ attempt, ...last });
+      break;
+    }
     attempts = attempt;
     const ac = new AbortController();
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -310,13 +353,15 @@ export async function runBpmnReview(client: BpmnReviewClient, instruction: Instr
         res = await call;
       }
       if (res.usage) usage.push(res.usage);
+      costs.push(res.usage ? { attempt, usage: res.usage, billing: 'known' } : { attempt, billing: 'unknown' });
       const vr = verifyReviewOutput(res.output, pkg);
-      if (vr.ok) return issue({ status: 'completed', binding, findings: vr.findings, warnings: vr.warnings, attempts: attempt, usage, failedAttempts });
+      if (vr.ok) return issue({ status: 'completed', binding, findings: vr.findings, warnings: vr.warnings, attempts: attempt, usage, failedAttempts, attemptCosts: costs, response: res.output });
       last = { kind: 'invalid_output', message: 'Відповідь агента 2 не пройшла програмну перевірку.', violations: vr.violations };
       feedback = vr.violations.map(fmt);
     } catch (e) {
       const f = e instanceof ModelFailure ? e : new ModelFailure(ac.signal.aborted ? 'timeout' : 'other', 'Невідома помилка під час перевірки.');
       if (f.usage) usage.push(f.usage);
+      costs.push(f.usage ? { attempt, usage: f.usage, billing: 'known' } : { attempt, billing: f.billing });
       last = { kind: f.kind, message: f.message, violations: [] };
       if (!f.retryable) { failedAttempts.push({ attempt, ...last }); break; }
       feedback = f.kind === 'transient' ? undefined : ['Відповідь не була коректним JSON-об’єктом за схемою.'];
@@ -325,7 +370,45 @@ export async function runBpmnReview(client: BpmnReviewClient, instruction: Instr
     }
     failedAttempts.push({ attempt, ...last });
   }
-  return issue({ status: 'failed', binding, kind: last.kind, message: last.message, violations: last.violations, attempts, usage, failedAttempts });
+  return issue({ status: 'failed', binding, kind: last.kind, message: last.message, violations: last.violations, attempts, usage, failedAttempts, attemptCosts: costs });
+}
+
+/** Висновок за завершеною перевіркою: `awaiting_analyst`, якщо є знахідка, що блокує (blocks_flow або кандидат на непідтримуване); інакше `clear`. */
+export function reviewOutcome(findings: readonly ReviewFinding[]): 'clear' | 'awaiting_analyst' {
+  return findings.some((f) => f.class === 'blocks_flow' || f.code === 'UNSUPPORTED_CANDIDATE') ? 'awaiting_analyst' : 'clear';
+}
+
+/** Збережений запис завершеної перевірки (з довіреного серверного журналу). */
+export interface StoredReview {
+  binding: ReviewBinding;
+  response: unknown;
+  attempts: number;
+  usage: readonly Usage[];
+  failedAttempts: readonly AttemptLog[];
+  attemptCosts: readonly AttemptCost[];
+}
+
+export type ReissueResult = { ok: true; result: Extract<ReviewResult, { status: 'completed' }> } | { ok: false; reason: string };
+
+/**
+ * Відновлення завершеної перевірки зі збереженого запису БЕЗ виклику моделі (після перезапуску чи очікування рішення людини).
+ * Результат видається лише якщо збережена відповідь ЗНОВУ проходить `verifyReviewOutput` для цього пакета, а прив'язка (версія,
+ * хеш, відбиток змісту) збігається з пакетом. Довіру забезпечує серверний запис і повторна перевірка кодом, а не пам'ять процесу.
+ * Викликати можна лише з довіреного серверного модуля (`src/review-runs.ts`): тест стежить, щоб браузерні шляхи цього не робили.
+ */
+export function reissueReview(stored: StoredReview, pkg: ReviewPackage): ReissueResult {
+  const b = stored.binding;
+  if (b.versionId !== pkg.versionId || b.contentHash !== pkg.contentHash || b.contentFingerprint !== fingerprintOf(pkg.content)) {
+    return { ok: false, reason: 'Прив’язка запису не збігається з пакетом (версія, хеш чи відбиток змісту).' };
+  }
+  const vr = verifyReviewOutput(stored.response, pkg);
+  if (!vr.ok) return { ok: false, reason: 'Збережена відповідь більше не проходить програмну перевірку для цього пакета.' };
+  const result = issue({
+    status: 'completed' as const, binding: structuredClone(b), findings: vr.findings, warnings: vr.warnings, attempts: stored.attempts,
+    usage: structuredClone([...stored.usage]), failedAttempts: structuredClone([...stored.failedAttempts]), attemptCosts: structuredClone([...stored.attemptCosts]),
+    response: structuredClone(stored.response),
+  });
+  return { ok: true, result };
 }
 
 export type GateResult =

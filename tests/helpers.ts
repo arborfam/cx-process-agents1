@@ -59,12 +59,12 @@ export function approvedCase(db: DB) {
 }
 
 import type { AddressInfo } from 'node:net';
-import { createApp, sessionToken } from '../src/server.ts';
+import { createApp, sessionToken, type ServerOptions } from '../src/server.ts';
 
 export const ACCESS_CODE = 'test-code';
 
-export async function startTestServer(db: DB) {
-  const server = createApp({ db, mode: 'demo', accessCode: ACCESS_CODE });
+export async function startTestServer(db: DB, extra: Partial<ServerOptions> = {}) {
+  const server = createApp({ db, mode: 'demo', accessCode: ACCESS_CODE, ...extra });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const cookie = `cx_session=${sessionToken(ACCESS_CODE)}`;

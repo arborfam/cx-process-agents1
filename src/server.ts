@@ -16,6 +16,7 @@ import { redact } from './ai/redact.ts';
 import { beginAnalystRun, executeAnalystRun, type RunOptions } from './runs.ts';
 import { budgetLeftUsd, spentUsd, unknownCostRuns, type ModelPolicy } from './ai/budget.ts';
 import type { AnalystClient, InstructionInfo } from './ai/types.ts';
+import { beginBpmnReview, executeBpmnReview, getCaseReview, type Reviewer } from './review-runs.ts';
 import { addExplicitClarification, advanceScenario, createScenarioCase, scenarioInfo, TOTAL_STAGES } from './scenarios.ts';
 
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -28,6 +29,8 @@ export interface ServerOptions {
   accessCode: string;
   /** Підключення моделі. Немає — аналіз недоступний (з поясненням), на демо мовчки не перемикаємось. */
   analyst?: { client: AnalystClient; policy?: ModelPolicy; instruction?: InstructionInfo };
+  /** Клієнт смислової перевірки агента 2 (лише справжній; у деморежимі його немає й перевірка не імітується). Підставного клієнта задають лише тести. */
+  reviewer?: Reviewer;
   /** Параметри моделі для показу (без ключа). */
   modelInfo?: Pick<ModelConfig, 'model' | 'effort' | 'budgetTotalUsd' | 'budgetPerRunUsd'>;
 }
@@ -164,6 +167,17 @@ export function createApp(opts: ServerOptions): Server {
       return json(res, 200, { ...card, scenario: scenarioInfo(db, getCase(db, m[1]!)), ai: aiState() });
     }
 
+    // Стан смислової перевірки відновлюється з довіреного серверного запису; вхідних даних від браузера немає.
+    if ((m = /^\/api\/cases\/([\w-]+)\/bpmn\/review$/.exec(path)) && method === 'GET') {
+      getCase(db, m[1]!);
+      const r = getCaseReview(db, m[1]!, opts.reviewer?.instruction);
+      return json(res, 200, {
+        state: r.state, run_id: r.runId ?? null, review_id: r.reviewId ?? null, created_at: r.createdAt ?? null,
+        findings: r.findings ?? [], warnings: r.warnings ?? [], requirements: r.requirements ?? [], reasons: r.reasons ?? [], error: r.error ?? null,
+        generation_gate: r.gate ? (r.gate.ok ? { ok: true } : { ok: false, code: r.gate.code, message: r.gate.message }) : { ok: false, code: 'NO_COMPLETED_REVIEW', message: 'Немає завершеної й довіреної смислової перевірки.' },
+      });
+    }
+
     if ((m = /^\/api\/cases\/([\w-]+)\/sources\/([\w-]+)$/.exec(path)) && method === 'GET') {
       const s = listSources(db, m[1]!).find((x) => x.id === m![2]);
       if (!s) throw new DomainError('NOT_FOUND', 'Джерело не знайдено', 404);
@@ -284,6 +298,15 @@ export function createApp(opts: ServerOptions): Server {
           const r = requestBpmnStart(db, human, caseId, mode);
           return json(res, 202, { permitted: true, run_id: r.runId, version_id: r.versionId, approval_id: r.approvalId,
             note: 'Дозвіл підтверджено сервером. Побудову BPMN реалізовано не буде до зрізу 3.' });
+        }
+        case 'bpmn/review': {
+          // Тіло свідомо ігнорується: ні знахідок, ні висновку, ні стану від браузера не приймаємо. Пакет бере сервер із бази.
+          const start = beginBpmnReview(db, human, caseId, opts.reviewer);
+          if (start.kind === 'unsupported') {
+            return json(res, 200, { state: 'unsupported', run_id: start.runId, review_id: start.reviewId, explanation: start.explanation, note: 'Модель не викликалась. Погодження AS-IS лишається чинним.' });
+          }
+          void executeBpmnReview(db, start.ctx, opts.reviewer!).catch((e) => console.error('Помилка фонового запуску перевірки:', e instanceof Error ? e.message : 'невідома'));
+          return json(res, 202, { run_id: start.ctx.runId, note: 'Смислову перевірку запущено. Схему не будується: це лише перевірка однозначності опису.' });
         }
         default:
       }

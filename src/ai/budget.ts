@@ -43,10 +43,11 @@ export function schemaChars(): number {
   if (schemaCharsCache === null) schemaCharsCache = JSON.stringify(z.toJSONSchema(ContentSchema)).length;
   return schemaCharsCache;
 }
-export const estimateInputTokens = (chars: number) => Math.ceil(((chars + schemaChars()) / CHARS_PER_TOKEN) * INPUT_MARGIN);
+/** `schemaLen` — розмір JSON-схеми відповіді саме цього агента (за замовчуванням — агента 1); бюджет спільний, оцінка — для кожного агента своя. */
+export const estimateInputTokens = (chars: number, schemaLen: number = schemaChars()) => Math.ceil(((chars + schemaLen) / CHARS_PER_TOKEN) * INPUT_MARGIN);
 
-export function worstCaseCostUsd(p: ModelPolicy, promptChars: number): number {
-  return (estimateInputTokens(promptChars) * p.price.input + p.maxOutputTokens * p.price.output) / 1e6;
+export function worstCaseCostUsd(p: ModelPolicy, promptChars: number, schemaLen?: number): number {
+  return (estimateInputTokens(promptChars, schemaLen) * p.price.input + p.maxOutputTokens * p.price.output) / 1e6;
 }
 
 export function actualCostUsd(p: ModelPolicy, u: Usage): number {
@@ -86,12 +87,12 @@ function checkMoney(db: DB, p: ModelPolicy, worst: number, alreadyUsd: number, e
  * Перевірка до першого виклику. Викликати ВСЕРЕДИНІ тієї самої транзакції, що створює запис запуску з резервом
  * (beginAnalystRun), — тоді перевірка й резервування атомарні: паралельні запуски не можуть разом перевищити бюджет.
  */
-export function preflight(db: DB, caseId: string, p: ModelPolicy, promptChars: number, now = new Date()): { worstCaseUsd: number } {
+export function preflight(db: DB, caseId: string, p: ModelPolicy, promptChars: number, now = new Date(), schemaLen?: number): { worstCaseUsd: number } {
   if (promptChars > p.maxInputChars) {
     throw new DomainError('INPUT_TOO_LARGE', `Обсяг джерел (${promptChars} символів) перевищує ліміт ${p.maxInputChars}. Запуск не виконано, витрат немає.`, 413);
   }
   checkRunCounts(db, caseId, p, now);
-  const worst = worstCaseCostUsd(p, promptChars);
+  const worst = worstCaseCostUsd(p, promptChars, schemaLen);
   checkMoney(db, p, worst, 0);
   return { worstCaseUsd: worst };
 }
@@ -100,10 +101,10 @@ export function preflight(db: DB, caseId: string, p: ModelPolicy, promptChars: n
  * Резервування під повторну спробу (атомарно). known — відома вартість попередніх спроб, unknownReserve — резерв спроб
  * із невідомою вартістю. Після успіху в записі запуску: cost_usd = known, reserved_usd = unknownReserve + найгірша оцінка нової спроби.
  */
-export function reserveRetry(db: DB, runId: string, p: ModelPolicy, promptChars: number, known: number, unknownReserve: number): number {
+export function reserveRetry(db: DB, runId: string, p: ModelPolicy, promptChars: number, known: number, unknownReserve: number, schemaLen?: number): number {
   return tx(db, () => {
     if (promptChars > p.maxInputChars) throw new DomainError('INPUT_TOO_LARGE', 'Обсяг запиту перевищує ліміт.', 413);
-    const worst = worstCaseCostUsd(p, promptChars);
+    const worst = worstCaseCostUsd(p, promptChars, schemaLen);
     checkMoney(db, p, worst, known + unknownReserve, runId);
     run(db, `UPDATE run SET cost_usd = ?, reserved_usd = ? WHERE id = ?`, known, unknownReserve + worst, runId);
     return worst;

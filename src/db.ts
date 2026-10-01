@@ -107,11 +107,37 @@ CREATE TABLE IF NOT EXISTS audit_log (
   details_json TEXT NOT NULL DEFAULT '{}'
 );
 
+-- Незмінний результат смислової перевірки агента 2 (3b-2). Один запис на запуск; після вставки не змінюється й не видаляється.
+-- outcome: clear / awaiting_analyst — завершена перевірка; unsupported — підтверджена непідтримувана нотація (без виклику моделі);
+-- stale — результат застарів, поки працювала модель (генерацію не дозволяє). Стан запуску (run.technical_state) не розширюємо
+-- (його CHECK у наявних базах змінити без перебудови таблиці неможливо): 'done' = запуск завершено, а «очікує рішення» — це outcome.
+CREATE TABLE IF NOT EXISTS bpmn_review (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL UNIQUE REFERENCES run(id),
+  case_id TEXT NOT NULL REFERENCES "case"(id),
+  outcome TEXT NOT NULL CHECK (outcome IN ('clear','awaiting_analyst','unsupported','stale')),
+  version_id TEXT NOT NULL REFERENCES as_is_version(id),
+  approval_id TEXT NOT NULL REFERENCES approval(id),
+  content_hash TEXT NOT NULL,
+  content_fingerprint TEXT NOT NULL,
+  instruction_version TEXT NOT NULL,
+  instruction_hash TEXT NOT NULL,
+  client_mode TEXT NOT NULL,
+  client_model TEXT NOT NULL,
+  response_json TEXT,
+  findings_json TEXT NOT NULL,
+  warnings_json TEXT NOT NULL,
+  attempts_json TEXT NOT NULL,
+  detail_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  record_hash TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_source_case ON source(case_id, seq);
 CREATE INDEX IF NOT EXISTS idx_version_case ON as_is_version(case_id, number);
 `;
 
-const IMMUTABLE_TABLES = ['source', 'as_is_version', 'version_acceptance', 'approval', 'approval_revocation', 'audit_log'];
+const IMMUTABLE_TABLES = ['source', 'as_is_version', 'version_acceptance', 'approval', 'approval_revocation', 'audit_log', 'bpmn_review'];
 
 function immutabilityTriggers(): string {
   return IMMUTABLE_TABLES.map(
