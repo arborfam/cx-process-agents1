@@ -216,9 +216,9 @@ test('Умова 7: активний запуск BPMN блокує повтор
 });
 
 // ───────── режими та демо ─────────
-test('MODEL_MODE=real без ключа не переходить на демо мовчки; real з ключем у зрізі 1 теж відмовляє', () => {
+test('MODEL_MODE=real без ключа не переходить на демо мовчки; real без повної конфігурації відмовляє', () => {
   assert.throws(() => loadConfig({ MODEL_MODE: 'real' }), /ANTHROPIC_API_KEY не задано/);
-  assert.throws(() => loadConfig({ MODEL_MODE: 'real', ANTHROPIC_API_KEY: 'x' }), /не реалізовано/);
+  assert.throws(() => loadConfig({ MODEL_MODE: 'real', ANTHROPIC_API_KEY: 'x' }), /CX_MODEL не задано/);
   assert.throws(() => loadConfig({ MODEL_MODE: 'щось' }), /demo або real/);
   assert.equal(loadConfig({}).mode, 'demo');
 });

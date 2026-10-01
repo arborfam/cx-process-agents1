@@ -3,6 +3,7 @@ import { all, one, run, tx, type DB } from './db.ts';
 import { DomainError } from './errors.ts';
 import { canonical, sha256 } from './hash.ts';
 import { CLAIM_TYPE_LABEL, ContentSchema, UNKNOWN, emptyContent, parseContent, type Content, type Question, type Step } from './schema.ts';
+import { findQuote } from './ai/quote.ts';
 import { parseProblems, parseRoles, parseSteps, problemsToText, rolesToText, stepsToText } from './text-format.ts';
 
 // ───────────────────────── типи ─────────────────────────
@@ -29,6 +30,8 @@ export interface CaseRow {
   head_version_id: string | null;
   mode: string;
   is_demo_script: number;
+  scenario_id: string | null;
+  scenario_stage: number;
   created_at: string;
 }
 
@@ -46,6 +49,8 @@ export interface SourceRow {
   read_status: 'ok' | 'error' | 'partial';
   read_error: string | null;
   added_at: string;
+  /** Стабільний ідентифікатор для людей і моделі (SRC-01…); для звичайних джерел немає. */
+  ref: string | null;
 }
 
 export interface VersionRow {
@@ -192,6 +197,8 @@ interface NewVersion {
   runId?: string | null;
   kind?: 'head_line' | 'proposal';
   note?: string;
+  /** Режим запуску, що створив версію (за замовчуванням — режим кейсу). */
+  mode?: string;
 }
 
 /** Єдине місце створення версій. Зміст перевіряється схемою до запису. */
@@ -208,7 +215,7 @@ export function insertVersion(db: DB, n: NewVersion): VersionRow {
        created_by, actor_name, mode, run_id, note, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     id, n.caseId, number, n.parentId, n.kind ?? 'head_line', contentJson,
     computeVersionHash(db, contentJson, covered), JSON.stringify(covered), JSON.stringify([...new Set(n.owned)]),
-    n.createdBy, n.actorName, c.mode, n.runId ?? null, n.note ?? '', now());
+    n.createdBy, n.actorName, n.mode ?? c.mode, n.runId ?? null, n.note ?? '', now());
   return getVersion(db, id);
 }
 
@@ -305,6 +312,19 @@ export function protectAnalystEdits(
         note: 'Питання закривається лише за наявності джерела відповіді.' });
     }
   }
+  // Гіпотези аналітика: текст і спосіб перевірки агент не переписує (статус і докази може оновлювати).
+  for (const bh of base.hypotheses) {
+    if (bh.author !== 'analyst') continue;
+    const oh = result.hypotheses.find((h) => h.id === bh.id);
+    if (!oh) continue;
+    if (oh.text !== bh.text || oh.check_method !== bh.check_method) {
+      conflicts.push({ key: `hypothesis:${bh.id}`, kept: bh.text, proposed: oh.text,
+        note: 'Агент змінив гіпотезу аналітикині. Збережено її формулювання; статус і докази агент може оновлювати.' });
+      oh.text = bh.text;
+      oh.check_method = bh.check_method;
+    }
+    if (oh.author !== 'analyst') oh.author = 'analyst';
+  }
   // «Невідоме не стає фактом»: доки питання про перехід відкрите, агент не може підмінити «невідомо» встановленим переходом.
   for (const bq of base.questions) {
     if (bq.status !== 'open') continue;
@@ -326,14 +346,14 @@ export function protectAnalystEdits(
 
 // ───────────────────────── кейси та джерела ─────────────────────────
 
-export function createCase(db: DB, actor: Actor, title: string, mode: string, opts: { demoScript?: boolean } = {}): CaseRow {
+export function createCase(db: DB, actor: Actor, title: string, mode: string, opts: { demoScript?: boolean; scenarioId?: string } = {}): CaseRow {
   requireHuman(actor, 'створення кейсу');
   const t = title.trim();
   if (!t) throw new DomainError('VALIDATION', 'Назва кейсу не може бути порожньою', 400);
   return tx(db, () => {
     const id = newId('case');
-    run(db, 'INSERT INTO "case" (id, title, state, head_version_id, mode, is_demo_script, created_at) VALUES (?,?,?,?,?,?,?)',
-      id, t, 'research', null, mode, opts.demoScript ? 1 : 0, now());
+    run(db, 'INSERT INTO "case" (id, title, state, head_version_id, mode, is_demo_script, created_at, scenario_id, scenario_stage) VALUES (?,?,?,?,?,?,?,?,?)',
+      id, t, 'research', null, mode, opts.demoScript ? 1 : 0, now(), opts.scenarioId ?? null, 0);
     const v = insertVersion(db, {
       caseId: id, content: emptyContent(), createdBy: 'analyst', actorName: actor.name,
       parentId: null, covered: [], owned: [], note: 'Порожня початкова версія',
@@ -352,6 +372,7 @@ export interface NewSource {
   required?: boolean;
   readStatus?: SourceRow['read_status'];
   readError?: string | null;
+  ref?: string | null;
 }
 
 export function addSource(db: DB, actor: Actor, caseId: string, s: NewSource): SourceRow {
@@ -365,11 +386,11 @@ export function addSource(db: DB, actor: Actor, caseId: string, s: NewSource): S
     const seqRow = one<{ m: number | null }>(db, 'SELECT MAX(seq) AS m FROM source WHERE case_id = ?', caseId);
     const id = newId('src');
     run(db,
-      `INSERT INTO source (id, case_id, seq, kind, title, content, content_hash, author, origin, required, read_status, read_error, added_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO source (id, case_id, seq, kind, title, content, content_hash, author, origin, required, read_status, read_error, added_at, ref)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       id, caseId, (seqRow?.m ?? 0) + 1, s.kind, title, s.content, sha256(s.content), actor.name,
-      s.origin ?? 'real', s.required ? 1 : 0, status, s.readError ?? null, now());
-    audit(db, caseId, actor, 'source_added', { source_id: id, kind: s.kind, read_status: status, required: !!s.required });
+      s.origin ?? 'real', s.required ? 1 : 0, status, s.readError ?? null, now(), s.ref ?? null);
+    audit(db, caseId, actor, 'source_added', { source_id: id, ref: s.ref ?? null, kind: s.kind, read_status: status, required: !!s.required });
     fallBackToResearch(db, caseId, actor, 'new_source');
     return one<SourceRow>(db, 'SELECT * FROM source WHERE id = ?', id)!;
   });
@@ -1166,13 +1187,15 @@ export function buildCard(db: DB, caseId: string, mode: string) {
 
   const claims = content.claims.map((cl) => {
     const src = cl.source_id ? byId.get(cl.source_id) : undefined;
-    const idx = src && cl.quote ? src.content.indexOf(cl.quote) : -1;
+    const m = src && cl.quote ? findQuote(src.content, cl.quote) : null;
     return {
       ...cl,
       type_label: CLAIM_TYPE_LABEL[cl.type],
       source_title: src?.title ?? null,
-      quote_check: !cl.source_id || !cl.quote ? 'no_quote' : idx >= 0 ? 'quote_found' : 'quote_not_found',
-      quote_start: idx >= 0 ? idx : null,
+      source_ref: src?.ref ?? null,
+      quote_check: !cl.source_id || !cl.quote ? 'no_quote' : m && m.kind !== 'not_found' ? 'quote_found' : 'quote_not_found',
+      quote_exact: m?.kind === 'exact',
+      quote_start: m?.kind === 'exact' ? m.index : null,
     };
   });
 
@@ -1198,7 +1221,7 @@ export function buildCard(db: DB, caseId: string, mode: string) {
     next_action: computeNextAction(c.state, blockers, accepted, bpmn),
     bpmn_guard: bpmn,
     sources: sources.map((s) => ({
-      id: s.id, title: s.title, kind: s.kind, origin: s.origin, required: s.required === 1, read_status: s.read_status,
+      id: s.id, ref: s.ref, title: s.title, kind: s.kind, origin: s.origin, required: s.required === 1, read_status: s.read_status,
       read_error: s.read_error, author: s.author, added_at: s.added_at, covered: covered.has(s.id),
     })),
     claims,

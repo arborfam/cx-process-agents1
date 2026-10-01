@@ -7,9 +7,10 @@
     {
       "id": "SRC-01",
       "title": "Jira-запит",
-      "kind": "jira_ticket",
+      "kind": "request",
       "origin": "synthetic",
       "stage": 1,
+      "variant": "both",
       "provenance": "оригінал, §1, рядки 7–9",
       "lines": [
         7,
@@ -21,9 +22,10 @@
     {
       "id": "SRC-02",
       "title": "Розмова із замовником із CX",
-      "kind": "interview",
+      "kind": "transcript",
       "origin": "synthetic",
       "stage": 1,
+      "variant": "both",
       "provenance": "оригінал, §1а, рядки 13–19",
       "lines": [
         13,
@@ -35,9 +37,10 @@
     {
       "id": "SRC-03",
       "title": "Розмова з відповідальною за підготовку агентів у CX",
-      "kind": "interview",
+      "kind": "transcript",
       "origin": "synthetic",
       "stage": 2,
+      "variant": "both",
       "provenance": "оригінал, §2, рядки 23–49",
       "lines": [
         23,
@@ -49,9 +52,10 @@
     {
       "id": "SRC-04",
       "title": "Розмова з представницею команди Growth",
-      "kind": "interview",
+      "kind": "transcript",
       "origin": "synthetic",
       "stage": 3,
+      "variant": "both",
       "provenance": "оригінал, §3, рядки 53–63",
       "lines": [
         53,
@@ -63,9 +67,10 @@
     {
       "id": "SRC-05",
       "title": "Розмова з представницею команди знижок і комісійних програм",
-      "kind": "interview",
+      "kind": "transcript",
       "origin": "synthetic",
       "stage": 4,
+      "variant": "both",
       "provenance": "оригінал, §4, рядки 67–77",
       "lines": [
         67,
@@ -77,9 +82,10 @@
     {
       "id": "SRC-06",
       "title": "Розмова з представником команди, що відповідає за реліз",
-      "kind": "interview",
+      "kind": "transcript",
       "origin": "synthetic",
       "stage": 4,
+      "variant": "both",
       "provenance": "оригінал, §5, рядки 81–87",
       "lines": [
         81,
@@ -91,9 +97,10 @@
     {
       "id": "SRC-07",
       "title": "Відомості із первинного опису проблеми",
-      "kind": "reference_note",
+      "kind": "document",
       "origin": "synthetic",
       "stage": 4,
+      "variant": "both",
       "provenance": "оригінал, §6, рядки 91–91",
       "lines": [
         91,
@@ -108,36 +115,40 @@
       "kind": "analyst_note",
       "origin": "synthetic",
       "stage": 1,
+      "variant": "both",
       "provenance": "додано аналітиком як рамку вправи; не з оригіналу",
       "file": "sources/SRC-00.md",
       "sha256": "aba7acac578dbad87f3e691d1563cf6fb24710825ce30973f2a6813151bca38b"
     },
     {
       "id": "SRC-08p",
-      "title": "Синтетичне уточнення (позитивний сценарій)",
-      "kind": "analyst_clarification",
+      "title": "Синтетичне уточнення від аналітика (вигадано для тесту)",
+      "kind": "clarification",
       "origin": "synthetic",
       "stage": 5,
-      "provenance": "вигадано для тесту; не з оригіналу",
+      "variant": "positive",
+      "provenance": "вигадано для тесту; не з оригіналу; позитивний сценарій",
       "file": "sources/SRC-08p.md",
       "sha256": "51451b853593573397561f156bf27a76f15ba01e73f7718361fced6725619cb4"
     },
     {
       "id": "SRC-08n",
-      "title": "Синтетичне уточнення (негативний сценарій)",
-      "kind": "analyst_clarification",
+      "title": "Синтетичне уточнення від аналітика (вигадано для тесту)",
+      "kind": "clarification",
       "origin": "synthetic",
       "stage": 5,
+      "variant": "negative",
       "provenance": "вигадано для тесту; не з оригіналу; без відповіді про перенесення/вилучення",
       "file": "sources/SRC-08n.md",
       "sha256": "04f623c44f72d74c67ccebac81a9691edc58163caed9f772bef9f064b24bf900"
     },
     {
       "id": "SRC-09",
-      "title": "Явне уточнення про перенесення/вилучення (негативний сценарій)",
-      "kind": "analyst_clarification",
+      "title": "Явне уточнення від аналітика (вигадано для тесту)",
+      "kind": "clarification",
       "origin": "synthetic",
       "stage": null,
+      "variant": "negative",
       "provenance": "вигадано для тесту; подається лише явною дією аналітика",
       "file": "hidden/SRC-09.md",
       "sha256": "eaa8f6ed625dc7b762627f4a479d257fdf3ed4b4c31c1f9f13011b1a8aa7a3f6"

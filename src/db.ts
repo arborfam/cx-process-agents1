@@ -125,11 +125,36 @@ BEGIN SELECT RAISE(ABORT, 'Таблиця ${t} незмінна: видален�
 
 export const IMMUTABLE_TABLE_NAMES = IMMUTABLE_TABLES;
 
+/**
+ * Додаткові колонки зрізу 2. Додаються до наявних баз без втрати даних (ALTER TABLE … ADD COLUMN
+ * не змінює й не видаляє записів і не спрацьовує на тригери незмінності).
+ */
+const ADDED_COLUMNS: [string, string, string][] = [
+  ['case', 'scenario_id', 'TEXT'],
+  ['case', 'scenario_stage', 'INTEGER NOT NULL DEFAULT 0'],
+  ['source', 'ref', 'TEXT'],
+  ['run', 'usage_json', "TEXT NOT NULL DEFAULT '{}'"],
+  ['run', 'duration_ms', 'INTEGER'],
+  ['run', 'cost_usd', 'REAL'],
+  ['run', 'attempts', 'INTEGER NOT NULL DEFAULT 1'],
+  ['run', 'instruction_hash', 'TEXT'],
+  ['run', 'scenario_stage', 'INTEGER'],
+  ['run', 'violations_json', "TEXT NOT NULL DEFAULT '[]'"],
+];
+
+export function migrate(db: DB): void {
+  for (const [table, column, ddl] of ADDED_COLUMNS) {
+    const cols = db.prepare(`PRAGMA table_info("${table}")`).all() as unknown as { name: string }[];
+    if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE "${table}" ADD COLUMN ${column} ${ddl}`);
+  }
+}
+
 export function openDb(path: string): DB {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   db.exec(SCHEMA);
+  migrate(db);
   db.exec(immutabilityTriggers());
   return db;
 }
