@@ -71,6 +71,26 @@ const Question = z
   })
   .strict();
 
+/**
+ * Явна пропозиція агента вилучити або замінити крок. Крок із `steps` агент не прибирає: він лишається, доки
+ * аналітикиня не прийме пропозицію. Потрібні причина й доказ (джерело + дослівна цитата).
+ */
+const StepProposal = z
+  .object({
+    id: z.string().min(1).max(40),
+    action: z.enum(['remove', 'replace']),
+    step_id: z.string(),
+    /** Для «replace» — ID кроку-заміни (він має бути в steps); для «remove» — порожній рядок. */
+    replacement_step_id: z.string(),
+    reason: z.string(),
+    evidence_source_id: z.string(),
+    evidence_quote: z.string(),
+    status: z.enum(['proposed', 'accepted', 'rejected']),
+    decided_by: z.string(),
+    decision_note: z.string(),
+  })
+  .strict();
+
 const Conflict = z.object({ key: z.string(), kept: z.string(), proposed: z.string(), note: z.string() }).strict();
 
 export const ContentSchema = z
@@ -87,6 +107,8 @@ export const ContentSchema = z
     hypotheses: z.array(Hypothesis),
     questions: z.array(Question),
     conflicts: z.array(Conflict),
+    /** Необов’язкове: старі версії його не мають. Рішення за пропозиціями приймає лише аналітикиня. */
+    step_proposals: z.array(StepProposal).optional(),
   })
   .strict();
 
@@ -97,6 +119,7 @@ export type Content = z.infer<typeof ContentSchema>;
 export type Step = z.infer<typeof Step>;
 export type Problem = z.infer<typeof Problem>;
 export type Question = z.infer<typeof Question>;
+export type StepProposalT = z.infer<typeof StepProposal>;
 
 export function emptyContent(): Content {
   return {

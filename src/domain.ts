@@ -312,6 +312,19 @@ export function protectAnalystEdits(
         note: 'Питання закривається лише за наявності джерела відповіді.' });
     }
   }
+  // Пропозиції щодо кроків: наявні (особливо вирішені аналітикинею) агент не змінює й не видаляє; додає лише нові зі статусом «proposed».
+  {
+    const baseP = base.step_proposals ?? [];
+    const outP = result.step_proposals ?? [];
+    const merged = baseP.map((b) => structuredClone(b));
+    for (const b of baseP) {
+      const o = outP.find((x) => x.id === b.id);
+      if (!o) conflicts.push({ key: `proposal:${b.id}`, kept: `${b.action} ${b.step_id} (${b.status})`, proposed: '(видалено)', note: 'Агент не може прибрати наявну пропозицію.' });
+      else if (canonical(o) !== canonical(b)) conflicts.push({ key: `proposal:${b.id}`, kept: `${b.action} ${b.step_id} (${b.status})`, proposed: `${o.action} ${o.step_id} (${o.status})`, note: 'Агент змінив наявну пропозицію; збережено попередній стан. Рішення приймає аналітикиня.' });
+    }
+    for (const o of outP) if (!baseP.some((b) => b.id === o.id)) merged.push(o);
+    if (merged.length) result.step_proposals = merged; else delete result.step_proposals;
+  }
   // Гіпотези аналітика: текст і спосіб перевірки агент не переписує (статус і докази може оновлювати).
   for (const bh of base.hypotheses) {
     if (bh.author !== 'analyst') continue;
@@ -580,6 +593,61 @@ export function setQuestionCritical(
   });
 }
 
+/**
+ * Рішення аналітикині щодо пропозиції агента вилучити/замінити крок. Створює НОВУ версію; попередні лишаються.
+ * Прийняття: крок вилучається; переходи, що вели до нього, перенаправляються на крок-заміну (replace) або стають
+ * «невідомо» з критичним питанням (remove) — «невідоме не стає фактом»; початковий крок переноситься або знімається.
+ * Нова версія потребує прийняття, передачі на погодження й погодження заново (погодження втрачає чинність).
+ * Правки аналітикині не знімаються: змінені кроки стають її «власністю», агент їх не перезапише.
+ */
+export function decideStepProposal(
+  db: DB, actor: Actor, caseId: string,
+  input: { baseVersionId: string; proposalId: string; decision: 'accept' | 'reject'; note?: string },
+): VersionRow {
+  requireHuman(actor, 'рішення щодо пропозиції агента');
+  if (input.decision !== 'accept' && input.decision !== 'reject') throw new DomainError('VALIDATION', 'decision має бути accept або reject', 400);
+  return tx(db, () => {
+    const head = assertBase(db, caseId, input.baseVersionId);
+    const c = versionContent(head);
+    const p = (c.step_proposals ?? []).find((x) => x.id === input.proposalId);
+    if (!p) throw new DomainError('NOT_FOUND', 'Пропозицію не знайдено', 404);
+    if (p.status !== 'proposed') throw new DomainError('PROPOSAL_NOT_PENDING', 'Рішення за цією пропозицією вже прийнято', 409);
+    const note = (input.note ?? '').trim();
+    p.decided_by = actor.name;
+    p.decision_note = note;
+    if (input.decision === 'reject') {
+      p.status = 'rejected';
+      return commitAnalystVersion(db, actor, caseId, head, c, JSON.parse(head.covered_json) as string[],
+        `Пропозицію ${p.id} (${p.action} ${p.step_id}) відхилено`);
+    }
+    if (!c.steps.some((s) => s.id === p.step_id)) throw new DomainError('STEP_MISSING', `Кроку ${p.step_id} у поточній версії вже немає`, 409);
+    if (p.action === 'replace' && !c.steps.some((s) => s.id === p.replacement_step_id)) {
+      throw new DomainError('STEP_MISSING', `Кроку-заміни ${p.replacement_step_id} немає в поточній версії`, 409);
+    }
+    const replacement = p.action === 'replace' ? p.replacement_step_id : null;
+    c.steps = c.steps.filter((s) => s.id !== p.step_id);
+    for (const s of c.steps) {
+      for (const n of s.next) {
+        if (n.to !== p.step_id) continue;
+        if (replacement && s.id !== replacement) { n.to = replacement; continue; }
+        n.to = UNKNOWN;
+        c.questions.push({
+          id: nextId('Q', c.questions.map((q) => q.id)),
+          text: `Куди веде перехід ${s.id}${n.condition ? ` (${n.condition})` : ''} після вилучення кроку ${p.step_id}?`,
+          critical: true, impact: `Перехід вказував на вилучений крок ${p.step_id}; без відповіді потік процесу невизначений`,
+          addressee: '', status: 'open', answer: '', closed_by_source_id: null, origin: 'analyst',
+          criticality_note: 'Створено автоматично під час прийняття пропозиції вилучення кроку',
+          affects_transitions: [{ step_id: s.id, condition: n.condition }],
+        });
+      }
+    }
+    if (c.entry_step_id === p.step_id) c.entry_step_id = replacement ?? null;
+    p.status = 'accepted';
+    return commitAnalystVersion(db, actor, caseId, head, c, JSON.parse(head.covered_json) as string[],
+      `Прийнято пропозицію ${p.id}: ${p.action === 'remove' ? 'вилучено крок ' + p.step_id : 'крок ' + p.step_id + ' замінено на ' + replacement}`);
+  });
+}
+
 // ───────────────────────── перевірки перед погодженням ─────────────────────────
 
 export function submissionBlockers(db: DB, caseId: string): Blocker[] {
@@ -602,6 +670,11 @@ export function submissionBlockers(db: DB, caseId: string): Blocker[] {
       out.push({ code: 'UNCOVERED_SOURCE', severity: 'critical', ref: s.id,
         message: `Джерело «${s.title}» не враховано в цій версії.` });
     }
+  }
+  for (const p of c.step_proposals ?? []) {
+    if (p.status !== 'proposed') continue;
+    out.push({ code: 'PENDING_STEP_PROPOSAL', severity: 'critical', ref: p.id,
+      message: `Пропозиція агента ${p.id}: ${p.action === 'remove' ? 'вилучити' : 'замінити'} крок ${p.step_id}${p.action === 'replace' ? ` кроком ${p.replacement_step_id}` : ''} — потрібне рішення аналітикині (причина: ${p.reason}).` });
   }
   for (const q of c.questions) {
     if (q.status === 'open' && q.critical) {
@@ -940,7 +1013,7 @@ export function requestBpmnStart(db: DB, actor: Actor, caseId: string, mode: str
 // ───────────────────────── картка для UI ─────────────────────────
 
 export interface ChangeItem {
-  label: 'Джерело' | 'Питання' | 'Початок' | 'Крок' | 'Межі' | 'Суть' | 'Контекст' | 'Ролі' | 'Проблема' | 'Гіпотеза' | 'Твердження' | 'Конфлікт';
+  label: 'Джерело' | 'Питання' | 'Початок' | 'Крок' | 'Межі' | 'Суть' | 'Контекст' | 'Ролі' | 'Проблема' | 'Гіпотеза' | 'Твердження' | 'Конфлікт' | 'Пропозиція';
   text: string;
 }
 
@@ -1030,6 +1103,14 @@ export function diffVersions(
   }
   for (const [id, o] of ps) if (!cs.has(id)) out.push({ label: 'Крок', text: `Видалено ${id}: «${clip(o.action, 60)}»` });
 
+  const pprop = new Map((prev.step_proposals ?? []).map((x) => [x.id, x]));
+  for (const p of cur.step_proposals ?? []) {
+    const o = pprop.get(p.id);
+    const what = `${p.action === 'remove' ? 'вилучити' : 'замінити'} крок ${p.step_id}${p.action === 'replace' ? ` на ${p.replacement_step_id}` : ''}`;
+    if (!o) out.push({ label: 'Пропозиція', text: `Агент пропонує ${what}: «${clip(p.reason, 80)}» (потрібне рішення аналітикині)` });
+    else if (o.status !== p.status) out.push({ label: 'Пропозиція', text: `Пропозицію ${p.id} (${what}) ${p.status === 'accepted' ? 'прийнято' : 'відхилено'}${p.decision_note ? `: «${clip(p.decision_note, 60)}»` : ''}` });
+  }
+
   // 3) межі, суть, контекст, ролі
   const BL = { trigger: 'тригер', input: 'вхід', completion: 'фактичне завершення', result: 'результат' } as const;
   for (const k of ['trigger', 'input', 'completion', 'result'] as const) {
@@ -1076,7 +1157,7 @@ export function diffVersions(
 
 // ───────────────── огляд стану чернетки (окремо від змістових прогалин) ─────────────────
 
-const GAP_CODES = new Set(['CRITICAL_QUESTION', 'UNRESOLVED_TRANSITION', 'UNKNOWN_WITHOUT_QUESTION', 'UNKNOWN_QUESTION_CLOSED', 'CONTRADICTION', 'QUESTION_LINK_BROKEN', 'ENTRY_MISSING', 'ENTRY_BAD_REF', 'STEP_UNREACHABLE', 'STEP_NO_EXIT']);
+const GAP_CODES = new Set(['PENDING_STEP_PROPOSAL', 'CRITICAL_QUESTION', 'UNRESOLVED_TRANSITION', 'UNKNOWN_WITHOUT_QUESTION', 'UNKNOWN_QUESTION_CLOSED', 'CONTRADICTION', 'QUESTION_LINK_BROKEN', 'ENTRY_MISSING', 'ENTRY_BAD_REF', 'STEP_UNREACHABLE', 'STEP_NO_EXIT']);
 const STRUCTURE_CODES = new Set(['BOUNDARY_MISSING', 'NO_ROLES', 'NO_STEPS', 'STEP_INCOMPLETE', 'STEP_UNKNOWN_ROLE', 'STEP_NO_NEXT', 'STEP_BAD_NEXT', 'STEP_NO_CONDITION', 'PROBLEM_NO_IMPACT']);
 
 /** Критичні змістові прогалини: чого про процес ще не з’ясовано або де опис суперечить сам собі. */
@@ -1255,6 +1336,7 @@ export function buildCard(db: DB, caseId: string, mode: string) {
       source_ref: src?.ref ?? null,
       quote_check: !cl.source_id || !cl.quote ? 'no_quote' : m && m.kind !== 'not_found' ? 'quote_found' : 'quote_not_found',
       quote_exact: m?.kind === 'exact',
+      quote_elided: m?.kind === 'elided',
       quote_start: m?.kind === 'exact' ? m.index : null,
     };
   });
@@ -1296,6 +1378,18 @@ export function buildCard(db: DB, caseId: string, mode: string) {
          FROM approval a LEFT JOIN approval_revocation r ON r.approval_id = a.id WHERE a.case_id = ? ORDER BY a.created_at DESC`, caseId),
     runs: all(db, 'SELECT * FROM run WHERE case_id = ? ORDER BY started_at DESC LIMIT 20', caseId),
     audit: all(db, 'SELECT at, actor, action, details_json FROM audit_log WHERE case_id = ? ORDER BY id DESC LIMIT 40', caseId),
+    step_proposals: (content.step_proposals ?? []).map((p) => {
+      const src = byId.get(p.evidence_source_id);
+      const m = src && p.evidence_quote ? findQuote(src.content, p.evidence_quote) : null;
+      return {
+        ...p,
+        step_action: content.steps.find((x) => x.id === p.step_id)?.action ?? null,
+        step_exists: content.steps.some((x) => x.id === p.step_id),
+        step_analyst_edited: (JSON.parse(head.owned_json) as string[]).includes(`step:${p.step_id}`),
+        evidence_title: src?.title ?? null,
+        evidence_check: m && m.kind !== 'not_found' ? 'quote_found' : 'quote_not_found',
+      };
+    }),
     entry: {
       id: content.entry_step_id ?? null,
       defined: !!content.entry_step_id && content.steps.some((x) => x.id === content.entry_step_id),

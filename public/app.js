@@ -128,14 +128,14 @@ async function renderCase(id) {
     const isFlow = g.code === 'STEP_UNREACHABLE' || g.code === 'STEP_NO_EXIT';
     const qid = g.code === 'CONTRADICTION' || g.code === 'QUESTION_LINK_BROKEN' ? g.ref : isTr ? (card.unknown_transitions.find((u) => u.step_id === g.ref)?.question_ids[0]) : null;
     const title = isQ ? 'Критичне питання ' : isTr ? 'Невизначений перехід. ' : g.code === 'CONTRADICTION' ? 'Суперечність. '
-      : isEntry ? 'Початковий крок. ' : g.code === 'STEP_UNREACHABLE' ? 'Недосяжні кроки. ' : g.code === 'STEP_NO_EXIT' ? 'Немає виходу до завершення. ' : 'Прогалина. ';
+      : isEntry ? 'Початковий крок. ' : g.code === 'STEP_UNREACHABLE' ? 'Недосяжні кроки. ' : g.code === 'STEP_NO_EXIT' ? 'Немає виходу до завершення. ' : g.code === 'PENDING_STEP_PROPOSAL' ? 'Пропозиція агента без рішення. ' : 'Прогалина. ';
     return el('div', { class: 'blocker' },
       el('strong', {}, title),
       isQ ? `${q ? q.id + ': ' + q.text : g.message}` : g.message,
       isQ && q && q.impact ? el('div', { class: 'small' }, 'Чому важливо: ' + q.impact) : null,
       (isQ || qid) ? el('button', { class: 'link', onclick: () => goToQuestion(isQ ? g.ref : qid) }, 'Перейти до питання ' + (isQ ? g.ref : qid)) : null,
       isTr && !qid ? el('button', { class: 'link', onclick: () => showTab('steps') }, 'Показати крок ' + g.ref) : null,
-      isFlow ? el('button', { class: 'link', onclick: () => showTab('steps') }, 'Показати кроки процесу') : null,
+      isFlow || g.code === 'PENDING_STEP_PROPOSAL' ? el('button', { class: 'link', onclick: () => showTab('steps') }, g.code === 'PENDING_STEP_PROPOSAL' ? 'Перейти до пропозиції' : 'Показати кроки процесу') : null,
       isEntry ? entryForm(card) : null);
   };
   const questionGap = (it) => el('div', { class: 'blocker' },
@@ -414,7 +414,7 @@ const PANELS = {
     const entryLine = card.entry.defined
       ? el('p', { class: 'small' }, el('strong', {}, '▶ Початок: '), `${c.entry_step_id} — ${steps.find((x) => x.id === c.entry_step_id).action}`)
       : el('p', { class: 'warnbox' }, el('strong', {}, 'Початковий крок не задано. '), 'Оберіть його в блоці «Критичні прогалини» або на вкладці «Редагувати».');
-    return el('div', {}, entryLine,
+    return el('div', {}, entryLine, proposalsView(card),
       el('table', {}, el('thead', {}, el('tr', {}, ['ID', 'Роль', 'Дія', 'Результат', 'Далі'].map((h) => el('th', {}, h)))),
         el('tbody', {}, steps.map((s) => el('tr', {}, el('td', {}, s.id === c.entry_step_id ? '▶ ' + s.id : s.id), el('td', {}, s.role), el('td', {}, s.action), el('td', {}, s.result),
           el('td', {}, s.next.map((n) => n.to === 'UNKNOWN' ? unknownView(card, s, n) : el('div', {}, '→ ' + (n.to === 'END' ? 'кінець процесу' : n.to) + (n.condition ? ' (' + n.condition + ')' : '')))))))));
@@ -427,7 +427,7 @@ const PANELS = {
         el('div', {}, el('span', { class: 'chip' }, cl.type_label), ' ', cl.text),
         el('div', { class: 'small muted' }, cl.scope),
         cl.source_id ? el('div', { class: 'small' }, 'Джерело: ' + (cl.source_title || cl.source_id) + ' · ',
-          cl.quote_check === 'quote_found' ? 'фрагмент знайдено · ' : cl.quote_check === 'quote_not_found' ? '⚠ фрагмент НЕ знайдено · ' : '',
+          cl.quote_check === 'quote_found' ? (cl.quote_elided ? 'фрагмент знайдено зі скороченням «…» (перевірте пропущене) · ' : 'фрагмент знайдено · ') : cl.quote_check === 'quote_not_found' ? '⚠ фрагмент НЕ знайдено · ' : '',
           el('button', { class: 'link', onclick: () => showSource(cl.source_id, cl.quote) }, 'Показати фрагмент у джерелі')) : null))
         : el('p', { class: 'muted' }, 'Тверджень ще немає.'),
       c.conflicts.length ? el('div', {}, el('h3', {}, 'Конфлікти: правки аналітикині та агента'),
@@ -525,6 +525,35 @@ const PANELS = {
     el('h3', {}, 'Запуски'), card.runs.length ? el('ul', {}, card.runs.map((r) => el('li', {}, `${r.agent} · ${r.mode === 'real' ? 'справжня модель ' + r.model : 'підставний клієнт (не AI)'} · інструкція ${r.instruction_version}${r.instruction_hash ? ' (' + r.instruction_hash.slice(0, 8) + ')' : ''} · ${r.technical_state}${r.duration_ms != null ? ' · ' + (r.duration_ms / 1000).toFixed(1) + ' с' : ''}${costText(r)}${r.attempts > 1 ? ' · спроб: ' + r.attempts : ''}${r.note ? ' · ' + r.note : ''}${r.error ? ' · помилка: ' + r.error : ''}`))) : el('p', { class: 'muted' }, 'Запусків ще не було.'),
     el('h3', {}, 'Журнал подій'), el('ul', { class: 'small' }, card.audit.slice(0, 15).map((a) => el('li', {}, `${fmt(a.at)} · ${a.actor} · ${a.action}`)))),
 };
+
+function proposalsView(card) {
+  const ps = card.step_proposals || [];
+  if (!ps.length) return null;
+  const ST = { proposed: 'очікує рішення', accepted: 'прийнято', rejected: 'відхилено' };
+  return el('div', { class: 'warnbox', 'data-block': 'proposals' }, el('strong', {}, 'Пропозиції агента щодо кроків'),
+    el('p', { class: 'small' }, 'Агент не вилучає кроків сам: крок лишається в описі, доки ви не приймете пропозицію. Прийняття створює нову версію (стара зберігається) і потребує нового прийняття й погодження.'),
+    ps.map((p) => el('div', { class: 'claim' },
+      el('div', {}, el('span', { class: 'chip' }, p.id + ' · ' + ST[p.status]), ' ',
+        p.action === 'remove' ? `Вилучити крок ${p.step_id}` : `Замінити крок ${p.step_id} кроком ${p.replacement_step_id}`,
+        p.step_action ? ` («${p.step_action}»)` : ''),
+      el('div', { class: 'small' }, 'Причина: ' + p.reason),
+      el('div', { class: 'small' }, 'Доказ: «' + p.evidence_quote + '» — ', p.evidence_title || p.evidence_source_id, p.evidence_check === 'quote_found' ? ' · цитату знайдено' : ' · ⚠ цитату НЕ знайдено', ' · ',
+        el('button', { class: 'link', onclick: () => showSource(p.evidence_source_id, p.evidence_quote) }, 'Показати у джерелі')),
+      p.step_analyst_edited ? el('div', { class: 'small', style: 'color:var(--danger)' }, '⚠ Цей крок редагувала аналітикиня.') : null,
+      p.decision_note ? el('div', { class: 'small' }, `Рішення (${p.decided_by}): ${p.decision_note}`) : null,
+      p.status === 'proposed' ? el('div', { class: 'actions' },
+        el('button', { class: 'primary', onclick: () => proposalDialog(card, p, 'accept') }, 'Прийняти…'),
+        el('button', { onclick: () => proposalDialog(card, p, 'reject') }, 'Відхилити…')) : null)));
+}
+
+function proposalDialog(card, p, decision) {
+  const note = el('input', { type: 'text', placeholder: 'Примітка до рішення (необов’язково)' });
+  openDialog(el('h2', {}, (decision === 'accept' ? 'Прийняти' : 'Відхилити') + ' пропозицію ' + p.id),
+    decision === 'accept' ? el('p', {}, 'Буде створено нову версію без кроку ' + p.step_id + '. Переходи, що вели до нього, ' + (p.action === 'replace' ? 'перейдуть на ' + p.replacement_step_id + '.' : 'стануть «невідомо» з критичним питанням.') + ' Чинне погодження (якщо є) скасується; нову версію треба буде прийняти й погодити знову.') : el('p', {}, 'Крок лишиться; пропозицію буде позначено відхиленою.'),
+    note, el('div', { class: 'actions' },
+      el('button', { class: 'primary', onclick: async () => { dlg.close(); const r = await act(() => api('POST', `/api/cases/${card.case.id}/step-proposals/decide`, { base_version_id: card.head.id, proposal_id: p.id, decision, note: note.value }), 'Рішення збережено як нова версія'); if (r) await refresh(); } }, 'Підтвердити'),
+      el('button', { onclick: () => dlg.close() }, 'Скасувати')));
+}
 
 function questionView(card, q) {
   const open = q.status === 'open';

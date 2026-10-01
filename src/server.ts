@@ -7,7 +7,7 @@ import { DEMO_BANNER, type ModelConfig } from './config.ts';
 import { DomainError } from './errors.ts';
 import { sha256 } from './hash.ts';
 import {
-  acceptDraft, addQuestion, addSource, addSourceFromFile, answerQuestion, approve, buildCard, createCase, getCase,
+  acceptDraft, addQuestion, decideStepProposal, addSource, addSourceFromFile, answerQuestion, approve, buildCard, createCase, getCase,
   listCases, listSources, requestBpmnStart, returnToResearch, saveAnalystVersion, setQuestionCritical, submitForApproval,
   type Actor, type EditFields,
 } from './domain.ts';
@@ -232,6 +232,14 @@ export function createApp(opts: ServerOptions): Server {
         case 'return':
           returnToResearch(db, human, caseId, str(b.reason, 'reason'));
           return json(res, 200, { ok: true });
+        case 'step-proposals/decide': {
+          const v = decideStepProposal(db, human, caseId, {
+            baseVersionId: str(b.base_version_id, 'base_version_id'), proposalId: str(b.proposal_id, 'proposal_id'),
+            decision: b.decision === 'accept' ? 'accept' : b.decision === 'reject' ? 'reject' : (() => { throw new DomainError('VALIDATION', 'decision має бути accept або reject', 400); })(),
+            note: str(b.note, 'note', false),
+          });
+          return json(res, 201, { version_id: v.id });
+        }
         case 'scenario/next': {
           const r = advanceScenario(db, human, caseId);
           return json(res, 201, r);

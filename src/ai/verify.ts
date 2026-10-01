@@ -92,6 +92,36 @@ export function verifyAgentOutput(raw: unknown, ctx: VerifyContext): VerifyResul
     }
   });
 
+  // Пропозиції вилучення/заміни кроків: причина й доказ обов’язкові; рішення агент не приймає.
+  const baseProps = new Map((base.step_proposals ?? []).map((p) => [p.id, canonical(p)]));
+  const outProps = out.step_proposals ?? [];
+  for (const d of new Set(dupes(outProps.map((p) => p.id)))) v.push({ code: 'DUPLICATE_ID', path: 'step_proposals', message: `ID «${d}» повторюється` });
+  const outStepIds = new Set(out.steps.map((s) => s.id));
+  const baseStepIds = new Set(base.steps.map((s) => s.id));
+  const pendingPerStep = new Map<string, number>();
+  outProps.forEach((p, i) => {
+    if (p.status === 'proposed') pendingPerStep.set(p.step_id, (pendingPerStep.get(p.step_id) ?? 0) + 1);
+    if (baseProps.get(p.id) === canonical(p)) return; // наявна пропозиція без змін
+    const path = `step_proposals[${i}] (${p.id})`;
+    if (baseProps.has(p.id)) return; // зміну наявної програма все одно відновить (рішення за аналітикинею)
+    if (p.status !== 'proposed' || p.decided_by || p.decision_note) v.push({ code: 'AGENT_CANNOT_DECIDE', path, message: 'агент лише пропонує (status «proposed»); рішення приймає аналітикиня' });
+    if (!baseStepIds.has(p.step_id)) v.push({ code: 'PROPOSAL_BAD_STEP', path, message: `крок «${p.step_id}» відсутній у поточній версії` });
+    if (!p.reason.trim()) v.push({ code: 'PROPOSAL_NO_REASON', path, message: 'не вказано причину' });
+    if (!p.evidence_source_id || !p.evidence_quote.trim()) v.push({ code: 'PROPOSAL_NO_EVIDENCE', path, message: 'потрібні джерело й дослівна цитата-доказ' });
+    else {
+      checkRef(p.evidence_source_id, path + '.evidence_source_id');
+      if (provided.has(p.evidence_source_id) && findQuote(provided.get(p.evidence_source_id)!, p.evidence_quote).kind === 'not_found') {
+        v.push({ code: 'QUOTE_NOT_FOUND', path, message: `цитати-доказу немає в джерелі ${p.evidence_source_id}: «${p.evidence_quote.slice(0, 80)}»` });
+      }
+    }
+    if (p.action === 'replace') {
+      if (!p.replacement_step_id || p.replacement_step_id === p.step_id || !outStepIds.has(p.replacement_step_id)) {
+        v.push({ code: 'PROPOSAL_BAD_REPLACEMENT', path, message: 'для заміни потрібен інший, існуючий у steps крок-заміна' });
+      }
+    } else if (p.replacement_step_id) v.push({ code: 'PROPOSAL_BAD_REPLACEMENT', path, message: 'для вилучення replacement_step_id має бути порожнім' });
+  });
+  for (const [sid, n] of pendingPerStep) if (n > 1) v.push({ code: 'DUPLICATE_PROPOSAL', path: 'step_proposals', message: `для кроку ${sid} кілька відкритих пропозицій` });
+
   const claimIds = new Set(out.claims.map((c) => c.id));
   const baseHyp = new Map(base.hypotheses.map((h) => [h.id, h]));
   out.hypotheses.forEach((h, i) => {
@@ -128,6 +158,7 @@ export function verifyAgentOutput(raw: unknown, ctx: VerifyContext): VerifyResul
   for (const h of out.hypotheses) if (!baseHyp.has(h.id)) h.author = 'agent';
 
   const used = referencedSourceIds(out);
+  for (const p of outProps) if (p.evidence_source_id) used.add(p.evidence_source_id);
   for (const s of ctx.sources) {
     if (!used.has(s.id)) warnings.push(`Джерело ${s.id} передано, але жодне твердження, крок чи питання на нього не посилається.`);
   }
