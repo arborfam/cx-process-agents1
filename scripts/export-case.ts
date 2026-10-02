@@ -66,6 +66,7 @@ export function exportCase(db: DatabaseSync, caseId: string): ExportResult | Exp
   }));
   const runs = (db.prepare('SELECT * FROM run WHERE case_id = ? ORDER BY started_at, rowid').all(caseId) as Row[]).map((r) => ({
     id: r.id, agent: r.agent, mode: r.mode, model: r.model, instruction_version: r.instruction_version, instruction_hash: r.instruction_hash,
+    output_contract: r.output_contract ?? 'full',   // старі записи виконувались за повним контрактом (D80)
     base_version_id: r.base_version_id, output_version_id: r.output_version_id, input_source_ids: parse(r.input_source_ids_json),
     scenario_stage: r.scenario_stage, technical_state: r.technical_state, started_at: r.started_at, finished_at: r.finished_at,
     duration_ms: r.duration_ms, attempts: r.attempts, usage: parse(r.usage_json), cost_usd: r.cost_usd, reserved_usd: r.reserved_usd, cost_known: r.cost_known,

@@ -5,6 +5,10 @@
  * Тут перевіряється: у запиті немає марної ваги (відступи JSON, поля, якими володіє програма),
  * нічого змістовного при цьому не зникає, і прогін, відповідь якого завідомо не вміщується
  * у стелю виходу, зупиняється ДО оплати з конкретними числами.
+ *
+ * Оцінка обсягу — ЕВРИСТИКА, а не гарантована межа, і нижня межа відповіді існує лише для контракту
+ * «повна версія». Для часткового оновлення (D80) її не існує, тому оцінку накопиченого опису до нього
+ * не застосовують і запуск за розміром опису не блокують — це теж перевіряється тут (K10).
  * Усе — на підставному клієнті: платних викликів немає.
  */
 import { test } from 'node:test';
@@ -88,10 +92,10 @@ test('2. Оцінка вміщення рахується з накопичен�
   const f2 = answerFeasibility(big, 48_000);
   assert.equal(f1.ok, true, JSON.stringify(f1));
   assert.equal(f2.ok, false, JSON.stringify(f2));
-  assert.ok(f2.needTokens > 48_000 && f2.answerTokens > 0);
+  assert.ok(f2.needTokens! > 48_000 && f2.answerTokens! > 0);
   // Оцінка прозора: з неї видно, звідки взялось число.
   assert.equal(f2.answerTokens, Math.ceil((JSON.stringify(big).length / CHARS_PER_OUTPUT_TOKEN) * 1.25));
-  assert.equal(f2.needTokens, Math.ceil(f2.answerTokens * (1 + THINKING_RATIO)));
+  assert.equal(f2.needTokens, Math.ceil(f2.answerTokens! * (1 + THINKING_RATIO)));
 });
 
 test('2. Калібровка відповідає справжньому прогону, який пройшов: він НЕ був би відхилений', () => {
@@ -99,6 +103,17 @@ test('2. Калібровка відповідає справжньому про
   const fake = { ...emptyContent(), summary: 'x'.repeat(35_060 - JSON.stringify(emptyContent()).length) } as Content;
   const f = answerFeasibility(fake, 48_000);
   assert.equal(f.ok, true, `прогін, що справді завершився, має проходити перевірку: ${JSON.stringify(f)}`);
+});
+
+test('2. K10. Для часткового оновлення нижньої межі відповіді не існує: оцінку повного опису не застосовують', () => {
+  const big = heavyContent(400);
+  const full = answerFeasibility(big, 48_000, 'full');
+  const delta = answerFeasibility(big, 48_000, 'delta');
+  assert.equal(full.ok, false, 'контроль: за повного контракту такий опис не вміщується');
+  assert.equal(delta.ok, true, 'за часткового оновлення розмір опису відповідь не визначає');
+  assert.equal(delta.answerTokens, null, 'нижньої межі немає — це «невідомо наперед», а не нуль');
+  assert.equal(delta.needTokens, null);
+  assert.equal(delta.contentChars, full.contentChars, 'розмір опису рахується однаково — він лише не є межею');
 });
 
 // ───────── 3. Зупинка ДО оплати ─────────
@@ -152,6 +167,37 @@ test('3. Пояснення відмови називає числа й що р�
   }
 });
 
+test('3. K10. За контракту часткового оновлення великий опис запуск НЕ блокує', () => {
+  const db = freshDb();
+  // Опис, завеликий для ПОВНОЇ відповіді, але в межах ліміту на обсяг входу: часткове оновлення знімає стелю
+  // виходу, а не ліміт входу — джерела й опис не скорочуються, тому CX_MAX_INPUT_CHARS лишається чинним.
+  const caseId = caseWithContent(db, heavyContent(400));
+  const client = new CountingClient();
+  // Той самий зміст, на якому повний контракт зупиняється до оплати.
+  assert.throws(() => beginAnalystRun(db, caseId, client as never, { policy: policyOf() }), (e: { code?: string }) => e.code === 'OUTPUT_TOO_LARGE');
+  const ctx = beginAnalystRun(db, caseId, client as never, { policy: policyOf(), contract: 'delta' });
+  assert.ok(ctx.runId, 'запуск за частковим оновленням дозволено');
+  const checks = JSON.parse(one<{ checks_json: string }>(db, 'SELECT checks_json FROM run WHERE id = ?', ctx.runId)!.checks_json) as
+    { size: { contract: string; content_chars: number; answer_floor_tokens: number | null } };
+  assert.equal(checks.size.contract, 'delta');
+  assert.ok(checks.size.content_chars > 0, 'розмір опису видно в журналі');
+  assert.equal(checks.size.answer_floor_tokens, null, 'нижньої межі відповіді для часткового оновлення немає');
+});
+
+test('3. Пояснення відмови називає часткове оновлення як перший змістовний вихід', () => {
+  const db = freshDb();
+  const caseId = caseWithContent(db, heavyContent(600));
+  try {
+    beginAnalystRun(db, caseId, new CountingClient() as never, { policy: policyOf() });
+    assert.fail('мало бути відхилено');
+  } catch (e) {
+    const m = (e as Error).message;
+    assert.match(m, /часткового оновлення|CX_OUTPUT_CONTRACT/, 'має бути названо часткове оновлення');
+    assert.ok(m.indexOf('CX_OUTPUT_CONTRACT') < m.indexOf('CX_MAX_OUTPUT_TOKENS'), 'підняття стелі згадується ПІСЛЯ змістовних дій');
+    assert.match(m, /оцінка/, 'оцінку названо оцінкою, а не гарантованою межею');
+  }
+});
+
 test('3. Контроль: звичайний за обсягом кейс проходить і модель викликається', async () => {
   const db = freshDb();
   const caseId = caseWithContent(db, heavyContent(5));
@@ -175,9 +221,10 @@ test('3. Оцінку обсягу видно в журналі успішног
   const r = await runAnalyst(db, caseId, client);
   assert.ok(r.ok);
   const row = one<{ checks_json: string }>(db, 'SELECT checks_json FROM run WHERE id = ?', r.runId)!;
-  const checks = JSON.parse(row.checks_json) as { size?: { content_chars: number; answer_tokens: number; prompt_chars: number } };
+  const checks = JSON.parse(row.checks_json) as { size?: { contract: string; content_chars: number; answer_floor_tokens: number | null; prompt_chars: number } };
   assert.ok(checks.size, 'розмір має бути записаний');
-  assert.ok(checks.size!.content_chars > 0 && checks.size!.answer_tokens > 0 && checks.size!.prompt_chars > 0);
+  assert.equal(checks.size!.contract, 'full');
+  assert.ok(checks.size!.content_chars > 0 && checks.size!.answer_floor_tokens! > 0 && checks.size!.prompt_chars > 0);
 });
 
 // ───────── 4. Захист не послаблено ─────────

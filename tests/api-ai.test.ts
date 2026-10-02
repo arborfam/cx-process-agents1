@@ -136,6 +136,8 @@ test('Міграція: стара база без нових колонок в�
   assert.equal(one<{ ref: string | null }>(db, 'SELECT ref FROM source')!.ref, null);
   const r = one<{ attempts: number; usage_json: string; cost_usd: number | null; instruction_version: string }>(db, 'SELECT * FROM run')!;
   assert.equal(r.attempts, 1); assert.equal(r.usage_json, '{}'); assert.equal(r.cost_usd, null); assert.equal(r.instruction_version, 'analyst-v0.1');
+  // Старий запуск читається як виконаний за контрактом «повна версія» — саме за ним він і виконувався (D80).
+  assert.equal(one<{ output_contract: string }>(db, 'SELECT output_contract FROM run')!.output_contract, 'full');
   assert.throws(() => db.exec(`UPDATE source SET title = 'x'`), /незмінна/);
   assert.throws(() => db.exec(`DELETE FROM source`), /незмінна/);
   db.close();

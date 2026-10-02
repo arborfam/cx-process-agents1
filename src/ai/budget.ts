@@ -3,7 +3,7 @@ import { all, one, run, tx, type DB } from '../db.ts';
 import { ContentSchema, type Content } from '../schema.ts';
 import { DomainError } from '../errors.ts';
 import type { Effort, ModelConfig, Pricing } from '../config.ts';
-import type { Usage } from './types.ts';
+import type { OutputContract, Usage } from './types.ts';
 
 export interface ModelPolicy {
   model: string;
@@ -64,25 +64,38 @@ export const OUTPUT_MARGIN = 1.25;
 export const THINKING_RATIO = 1.0;
 
 export interface AnswerFeasibility {
+  contract: OutputContract;
+  /** `false` лише тоді, коли нижня межа відповіді ВІДОМА й не вміщується у стелю. */
   ok: boolean;
-  /** Скільки символів має щонайменше містити відповідь: увесь накопичений зміст. */
   contentChars: number;
-  answerTokens: number;
-  /** Відповідь + міркування. */
-  needTokens: number;
+  /**
+   * Нижня межа відповіді в токенах — ОЦІНКА, і лише для контракту «повна версія», де відповідь зобов'язана
+   * містити весь зміст. Для часткового оновлення такої межі не існує: `null`.
+   */
+  answerTokens: number | null;
+  /** Оцінка «відповідь + міркування» (там, де нижня межа відома). */
+  needTokens: number | null;
   maxOutputTokens: number;
 }
 
 /**
- * Чи вміститься відповідь у стелю виходу. Агент зобов'язаний повернути ПОВНУ оновлену версію змісту
- * (інструкція, розділ «Вихід»), тож відповідь не може бути меншою за накопичений зміст — його розмір
- * і є нижньою межею. Це оцінка, а не гарантія: вона потрібна, щоб не платити за завідомо обірваний виклик.
+ * Чи може відповідь узагалі вміститися у стелю виходу — ЕВРИСТИЧНА ОЦІНКА, а не гарантована межа.
+ *
+ * Для контракту `full` агент зобов'язаний повернути ПОВНУ оновлену версію змісту, тож відповідь не може бути
+ * меншою за накопичений зміст: його розмір і є нижньою межею, і коли вже вона не вміщується, виклик завідомо
+ * обірветься — платити за це не потрібно (D78).
+ *
+ * Для контракту `delta` (D80) агент повертає лише нові й змінені елементи, тож нижньої межі з накопиченого
+ * обсягу НЕ існує: оцінку повного опису до часткового виходу застосовувати не можна, і запуск за розміром опису
+ * не блокується. Жорстка межа лишається одна — `max_tokens`; обрив відповіді можливий і обробляється як раніше
+ * (відповідь не приймається, версія не змінюється). Числа повертаються й у цьому випадку — для журналу.
  */
-export function answerFeasibility(content: Content, maxOutputTokens: number): AnswerFeasibility {
+export function answerFeasibility(content: Content, maxOutputTokens: number, contract: OutputContract = 'full'): AnswerFeasibility {
   const contentChars = JSON.stringify(content).length;
+  if (contract === 'delta') return { contract, ok: true, contentChars, answerTokens: null, needTokens: null, maxOutputTokens };
   const answerTokens = Math.ceil((contentChars / CHARS_PER_OUTPUT_TOKEN) * OUTPUT_MARGIN);
   const needTokens = Math.ceil(answerTokens * (1 + THINKING_RATIO));
-  return { ok: needTokens <= maxOutputTokens, contentChars, answerTokens, needTokens, maxOutputTokens };
+  return { contract, ok: needTokens <= maxOutputTokens, contentChars, answerTokens, needTokens, maxOutputTokens };
 }
 
 export function worstCaseCostUsd(p: ModelPolicy, promptChars: number, schemaLen?: number): number {

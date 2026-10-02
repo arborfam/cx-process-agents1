@@ -36,7 +36,8 @@ try {
   let reviewer;
   if (cfg.mode === 'real' && cfg.model) {
     const policy = makePolicy(cfg.model, loadPricing());
-    analyst = { client: new AnthropicAnalystClient(cfg.model, policy), policy, instruction: loadInstruction() };
+    const contract = cfg.model.outputContract;
+    analyst = { client: new AnthropicAnalystClient(cfg.model, policy), policy, instruction: loadInstruction(undefined, contract), contract };
     // Той самий бюджет, що й в агента 1: політика спільна, облік — по всіх запусках справжньої моделі.
     reviewer = { client: new AnthropicBpmnClient(cfg.model, policy), policy, instruction: loadBpmnInstruction() };
   }
@@ -51,6 +52,9 @@ try {
     if (cfg.mode === 'real' && cfg.model) {
       console.log(` РЕЖИМ СПРАВЖНЬОЇ МОДЕЛІ: ${cfg.model.model} (effort: ${cfg.model.effort}). Тексти джерел надсилаються постачальнику моделі.`);
       console.log(` Бюджет: $${cfg.model.budgetTotalUsd} загалом, $${cfg.model.budgetPerRunUsd} на запуск. Ключ у файли й журнали не пишеться.`);
+      console.log(cfg.model.outputContract === 'delta'
+        ? ' Контракт відповіді агента 1: часткове оновлення — агент повертає лише нові й змінені елементи, повний опис збирає застосунок.'
+        : ' Контракт відповіді агента 1: повна версія щоразу — відповідь містить увесь накопичений опис (CX_OUTPUT_CONTRACT=delta вмикає часткове оновлення).');
     } else {
       console.log(' ДЕМОРЕЖИМ — не AI. Перевіряється програмна логіка.');
     }

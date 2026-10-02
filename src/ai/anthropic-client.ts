@@ -3,6 +3,7 @@ import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
 import type { ModelConfig } from '../config.ts';
 import { ContentSchema } from '../schema.ts';
+import { DeltaSchema } from './delta.ts';
 import type { ModelPolicy } from './budget.ts';
 import { buildUserMessage } from './prompt.ts';
 import { redact } from './redact.ts';
@@ -27,9 +28,12 @@ export class AnthropicAnalystClient implements AnalystClient {
 
   async analyze(input: AnalystInput, signal: AbortSignal): Promise<ModelCallResult> {
     const structured = this.cfg.outputMode === 'structured';
+    // Схема відповіді йде за контрактом запуску (D80): для часткового оновлення — схема оновлення, а не повного
+    // змісту. Інакше модель отримала б інструкцію «лише зміни» разом зі схемою «весь зміст».
+    const schema = input.contract === 'delta' ? DeltaSchema : ContentSchema;
     let user = buildUserMessage(input);
     if (!structured) {
-      user += '\n\nФормат: лише JSON за такою JSON-схемою, без пояснень і без markdown-огорож:\n' + JSON.stringify(z.toJSONSchema(ContentSchema));
+      user += '\n\nФормат: лише JSON за такою JSON-схемою, без пояснень і без markdown-огорож:\n' + JSON.stringify(z.toJSONSchema(schema));
     }
     try {
       const stream = this.sdk.messages.stream(
@@ -38,7 +42,7 @@ export class AnthropicAnalystClient implements AnalystClient {
           max_tokens: this.policy.maxOutputTokens,
           system: input.instruction.text,
           messages: [{ role: 'user', content: user }],
-          output_config: structured ? { effort: this.cfg.effort, format: zodOutputFormat(ContentSchema) } : { effort: this.cfg.effort },
+          output_config: structured ? { effort: this.cfg.effort, format: zodOutputFormat(schema) } : { effort: this.cfg.effort },
         },
         { signal },
       );
@@ -53,7 +57,11 @@ export class AnthropicAnalystClient implements AnalystClient {
         throw new ModelFailure('refusal', 'Модель відмовилась відповідати на цей запит (refusal). Поточну версію не змінено.', usage);
       }
       if (msg.stop_reason === 'max_tokens') {
-        throw new ModelFailure('truncated', `Відповідь обірвано через ліміт довжини (${this.policy.maxOutputTokens} токенів). Неповну відповідь не прийнято; збільшіть CX_MAX_OUTPUT_TOKENS свідомо.`, usage);
+        throw new ModelFailure('truncated', `Відповідь обірвано через ліміт довжини (${this.policy.maxOutputTokens} токенів): стелю ділять міркування моделі й сама відповідь. ` +
+          'Неповну відповідь не прийнято, поточну версію не змінено. ' +
+          (input.contract === 'delta'
+            ? 'Запуск виконувався за контрактом часткового оновлення, тож обсяг накопиченого опису тут уже не причина: зменшіть кількість нових джерел за раз.'
+            : 'Найчастіша причина — контракт «повна версія»: відповідь містить увесь накопичений опис. Увімкніть CX_OUTPUT_CONTRACT=delta або зменшіть кількість нових джерел за раз.'), usage);
       }
       const text = msg.content.filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text').map((b) => b.text).join('');
       let output: unknown;

@@ -232,6 +232,9 @@ const ADDED_COLUMNS: [string, string, string][] = [
   // Резерв бюджету: під час запуску — найгірша оцінка; для запуску з невідомою вартістю резерв лишається назавжди.
   ['run', 'reserved_usd', 'REAL NOT NULL DEFAULT 0'],
   ['run', 'cost_known', 'INTEGER NOT NULL DEFAULT 1'],
+  // Контракт відповіді агента 1 (D80): 'full' — повна версія щоразу, 'delta' — лише нові й змінені елементи.
+  // Старі записи читаються як 'full' — саме за цим контрактом вони й виконувались.
+  ['run', 'output_contract', "TEXT NOT NULL DEFAULT 'full'"],
 ];
 
 export function migrate(db: DB): void {

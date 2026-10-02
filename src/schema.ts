@@ -168,11 +168,14 @@ const NotationRequirement = z
 
 const Conflict = z.object({ key: z.string(), kept: z.string(), proposed: z.string(), note: z.string() }).strict();
 
+/** Межі процесу: тригер, вхід, завершення, результат. Їх задає аналітикиня (п. 1 інструкції агента). */
+const Boundaries = z.object({ trigger: z.string(), input: z.string(), completion: z.string(), result: z.string() }).strict();
+
 export const ContentSchema = z
   .object({
     summary: z.string(),
     business_context: z.string(),
-    boundaries: z.object({ trigger: z.string(), input: z.string(), completion: z.string(), result: z.string() }).strict(),
+    boundaries: Boundaries,
     roles: z.array(z.string()),
     /** Явний початковий крок (D27). Необов’язкове поле: старі версії його не мають і не переписуються. Ніколи не виводиться з порядку кроків. */
     entry_step_id: z.string().nullable().optional(),
@@ -197,6 +200,22 @@ export const ContentSchema = z
     notation_requirements: z.array(NotationRequirement).optional(),
   })
   .strict();
+
+/**
+ * Схеми окремих елементів змісту — для контрактів, що працюють елементами, а не всім змістом
+ * (`src/ai/delta.ts`, `analyst-delta-v1`). Це ТІ САМІ схеми, що в `ContentSchema`: контракт часткового
+ * оновлення не може випадково розійтися з контрактом повної версії.
+ */
+export const ItemSchemas = {
+  boundaries: Boundaries,
+  step: Step,
+  problem: Problem,
+  claim: Claim,
+  hypothesis: Hypothesis,
+  question: Question,
+  step_proposal: StepProposal,
+  notation_requirement: NotationRequirement,
+} as const;
 
 /** Спеціальна ціль переходу: «що далі — невідомо». Не є кроком і не є завершенням. */
 export const UNKNOWN = 'UNKNOWN';

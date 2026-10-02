@@ -16,7 +16,7 @@ import { seedDemoCase } from './demo.ts';
 import { redact } from './ai/redact.ts';
 import { beginAnalystRun, executeAnalystRun, type RunOptions } from './runs.ts';
 import { budgetLeftUsd, spentUsd, unknownCostRuns, type ModelPolicy } from './ai/budget.ts';
-import type { AnalystClient, InstructionInfo } from './ai/types.ts';
+import type { AnalystClient, InstructionInfo, OutputContract } from './ai/types.ts';
 import { beginBpmnReview, executeBpmnReview, getCaseReview, rejectFinding, type Reviewer } from './review-runs.ts';
 import { buildArtifact, buildPreflight, getCaseArtifact, listCaseArtifacts, readArtifactFile, type ArtifactView } from './bpmn-artifacts.ts';
 import { addExplicitClarification, advanceScenario, createScenarioCase, scenarioInfo, TOTAL_STAGES } from './scenarios.ts';
@@ -33,7 +33,7 @@ export interface ServerOptions {
   /** Код доступу людини. Той, хто його знає, — «людина» (може погоджувати). Агенти його не мають. */
   accessCode: string;
   /** Підключення моделі. Немає — аналіз недоступний (з поясненням), на демо мовчки не перемикаємось. */
-  analyst?: { client: AnalystClient; policy?: ModelPolicy; instruction?: InstructionInfo };
+  analyst?: { client: AnalystClient; policy?: ModelPolicy; instruction?: InstructionInfo; contract?: OutputContract };
   /** Клієнт смислової перевірки агента 2 (лише справжній; у деморежимі його немає й перевірка не імітується). Підставного клієнта задають лише тести. */
   reviewer?: Reviewer;
   /** Параметри моделі для показу (без ключа). */
@@ -178,7 +178,7 @@ export function createApp(opts: ServerOptions): Server {
     return {
       available: true, kind: a.client.mode === 'real' ? 'real' : 'scripted_demo', reason: null,
       review: reviewerState(),
-      model: a.client.model, effort: opts.modelInfo?.effort ?? null,
+      model: a.client.model, effort: opts.modelInfo?.effort ?? null, output_contract: a.contract ?? 'full',
       budget: p ? { total_usd: p.budgetTotalUsd, spent_usd: spentUsd(db), left_usd: budgetLeftUsd(db, p), unknown_cost_runs: unknownCostRuns(db), per_run_usd: p.budgetPerRunUsd, pricing_verified_at: p.pricingVerifiedAt } : null,
     };
   }
@@ -413,7 +413,7 @@ export function createApp(opts: ServerOptions): Server {
           if (getCase(db, caseId).state !== 'research') {
             throw new DomainError('BAD_STATE', 'Аналіз запускається лише на стадії «Дослідження». Спершу поверніть кейс на доопрацювання.', 409);
           }
-          const ro: RunOptions = { policy: opts.analyst.policy, instruction: opts.analyst.instruction };
+          const ro: RunOptions = { policy: opts.analyst.policy, instruction: opts.analyst.instruction, contract: opts.analyst.contract };
           const ctx = beginAnalystRun(db, caseId, opts.analyst.client, ro);
           void executeAnalystRun(db, ctx, opts.analyst.client, ro).catch((e) => console.error('Помилка фонового запуску:', e instanceof Error ? e.message : 'невідома'));
           return json(res, 202, { run_id: ctx.runId, note: 'Аналіз запущено. Поточну версію не буде змінено, доки результат не пройде перевірки.' });

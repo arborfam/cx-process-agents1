@@ -6,11 +6,12 @@ import {
 } from './domain.ts';
 import { type Content } from './schema.ts';
 import { actualCostUsd, answerFeasibility, preflight, reserveRetry, type ModelPolicy } from './ai/budget.ts';
+import { applyDelta, looksLikeDelta } from './ai/delta.ts';
 import { idMaps } from './ai/idmap.ts';
 import { buildUserMessage, loadInstruction } from './ai/prompt.ts';
 import { redact } from './ai/redact.ts';
 import {
-  ModelFailure, type AnalystClient, type AnalystInput, type InstructionInfo, type ModelCallResult, type Usage,
+  ModelFailure, type AnalystClient, type AnalystInput, type InstructionInfo, type ModelCallResult, type OutputContract, type Usage,
 } from './ai/types.ts';
 import { formatViolations, verifyAgentOutput, type Violation } from './ai/verify.ts';
 
@@ -46,6 +47,12 @@ export interface RunOptions {
   /** Обов’язкова для справжнього клієнта: ліміти й ціни. */
   policy?: ModelPolicy;
   instruction?: InstructionInfo;
+  /**
+   * Контракт відповіді агента (D80). За замовчуванням `full` — повна версія щоразу, як було досі.
+   * `delta` — лише нові й змінені елементи; інструкцію для цього контракту треба передати відповідну
+   * (`loadInstruction(undefined, 'delta')`), інакше правила виходу не збігатимуться зі схемою відповіді.
+   */
+  contract?: OutputContract;
 }
 
 export interface RunCtx {
@@ -83,9 +90,12 @@ function beginInner(db: DB, caseId: string, client: AnalystClient, opts: RunOpti
     // Джерела, які не вдалося прочитати, не потрапляють у запуск і не позначаються опрацьованими.
     const readable = all_.filter((s) => s.read_status === 'ok');
     const maps = idMaps(all_.map((s) => ({ id: s.id, ref: s.ref })));
-    const instruction = opts.instruction ?? loadInstruction();
+    const contract: OutputContract = opts.contract ?? 'full';
+    const instruction = opts.instruction ?? loadInstruction(undefined, contract);
     const input: AnalystInput = {
       instruction,
+      contract,
+      baseVersion: base.id,
       head_content: maps.toModel(versionContent(base)),
       sources: readable.map((s) => ({ id: maps.label(s.id), title: s.title, kind: s.kind, origin: s.origin, text: s.content })),
     };
@@ -96,18 +106,21 @@ function beginInner(db: DB, caseId: string, client: AnalystClient, opts: RunOpti
           'У кейсі є джерела з позначкою «реальні дані». У цьому прототипі вони не надсилаються постачальнику моделі (рішення D18). Запуск не виконано.', 409);
       }
       if (!opts.policy) throw new DomainError('AI_UNAVAILABLE', 'Для справжньої моделі не задано ліміти й ціни; запуск не виконано.', 409);
-      // Чи вміститься відповідь у стелю виходу. Агент повертає ПОВНУ оновлену версію, тож накопичений зміст —
-      // нижня межа відповіді; разом із міркуваннями (їх в Opus 5.5 не вимкнути) вони ділять один `max_tokens`.
-      // Без цієї перевірки обірваний виклик оплачується повністю, а версія не змінюється (D78).
-      const fit = answerFeasibility(versionContent(base), opts.policy.maxOutputTokens);
+      // Чи вміститься відповідь у стелю виходу — ОЦІНКА (не гарантована межа), і лише для контракту «повна
+      // версія»: там відповідь зобов'язана містити весь накопичений зміст, тож він і є нижньою межею, а разом із
+      // міркуваннями (їх в Opus 5.5 не вимкнути) вони ділять один `max_tokens`. Без цієї перевірки завідомо
+      // обірваний виклик оплачується повністю, а версія не змінюється (D78). Для часткового оновлення (D80)
+      // такої нижньої межі не існує — оцінку повного опису до нього не застосовуємо й за розміром опису не блокуємо.
+      const fit = answerFeasibility(versionContent(base), opts.policy.maxOutputTokens, contract);
       if (!fit.ok) {
         throw new DomainError('OUTPUT_TOO_LARGE',
-          `Опис уже завеликий, щоб агент міг повернути його цілим: у ньому ${fit.contentChars} символів, а відповідь має містити весь опис ` +
-          `(≈ ${fit.answerTokens} токенів) плюс міркування моделі — разом ≈ ${fit.needTokens} при стелі ${fit.maxOutputTokens}. ` +
+          `Опис уже завеликий, щоб агент міг повернути його цілим: у ньому ${fit.contentChars} символів, а за контрактом «повна версія» ` +
+          `відповідь має містити весь опис (оцінка ≈ ${fit.answerTokens} токенів) плюс міркування моделі — разом ≈ ${fit.needTokens} при стелі ${fit.maxOutputTokens}. ` +
           'Виклик не виконано, витрат немає: обірвана відповідь коштує повну ціну й не зберігається. ' +
-          'Що можна зробити: розділити дослідження на менші етапи (менше нових джерел за раз), ' +
-          'закрити вже з’ясовані питання уточненнями й прийняти пропозиції, щоб опис перестав рости, ' +
-          'або свідомо підняти CX_MAX_OUTPUT_TOKENS — але тоді наступний етап упреться в ту саму межу.',
+          'Що можна зробити: увімкнути контракт часткового оновлення (CX_OUTPUT_CONTRACT=delta) — тоді агент повертає лише нові й змінені елементи; ' +
+          'розділити дослідження на менші етапи (менше нових джерел за раз); ' +
+          'закрити вже з’ясовані питання уточненнями й прийняти пропозиції, щоб опис перестав рости; ' +
+          'підняття CX_MAX_OUTPUT_TOKENS симптом лікує лише на етап-два — наступний упреться в ту саму межу.',
           413, { size: fit });
       }
       reservedUsd = preflight(db, caseId, opts.policy, instruction.text.length + buildUserMessage(input).length).worstCaseUsd;
@@ -116,12 +129,19 @@ function beginInner(db: DB, caseId: string, client: AnalystClient, opts: RunOpti
     const sourceIds = readable.map((s) => s.id);
     run(db,
       `INSERT INTO run (id, case_id, agent, instruction_version, instruction_hash, mode, model, base_version_id, input_source_ids_json,
-         technical_state, started_at, scenario_stage, reserved_usd) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         technical_state, started_at, scenario_stage, reserved_usd, output_contract) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       runId, caseId, 'analyst', instruction.version, instruction.hash, client.mode, client.model, base.id, JSON.stringify(sourceIds), 'running',
-      new Date().toISOString(), c.scenario_id ? c.scenario_stage : null, reservedUsd);
+      new Date().toISOString(), c.scenario_id ? c.scenario_stage : null, reservedUsd, contract);
     // Розмір запиту й очікуваної відповіді — у журнал: зростання опису має бути видно до того, як воно впреться в стелю.
     const promptChars = instruction.text.length + buildUserMessage(input).length;
-    const size = { content_chars: JSON.stringify(versionContent(base)).length, prompt_chars: promptChars, answer_tokens: answerFeasibility(versionContent(base), opts.policy?.maxOutputTokens ?? 0).answerTokens };
+    // `answer_floor_tokens` — оцінка нижньої межі відповіді; існує лише для контракту «повна версія» (для
+    // часткового оновлення її не існує, тому null, а не нуль: це «невідомо наперед», а не «нуль токенів»).
+    const size = {
+      contract,
+      content_chars: JSON.stringify(versionContent(base)).length,
+      prompt_chars: promptChars,
+      answer_floor_tokens: answerFeasibility(versionContent(base), opts.policy?.maxOutputTokens ?? 0, contract).answerTokens,
+    };
     run(db, 'UPDATE run SET checks_json = ? WHERE id = ?', JSON.stringify({ size }), runId);
     audit(db, caseId, AGENT_SYSTEM_ACTOR, 'run_started', { run_id: runId, base_version_id: base.id, mode: client.mode, model: client.model, sources: sourceIds.length, size });
     return { runId, caseId, base, sourceIds, input, startedMs: Date.now(), reservedUsd };
@@ -191,8 +211,8 @@ export function recoverStuckRuns(db: DB): number {
  */
 export function completeAnalystRun(db: DB, runId: string, rawOutput: unknown): VersionRow {
   return tx(db, () => {
-    const r = one<{ case_id: string; base_version_id: string; technical_state: string; input_source_ids_json: string; mode: string }>(
-      db, 'SELECT case_id, base_version_id, technical_state, input_source_ids_json, mode FROM run WHERE id = ?', runId);
+    const r = one<{ case_id: string; base_version_id: string; technical_state: string; input_source_ids_json: string; mode: string; output_contract: string }>(
+      db, 'SELECT case_id, base_version_id, technical_state, input_source_ids_json, mode, output_contract FROM run WHERE id = ?', runId);
     if (!r) throw new DomainError('NOT_FOUND', 'Запуск не знайдено', 404);
     if (r.technical_state !== 'running') throw new DomainError('BAD_STATE', 'Запуск уже завершено', 409);
 
@@ -201,7 +221,31 @@ export function completeAnalystRun(db: DB, runId: string, rawOutput: unknown): V
     const sourceIds = JSON.parse(r.input_source_ids_json) as string[];
     const caseSources = listSources(db, caseId);
     const maps = idMaps(caseSources.map((s) => ({ id: s.id, ref: s.ref })));
-    const checked = verifyAgentOutput(rawOutput, {
+
+    /**
+     * Контракт часткового оновлення (D80): відповідь — лише нові й змінені елементи. Повний кандидат збирається
+     * тут, із ТОЧНОЇ вхідної версії запуску (`base_version_id`), а не з поточної голови, і далі проходить УСІ ті
+     * самі перевірки, що й повна відповідь. Злиття робиться у «вигляді моделі» (ID джерел — `SRC-xx`), бо саме в
+     * ньому приходить відповідь; переведення у внутрішні ID робить, як і раніше, `verifyAgentOutput`.
+     */
+    const contract = r.output_contract === 'delta' ? 'delta' : 'full';
+    let toVerify: unknown = rawOutput;
+    let deltaStats: unknown = null;
+    if (contract === 'delta') {
+      const applied = applyDelta(maps.toModel(versionContent(base)), rawOutput, { baseVersion: base.id });
+      if (!applied.ok) {
+        throw new DomainError('BAD_OUTPUT',
+          `Відповідь агента не пройшла перевірку контракту часткового оновлення: ${formatViolations(applied.violations).slice(0, 4).join('; ')}`,
+          422, { violations: applied.violations });
+      }
+      toVerify = applied.content;
+      deltaStats = applied.stats;
+    } else if (looksLikeDelta(rawOutput)) {
+      const violations: Violation[] = [{ code: 'DELTA_CONTRACT', path: 'contract', message:
+        'цей запуск виконується за контрактом «повна версія»: поверни повний зміст AS-IS без поля contract' }];
+      throw new DomainError('BAD_OUTPUT', `Відповідь агента не пройшла перевірку: ${formatViolations(violations)[0]}`, 422, { violations });
+    }
+    const checked = verifyAgentOutput(toVerify, {
       base: versionContent(base),
       sources: caseSources.filter((s) => sourceIds.includes(s.id)).map((s) => ({ id: s.id, text: s.content })),
       fromModel: maps.fromModel,
@@ -237,7 +281,7 @@ export function completeAnalystRun(db: DB, runId: string, rawOutput: unknown): V
     let checks: Record<string, unknown> = {};
     try { checks = JSON.parse(one<{ checks_json: string }>(db, 'SELECT checks_json FROM run WHERE id = ?', runId)?.checks_json ?? '{}') as Record<string, unknown>; } catch { checks = {}; }
     run(db, `UPDATE run SET technical_state = 'done', finished_at = ?, output_version_id = ?, checks_json = ? WHERE id = ?`,
-      new Date().toISOString(), v.id, JSON.stringify({ ...checks, warnings: checked.warnings, stale: isStale }), runId);
+      new Date().toISOString(), v.id, JSON.stringify({ ...checks, warnings: checked.warnings, stale: isStale, ...(deltaStats ? { delta: deltaStats } : {}) }), runId);
     audit(db, caseId, AGENT_SYSTEM_ACTOR, isStale ? 'run_proposal_saved' : 'run_completed', { run_id: runId, version_id: v.id, stale: isStale });
     return v;
   });

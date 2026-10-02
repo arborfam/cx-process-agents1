@@ -4,19 +4,39 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sha256 } from '../hash.ts';
 import type { Content } from '../schema.ts';
-import type { AnalystInput, InstructionInfo } from './types.ts';
+import { DELTA_CONTRACT } from './delta.ts';
+import type { AnalystInput, InstructionInfo, OutputContract } from './types.ts';
 
 const PROMPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'prompts');
 const DEFAULT_PATH = join(PROMPTS_DIR, 'analyst.md');
 const BPMN_PATH = join(PROMPTS_DIR, 'bpmn.md');
 
-/** Runtime-інструкція — лише текст між маркерами у prompts/analyst.md. Версія й хеш потрапляють у журнал. */
-export function loadInstruction(path = DEFAULT_PATH): InstructionInfo {
+/**
+ * Runtime-інструкція — лише текст між маркерами у prompts/analyst.md. Версія й хеш потрапляють у журнал.
+ *
+ * Розділ «Вихід» залежить від КОНТРАКТУ відповіді й лежить в окремих блоках `output:full` / `output:delta`
+ * (D80). Спільні правила аналізу — одні для обох контрактів: так вони не можуть розійтися. Для контракту
+ * часткового оновлення версія інструкції отримує власний суфікс (`analyst-v0.8+delta-v1`), тож у журналі
+ * запуску видно, за якими саме правилами виходу він виконувався.
+ */
+export function loadInstruction(path = DEFAULT_PATH, contract: OutputContract = 'full'): InstructionInfo {
   const raw = readFileSync(path, 'utf8');
   const m = /<!--\s*runtime:start\s+version=([\w.-]+)\s*-->\n?([\s\S]*?)<!--\s*runtime:end\s*-->/.exec(raw);
   if (!m) throw new Error(`У ${path} немає блоку runtime:start/runtime:end — інструкцію агента не можна завантажити`);
-  const text = m[2]!.trim();
-  return { text, version: m[1]!, hash: sha256(text) };
+  const body = m[2]!;
+  const blocks = [...body.matchAll(/<!--\s*output:(\w+)\s+version=([\w.-]+)\s*-->\n?([\s\S]*?)<!--\s*output:end\s*-->/g)];
+  let version = m[1]!;
+  let text: string;
+  if (blocks.length === 0) {
+    text = body.trim();                                        // інструкція без варіантів виходу (агент 2)
+  } else {
+    const chosen = blocks.find((b) => b[1] === contract);
+    if (!chosen) throw new Error(`У ${path} немає блоку output:${contract} — інструкцію для цього контракту не можна завантажити`);
+    const shared = body.replace(/<!--\s*output:\w+\s+version=[\w.-]+\s*-->[\s\S]*?<!--\s*output:end\s*-->/g, '').replace(/\n{3,}/g, '\n\n').trim();
+    text = `${shared}\n\n${chosen[3]!.trim()}`;
+    if (contract !== 'full') version = `${version}+${chosen[2]!}`;
+  }
+  return { text, version, hash: sha256(text) };
 }
 
 /** Runtime-інструкція агента 2 (prompts/bpmn.md). */
@@ -43,7 +63,14 @@ export function buildUserMessage(input: AnalystInput, nonce = randomBytes(8).toS
   const all = input.sources.map((s) => s.text).join('\n');
   while (all.includes(nonce)) nonce = randomBytes(8).toString('hex');
   const esc = (s: string) => s.replace(/"/g, "'").replace(/[\r\n]+/g, ' ');
+  const delta = input.contract === 'delta';
   const parts: string[] = [];
+  if (delta) {
+    // Контракт і основу називаємо ДО змісту: модель має знати, що відповідь — лише зміни, ще читаючи опис.
+    parts.push(`=== КОНТРАКТ ВІДПОВІДІ: ${DELTA_CONTRACT} (лише нові й змінені елементи) ===`);
+    parts.push(`base_version: ${input.baseVersion ?? ''}`);
+    parts.push('');
+  }
   parts.push('=== ПОТОЧНА РОБОЧА ВЕРСІЯ AS-IS (JSON) ===');
   parts.push(JSON.stringify(modelView(input.head_content)));
   parts.push('');
@@ -59,6 +86,10 @@ export function buildUserMessage(input: AnalystInput, nonce = randomBytes(8).toS
     for (const f of input.retry_feedback) parts.push('- ' + f);
   }
   parts.push('');
-  parts.push('Поверни повну оновлену версію змісту AS-IS як один JSON-об’єкт.');
+  parts.push(delta
+    ? `Поверни один JSON-об’єкт за контрактом «${DELTA_CONTRACT}»: лише нові й змінені елементи, ` +
+      `contract: "${DELTA_CONTRACT}" і base_version: "${input.baseVersion ?? ''}". Усього опису не повертай: ` +
+      'чого немає у відповіді — те лишається без змін.'
+    : 'Поверни повну оновлену версію змісту AS-IS як один JSON-об’єкт.');
   return parts.join('\n');
 }

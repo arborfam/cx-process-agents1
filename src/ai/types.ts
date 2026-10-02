@@ -27,6 +27,12 @@ export class ModelFailure extends Error {
   }
 }
 
+/**
+ * Контракт відповіді агента 1 (D80). `full` — повна оновлена версія змісту щоразу (початковий контракт);
+ * `delta` — лише нові й змінені елементи (`analyst-delta-v1`, docs/agent1-delta-contract.md).
+ */
+export type OutputContract = 'full' | 'delta';
+
 export interface InstructionInfo {
   text: string;
   version: string;
@@ -44,6 +50,10 @@ export interface AnalystSource {
 
 export interface AnalystInput {
   instruction: InstructionInfo;
+  /** Контракт відповіді. За замовчуванням `full`: старі виклики поводяться як раніше. */
+  contract?: OutputContract;
+  /** Версія, від якої рахується оновлення: модель повертає її як є (захист від застосування до іншої основи). */
+  baseVersion?: string;
   /** Поточна робоча версія у «вигляді моделі» (ID джерел замінено на ref). */
   head_content: Content;
   /** Лише джерела, додані до цього запуску, і лише прочитані. */

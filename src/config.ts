@@ -1,10 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { OutputContract } from './ai/types.ts';
 
 export type ModelMode = 'demo' | 'real';
 export type OutputMode = 'structured' | 'text_json';
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type { OutputContract } from './ai/types.ts';
 
 /** Налаштування справжньої моделі. Усі обмеження обов’язкові: без них платні запуски не вмикаються. */
 export interface ModelConfig {
@@ -15,6 +17,8 @@ export interface ModelConfig {
   timeoutMs: number;
   maxInputChars: number;
   outputMode: OutputMode;
+  /** Контракт відповіді агента 1 (D80): `delta` — лише нові й змінені елементи, `full` — повна версія щоразу. */
+  outputContract: OutputContract;
   budgetTotalUsd: number;
   budgetPerRunUsd: number;
   maxRunsPerCase: number;
@@ -82,8 +86,12 @@ export function loadConfig(env: Record<string, string | undefined>, pricing: Pri
   if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) problems.push(`CX_EFFORT має бути low|medium|high|xhigh|max, отримано: ${env.CX_EFFORT}`);
   const outputMode = (env.CX_OUTPUT_MODE || 'structured') as OutputMode;
   if (outputMode !== 'structured' && outputMode !== 'text_json') problems.push(`CX_OUTPUT_MODE має бути structured або text_json, отримано: ${env.CX_OUTPUT_MODE}`);
+  // За замовчуванням — часткове оновлення (D80): за повного контракту відповідь дорівнює всьому накопиченому
+  // опису й рано чи пізно впирається в стелю виходу. `full` лишається доступним явно.
+  const outputContract = (env.CX_OUTPUT_CONTRACT || 'delta') as OutputContract;
+  if (outputContract !== 'delta' && outputContract !== 'full') problems.push(`CX_OUTPUT_CONTRACT має бути delta або full, отримано: ${env.CX_OUTPUT_CONTRACT}`);
   const cfg: ModelConfig = {
-    apiKey, model, effort, outputMode,
+    apiKey, model, effort, outputMode, outputContract,
     maxOutputTokens: num(env, 'CX_MAX_OUTPUT_TOKENS', 32_000, problems, { int: true }),
     timeoutMs: num(env, 'CX_TIMEOUT_MS', 300_000, problems, { int: true }),
     maxInputChars: num(env, 'CX_MAX_INPUT_CHARS', 150_000, problems, { int: true }),
