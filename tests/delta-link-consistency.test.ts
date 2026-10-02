@@ -19,8 +19,12 @@ import assert from 'node:assert/strict';
 import { one, type DB } from '../src/db.ts';
 import { canonical } from '../src/hash.ts';
 import { DELTA_CONTRACT } from '../src/ai/delta.ts';
+import { loadInstruction } from '../src/ai/prompt.ts';
 import { runAnalyst, ScriptedDemoClient, type RunResult } from '../src/runs.ts';
-import { addSource, headVersion, insertVersion, listSources, versionContent } from '../src/domain.ts';
+import {
+  addSource, acceptDraft, approve, headVersion, insertVersion, listSources, requestBpmnStart, submissionBlockers,
+  submitForApproval, versionContent,
+} from '../src/domain.ts';
 import { emptyContent, UNKNOWN, type Content, type Question, type Step } from '../src/schema.ts';
 import { draftReadyCase, freshDb, human } from './helpers.ts';
 
@@ -225,4 +229,85 @@ test('5. Кейс із позначками SRC-xx: незгадані крок�
   assert.equal(checks.delta.lists.steps!.changed, 0);
   assert.equal(checks.delta.lists.steps!.added, 0);
   assert.equal(after.summary, 'Суть уточнено.');
+});
+
+
+// ───────── 6. Виняток для старих зв'язків не відкриває дорогу погодженню ─────────
+//
+// Збереження чернетки з розірваним зв'язком допустиме (це чернетка), але невирішена невизначеність потоку
+// має й далі блокувати погодження та BPMN. Інакше попередження замість відмови було б послабленням.
+
+test('6. Чернетку з розірваним зв’язком зберегти можна, але погодження заблоковано саме через цей зв’язок', async () => {
+  const db = freshDb();
+  const { c, v } = draftReadyCase(db);           // повний, у звичайному стані придатний до погодження опис
+  const content = versionContent(v);
+  content.questions = [question({ id: 'Q5', text: 'Що з заявкою далі?', critical: false, origin: 'analyst',
+    affects_transitions: [{ step_id: 'S2', condition: 'умови, якої немає', kind: 'direction' }] })];
+  const v2 = insertVersion(db, { caseId: c.id, content, createdBy: 'analyst', actorName: human.name, parentId: v.id, covered: [], owned: [] });
+  db.prepare('UPDATE "case" SET head_version_id = ? WHERE id = ?').run(v2.id, c.id);
+
+  // 1) Запуск агента проходить: зв'язок був розірваний до цієї відповіді (D81), чернетка зберігається.
+  const r = await runDelta(db, c.id, (h) => ({ questions: [{ ...structuredClone(h.questions[0]!), text: 'Що з заявкою далі (звужено)?' }] }));
+  assert.equal(r.ok, true, r.ok ? '' : r.error);
+  assert.ok(warningsOf(db, r.ok ? r.runId : '').some((x) => /Q5/.test(x)), 'попередження для аналітикині є');
+
+  // 2) Передача на погодження заблокована, і саме через розірваний зв'язок.
+  const blockers = submissionBlockers(db, c.id);
+  assert.ok(blockers.some((b) => b.code === 'QUESTION_LINK_BROKEN' && b.severity === 'critical' && b.ref === 'Q5'),
+    `очікували критичний блокер QUESTION_LINK_BROKEN: ${JSON.stringify(blockers)}`);
+  assert.throws(() => submitForApproval(db, human, c.id), (e: { code?: string; details?: { blockers?: { code: string }[] } }) =>
+    e.code === 'GUARD_FAILED' && !!e.details?.blockers?.some((b) => b.code === 'QUESTION_LINK_BROKEN'));
+
+  // 3) Погодити не можна (стан лишився «дослідження»), отже й BPMN недоступний.
+  const headId = headVersion(db, c.id).id;
+  acceptDraft(db, human, c.id, headId);
+  assert.throws(() => approve(db, human, c.id, { versionId: headId, checklistConfirmed: true }), (e: { code?: string }) => e.code === 'BAD_STATE' || e.code === 'GUARD_FAILED');
+  assert.throws(() => requestBpmnStart(db, human, c.id, 'demo'), (e: { code?: string }) => e.code === 'GUARD_FAILED' || e.code === 'BAD_STATE');
+});
+
+test('6. Контроль: той самий опис без розірваного зв’язку на погодження передається', () => {
+  const db = freshDb();
+  const { c, v } = draftReadyCase(db);
+  acceptDraft(db, human, c.id, v.id);
+  submitForApproval(db, human, c.id);            // блокерів немає — отже в попередньому тесті блокував саме зв'язок
+  assert.ok(!submissionBlockers(db, c.id).some((b) => b.code === 'QUESTION_LINK_BROKEN'));
+});
+
+test('6. Невизначений перехід із відкритим питанням блокує погодження (невирішена невизначеність потоку)', async () => {
+  const db = freshDb();
+  const { c, v } = draftReadyCase(db);
+  const content = versionContent(v);
+  const v2 = insertVersion(db, { caseId: c.id, content, createdBy: 'analyst', actorName: human.name, parentId: v.id, covered: [], owned: [] });
+  db.prepare('UPDATE "case" SET head_version_id = ? WHERE id = ?').run(v2.id, c.id);
+  // агент додає невідоме продовження з питанням про напрямок — це дозволено й зберігається
+  const r = await runDelta(db, c.id, (h) => ({
+    steps: [{ ...structuredClone(h.steps[1]!), next: [{ to: 'END', condition: 'умови дозволяють' }, { to: UNKNOWN, condition: 'умови не дозволяють' }] }],
+    questions: [question({ id: 'Q9', text: 'Що відбувається, якщо умови не дозволяють зміну?', critical: true,
+      criticality_note: 'Без цього гілку не описати', affects_transitions: [{ step_id: 'S2', condition: 'умови не дозволяють', kind: 'direction' }] })],
+  }));
+  assert.equal(r.ok, true, r.ok ? '' : r.error);
+  const blockers = submissionBlockers(db, c.id);
+  assert.ok(blockers.some((b) => b.code === 'UNRESOLVED_TRANSITION' && b.severity === 'critical'), `очікували блокер невизначеного переходу: ${JSON.stringify(blockers)}`);
+  assert.throws(() => submitForApproval(db, human, c.id), (e: { code?: string }) => e.code === 'GUARD_FAILED');
+});
+
+
+// ───────── 7. Інструкція однозначно описує саме той випадок, що стався ─────────
+
+test('7. Інструкція (обидва контракти) прямо розводить питання про зміст кроку й питання про напрямок', () => {
+  for (const contract of ['full', 'delta'] as const) {
+    const t = loadInstruction(undefined, contract).text;
+    // питання про зміст кроку — step_detail, переходу не потребує
+    assert.match(t, /питання \*\*про зміст кроку\*\*[^.]*`step_detail`/, `${contract}: немає правила «питання про зміст кроку — step_detail»`);
+    assert.match(t, /не вимагає \*\*вигаданого переходу\*\*|вигаданого переходу/, `${contract}: немає заборони вигадувати перехід`);
+    // питання про напрямок — на перехід, що справді є, з дослівною умовою
+    assert.match(t, /дослівно/, `${contract}: немає вимоги дослівної умови`);
+    assert.match(t, /справді є/, `${contract}: немає вимоги, щоб перехід у кроці справді існував`);
+    // випадок нового кроку без відомого продовження
+    assert.match(t, /UNKNOWN` із \*\*порожньою\*\* умовою|порожньою. умовою/, `${contract}: не описано, що робити з новим кроком без відомого продовження`);
+    assert.match(t, /переходів немає жодного, питання про потік не прив'язуй|переходів немає жодного, питання про потік не прив’язуй/, `${contract}: не сказано, що до кроку без переходів питання про потік не прив'язують`);
+  }
+  // Кейсових відповідей в інструкції немає.
+  const d = loadInstruction(undefined, 'delta').text;
+  for (const forbidden of ['Q39', 'S18', 'case_54a137']) assert.ok(!d.includes(forbidden), `в інструкції не має бути кейсових позначень: ${forbidden}`);
 });
