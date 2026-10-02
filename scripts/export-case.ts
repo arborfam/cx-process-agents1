@@ -7,7 +7,8 @@
  * Що робить скрипт — і чого НЕ робить:
  *  • відкриває базу лише для читання (PRAGMA query_only), нічого не міняє, міграцій не виконує;
  *  • експортує один кейс: джерела (текст), усі версії AS-IS із зазначенням, хто їх створив, запуски агента (модель, інструкція,
- *    токени, вартість, спроби, порушення, перевірки), журнал дій, погодження;
+ *    токени, вартість, спроби, порушення, перевірки), журнал дій, погодження, а також смислові перевірки агента 2
+ *    (знахідки, попередження, збережену відповідь моделі, спроби) і рішення аналітикині щодо знахідок;
  *  • НЕ читає ключ API, код доступу, змінні середовища й інші кейси; усі тексти проходять через редагування ключів;
  *  • відмовляє, якщо в кейсі є джерела з позначкою «реальні» (рішення D18: реальні дані ніде не копіюються);
  *  • відмовляє, якщо у виведенні знайдено щось схоже на ключ.
@@ -77,8 +78,26 @@ export function exportCase(db: DatabaseSync, caseId: string): ExportResult | Exp
   const approvals = db.prepare('SELECT id, version_id, content_hash, approver, note, created_at FROM approval WHERE case_id = ? ORDER BY rowid').all(caseId) as Row[];
   const revocations = db.prepare('SELECT r.* FROM approval_revocation r JOIN approval a ON a.id = r.approval_id WHERE a.case_id = ?').all(caseId) as Row[];
   const acceptance = db.prepare('SELECT a.* FROM version_acceptance a JOIN as_is_version v ON v.id = a.version_id WHERE v.case_id = ?').all(caseId) as Row[];
+  // Смислова перевірка (агент 2): крім метаданих — ЗНАХІДКИ, попередження й збережена відповідь моделі.
+  // Без них розібрати блокер побудови неможливо (D83). Усе проходить те саме редагування ключів, що й решта.
   const hasReviews = !!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'bpmn_review'").get();
-  const reviews = hasReviews ? (db.prepare('SELECT id, run_id, outcome, version_id, created_at FROM bpmn_review WHERE case_id = ? ORDER BY rowid').all(caseId) as Row[]) : [];
+  const reviews = hasReviews ? (db.prepare('SELECT * FROM bpmn_review WHERE case_id = ? ORDER BY rowid').all(caseId) as Row[]).map((r) => ({
+    id: r.id, run_id: r.run_id, outcome: r.outcome, version_id: r.version_id, approval_id: r.approval_id,
+    content_hash: r.content_hash, content_fingerprint: r.content_fingerprint,
+    instruction_version: r.instruction_version, instruction_hash: r.instruction_hash,
+    client_mode: r.client_mode, client_model: r.client_model, created_at: r.created_at, record_hash: r.record_hash,
+    findings: parse(r.findings_json), warnings: parse(r.warnings_json), attempts: parse(r.attempts_json),
+    detail: parse(r.detail_json),
+    /** Дослівна прийнята відповідь моделі: саме з неї відновлюються знахідки під час повторної перевірки. */
+    response: parse(r.response_json),
+  })) : [];
+  // Рішення аналітикині щодо знахідок (незмінні записи): без них видно знахідку, але не те, що з нею зробила людина.
+  const hasResolutions = !!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'finding_resolution'").get();
+  const resolutions = hasResolutions ? (db.prepare('SELECT * FROM finding_resolution WHERE case_id = ? ORDER BY rowid').all(caseId) as Row[]).map((r) => ({
+    id: r.id, review_id: r.review_id, run_id: r.run_id, approval_id: r.approval_id, version_id: r.version_id,
+    content_hash: r.content_hash, finding_key: r.finding_key, finding: parse(r.finding_json), decision: r.decision,
+    explanation: r.explanation, decided_by: r.decided_by, decided_at: r.decided_at, record_hash: r.record_hash,
+  })) : [];
 
   const data = clean({
     export_format: 1,
@@ -86,10 +105,12 @@ export function exportCase(db: DatabaseSync, caseId: string): ExportResult | Exp
     note: 'Експорт одного синтетичного кейсу для розбору якості. Ключів, коду доступу й інших кейсів тут немає.',
     case: { id: c.id, title: c.title, state: c.state, mode: c.mode, scenario_id: c.scenario_id, scenario_stage: c.scenario_stage, created_at: c.created_at, head_version_id: c.head_version_id },
     sources: sources.map((s) => ({ id: s.id, ref: s.ref, seq: s.seq, kind: s.kind, title: s.title, origin: s.origin, author: s.author, read_status: s.read_status, added_at: s.added_at, content_hash: s.content_hash, content: s.content })),
-    versions, runs, audit, approvals, approval_revocations: revocations, version_acceptance: acceptance, bpmn_reviews: reviews,
+    versions, runs, audit, approvals, approval_revocations: revocations, version_acceptance: acceptance,
+    bpmn_reviews: reviews, finding_resolutions: resolutions,
   });
   if (KEY_LIKE.test(JSON.stringify(data))) return { ok: false, reason: 'У виведенні знайдено щось схоже на ключ доступу. Експорт скасовано, файл не створено.' };
-  return { ok: true, data, counts: { sources: sources.length, versions: versions.length, runs: runs.length, audit: audit.length } };
+  return { ok: true, data, counts: { sources: sources.length, versions: versions.length, runs: runs.length, audit: audit.length,
+    reviews: reviews.length, findings: reviews.reduce((n, r) => n + (Array.isArray(r.findings) ? r.findings.length : 0), 0), resolutions: resolutions.length } };
 }
 
 function main(): void {
@@ -112,6 +133,7 @@ function main(): void {
     writeFileSync(out, JSON.stringify(r.data, null, 1) + '\n', 'utf8');
     console.log(`Готово: ${out}`);
     console.log(`Джерел: ${r.counts.sources}, версій: ${r.counts.versions}, запусків: ${r.counts.runs}, записів журналу: ${r.counts.audit}.`);
+    console.log(`Смислових перевірок: ${r.counts.reviews} (знахідок: ${r.counts.findings}), рішень щодо знахідок: ${r.counts.resolutions}.`);
     console.log('У файлі немає ключа API й коду доступу. Базу не змінено.');
   } finally {
     db.close();

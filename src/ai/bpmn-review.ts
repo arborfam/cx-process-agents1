@@ -111,6 +111,20 @@ export function packageFields(content: Content): string[] {
   return parts;
 }
 
+/**
+ * Чи лежить цитата знахідки в тексті САМОГО названого кроку (дія, роль, умова входу, вхідний артефакт,
+ * результат, умови його переходів). Для кандидата на непідтримувану нотацію це важливо: вимога до нотації —
+ * твердження про те, що має показати СХЕМА для цього кроку, а схема будується з кроків і переходів. Цитата
+ * із суті, бізнес-контексту чи питання описує контекст, а не поведінку кроку (D83).
+ * `null` — коли названих кроків немає в пакеті (це й так порушення) або цитати в пакеті немає.
+ */
+export function quoteFromCitedStep(content: Content, f: Pick<ReviewFinding, 'step_ids' | 'quote'>): boolean | null {
+  const cited = f.step_ids.flatMap((id) => stepFields(content, id));
+  if (cited.length === 0) return null;
+  if (matchInFields(packageFields(content), f.quote) === 'not_found') return null;
+  return matchInFields(cited, f.quote) !== 'not_found';
+}
+
 /** Текст усього пакета (для тестів і читання); пошук цитат іде по полях окремо. */
 export const packageText = (content: Content): string => packageFields(content).join('\n');
 

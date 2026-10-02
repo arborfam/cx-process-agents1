@@ -22,7 +22,7 @@ import { canonical, sha256 } from './hash.ts';
 import { NOTATION_KIND_LABEL, type Content } from './schema.ts';
 import { actualCostUsd, preflight, reserveRetry, type ModelPolicy } from './ai/budget.ts';
 import {
-  buildReviewMessage, findingKey, generationGate, contentFingerprint, reissueReview, reviewJsonSchema, reviewOutcome, runBpmnReview,
+  buildReviewMessage, findingKey, generationGate, contentFingerprint, quoteFromCitedStep, reissueReview, reviewJsonSchema, reviewOutcome, runBpmnReview,
   ReviewFindingSchema,
   type AttemptCost, type BpmnReviewClient, type GateResult, type ReviewFinding, type ReviewPackage, type ReviewResult,
 } from './ai/bpmn-review.ts';
@@ -420,7 +420,7 @@ export function getCaseReview(db: DB, caseId: string, instruction: InstructionIn
   return {
     state: row.outcome as 'clear' | 'awaiting_analyst', ...base, review: r,
     gate: generationGate(r, pkg, instruction, resolved),
-    findings: r.findings, findingsView: findingsView(r.findings, valid), warnings: r.warnings,
+    findings: r.findings, findingsView: findingsView(r.findings, valid, pkg.content), warnings: r.warnings,
     resolutions: valid, invalidResolutions: invalid,
     // Рішення з інших записів перевірки — лише контекст (D31). Показуємо ті, чия цілісність не порушена.
     earlierResolutions: all_.filter((x) => x.review_id !== row.id && resolutionIntact(x)),
@@ -519,9 +519,15 @@ export interface FindingView {
   resolution: ResolutionRow | null;
   /** Чому відхилити не можна (коли `can_reject` = false). */
   reject_blocked_reason: string | null;
+  /**
+   * Чи цитата знахідки взята з тексту САМОГО названого кроку (D83). `false` означає, що вона з суті,
+   * бізнес-контексту чи питання — тобто описує контекст, а не поведінку кроку, яку має показати схема.
+   * Блокування це не змінює: програма не вирішує за людину, лише показує, на чому стоїть зауваження.
+   */
+  quote_from_step: boolean | null;
 }
 
-export function findingsView(findings: readonly ReviewFinding[], resolutions: readonly ResolutionRow[]): FindingView[] {
+export function findingsView(findings: readonly ReviewFinding[], resolutions: readonly ResolutionRow[], content?: Content): FindingView[] {
   const byKey = new Map(resolutions.map((r) => [r.finding_key, r]));
   return findings.map((f) => {
     const unsupported = f.code === 'UNSUPPORTED_CANDIDATE';
@@ -532,6 +538,7 @@ export function findingsView(findings: readonly ReviewFinding[], resolutions: re
       reject_blocked_reason: unsupported
         ? 'Кандидата на непідтримувану нотацію відхилити не можна (D21): схема не спрощується. Потрібне рішення щодо вимоги до нотації або зміна опису.'
         : f.class === 'blocks_flow' ? null : 'Зауваження не блокує потік: рішення не потрібне.',
+      quote_from_step: content ? quoteFromCitedStep(content, f) : null,
     };
   });
 }

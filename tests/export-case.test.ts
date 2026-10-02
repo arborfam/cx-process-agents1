@@ -8,7 +8,9 @@ import { join } from 'node:path';
 import { all, openDb } from '../src/db.ts';
 import { addSource, audit } from '../src/domain.ts';
 import { runAnalyst } from '../src/runs.ts';
-import { draftReadyCase, human, newCase, tempDbPath } from './helpers.ts';
+import { approvedCase, draftReadyCase, human, newCase, tempDbPath } from './helpers.ts';
+import { runBpmnReviewForCase } from '../src/review-runs.ts';
+import { FakeReviewClient, finding, okStep, policyOf, reviewer } from './review-helpers.ts';
 import { ModelFailure } from '../src/ai/types.ts';
 
 const SCRIPT = join(import.meta.dirname, '..', 'scripts', 'export-case.ts');
@@ -75,4 +77,42 @@ test('кейс із «реальними» джерелами не експор�
   r = run('--list', '--db', join(dir, 'нема.sqlite'));
   assert.equal(r.status, 2);
   assert.match(r.stderr, /Базу не знайдено/);
+});
+
+
+test('експорт смислової перевірки: знахідки, попередження, збережена відповідь і рішення; ключ у відповіді приховано', async () => {
+  const path = tempDbPath();
+  const db = openDb(path);
+  const { c } = approvedCase(db);
+  // Відповідь «моделі» з ключем у тексті: він не має потрапити в експорт.
+  const client = new FakeReviewClient([okStep([
+    finding({ code: 'UNSUPPORTED_CANDIDATE', step_ids: ['S2'], quote: 'Синтетичний процес зміни умов', question: 'Це окремий стан очікування чи звичайна дія? (службове: sk-ant-api03-LEAKINREVIEW123456)', class: 'blocks_flow' }),
+  ])]);
+  const r = await runBpmnReviewForCase(db, human, c.id, reviewer(client, policyOf()));
+  assert.ok(r.ok, JSON.stringify(r));
+  db.close();
+
+  const out = join(mkdtempSync(join(tmpdir(), 'cx-exp-')), 'e.json');
+  const res = run('--db', path, '--case', c.id, '--out', out);
+  assert.equal(res.status, 0, res.stderr);
+  const data = JSON.parse(readFileSync(out, 'utf8')) as {
+    bpmn_reviews: { outcome: string; findings: { code: string; quote: string; question: string }[]; warnings: string[]; response: { findings: unknown[] }; attempts: unknown; instruction_version: string }[];
+    finding_resolutions: unknown[];
+  };
+  assert.equal(data.bpmn_reviews.length, 1);
+  const rev = data.bpmn_reviews[0]!;
+  assert.equal(rev.outcome, 'awaiting_analyst');
+  assert.equal(rev.findings.length, 1, 'знахідки є в експорті');
+  assert.equal(rev.findings[0]!.code, 'UNSUPPORTED_CANDIDATE');
+  assert.equal(rev.findings[0]!.quote, 'Синтетичний процес зміни умов', 'цитата збережена дослівно');
+  assert.ok(Array.isArray(rev.warnings) && rev.warnings.some((w) => /не в тексті вказаних кроків/.test(w)), 'попередження перевірки цитат є в експорті');
+  assert.ok(rev.response && Array.isArray(rev.response.findings), 'збережена відповідь агента 2 є в експорті');
+  assert.ok(rev.attempts, 'журнал спроб є');
+  assert.ok(rev.instruction_version.startsWith('bpmn-'), 'видно версію інструкції');
+  assert.deepEqual(data.finding_resolutions, [], 'рішень ще немає, але поле є');
+  // Ключ не витік — ні в знахідці, ні в збереженій відповіді.
+  const text = readFileSync(out, 'utf8');
+  assert.ok(!text.includes('sk-ant-api03-LEAKINREVIEW123456'), 'ключ з відповіді моделі приховано');
+  assert.ok(text.includes('[ключ приховано]'));
+  assert.ok(res.stdout.includes('Смислових перевірок: 1'), res.stdout);
 });

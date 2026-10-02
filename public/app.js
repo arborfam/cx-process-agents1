@@ -429,6 +429,12 @@ function findingBox(card, reviewId, view, canDecide) {
       ' · кроки: ', f.step_ids.join(', ')),
     el('div', {}, el('strong', {}, 'Питання агента: '), f.question),
     el('blockquote', {}, '«', f.quote, '»'),
+    // Звідки цитата: з тексту самого кроку чи з іншого місця опису (суть, контекст, питання). Для рішення це
+    // важливо: вимога до нотації — твердження про поведінку КРОКУ, яку має показати схема (D83).
+    view.quote_from_step === false
+      ? el('div', { class: 'small', style: 'color:var(--danger)' },
+          '⚠ Цитата взята не з тексту кроку ' + f.step_ids.join(', ') + ', а з іншого місця опису (суть, контекст або питання). Перевірте, чи вона описує поведінку самого кроку.')
+      : view.quote_from_step === true ? el('div', { class: 'small muted' }, 'Цитата з тексту вказаного кроку.') : null,
     (f.options || []).length ? el('div', { class: 'small' }, 'Варіанти від агента (не підставляються в опис автоматично): ' + f.options.join(' · ')) : null,
     view.resolution
       ? el('div', { class: 'decision' },
