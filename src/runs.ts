@@ -175,7 +175,8 @@ export function writeMeta(db: DB, runId: string, m: RunMeta): void {
 
 export function failRun(db: DB, runId: string, error: string, meta?: RunMeta, violations: Violation[] = []): void {
   const r = one<{ case_id: string }>(db, 'SELECT case_id FROM run WHERE id = ?', runId);
-  const msg = redact(error).slice(0, 2000);
+  // 4000, а не 2000: повідомлення тепер містить первинну причину (з підказкою, що саме доступно) І блокування повтору.
+  const msg = redact(error).slice(0, 4000);
   run(db, `UPDATE run SET technical_state = 'error', finished_at = ?, error = ?, violations_json = ? WHERE id = ? AND technical_state = 'running'`,
     new Date().toISOString(), msg, JSON.stringify(violations), runId);
   if (meta) writeMeta(db, runId, meta);
@@ -317,7 +318,7 @@ function recordAttempts(db: DB, runId: string, log: { attempt: number; kind: str
   const row = one<{ checks_json: string }>(db, 'SELECT checks_json FROM run WHERE id = ?', runId);
   let checks: Record<string, unknown> = {};
   try { checks = JSON.parse(row?.checks_json ?? '{}') as Record<string, unknown>; } catch { checks = {}; }
-  checks.failed_attempts = log.map((l) => ({ attempt: l.attempt, kind: l.kind, message: redact(l.message).slice(0, 500), violations: l.violations.slice(0, 20) }));
+  checks.failed_attempts = log.map((l) => ({ attempt: l.attempt, kind: l.kind, message: redact(l.message).slice(0, 1500), violations: l.violations.slice(0, 20) }));
   run(db, 'UPDATE run SET checks_json = ? WHERE id = ?', JSON.stringify(checks), runId);
 }
 
@@ -353,7 +354,13 @@ export async function executeAnalystRun(db: DB, ctx: RunCtx, client: AnalystClie
         const chars = ctx.input.instruction.text.length + buildUserMessage(ctx.input).length;
         attemptReserve = reserveRetry(db, ctx.runId, opts.policy!, chars, known, unknownReserve);
       } catch (e) {
-        lastError = (e instanceof Error ? e.message : String(e)) + ' Повторну спробу не виконано.';
+        // Первинна причина — ПЕРШОЮ: саме вона підказує, що виправляти. Блокування повтору — наслідок, а не причина.
+        const blocked = e instanceof Error ? e.message : String(e);
+        const primary = lastViolations.length
+          ? `Первинна причина (спроба 1): відповідь не пройшла перевірку — ${formatViolations(lastViolations)[0]}` +
+            (lastViolations.length > 1 ? ` (і ще ${lastViolations.length - 1} поруш. — див. «Відхилені спроби та їхні причини»)` : '') + '. '
+          : lastError !== 'невідома помилка' ? `Первинна причина (спроба 1): ${lastError} ` : '';
+        lastError = primary + blocked;
         break;
       }
     }

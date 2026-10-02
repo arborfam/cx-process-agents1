@@ -281,7 +281,8 @@ test('ліміт на запуск ($1,5 в політиці) діє разом 
   const run = runRow(db, r.runId);
   assert.equal(run.technical_state, 'error');
   assert.match(run.error, /Повторну спробу не виконано/);
-  assert.match(run.error, /ліміт на запуск/);
+  assert.match(run.error, /лімітом на запуск/);           // формулювання уточнено в D81: ліміт названо разом із числами
+  assert.match(run.error, /уже витрачено|перша спроба/i); // і видно, що перша спроба вже виконана
   assert.deepEqual([run.cost_known, run.cost_usd], [0, null]);
   assert.ok(run.reserved_usd > 0.3 && run.reserved_usd <= 1.0, `резерв першої спроби лишився: ${run.reserved_usd}`);
   assert.equal(recRow(db, r.runId), undefined, 'результату перевірки немає');

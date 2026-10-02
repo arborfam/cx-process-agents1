@@ -381,7 +381,7 @@ test('D61: агент не може підтвердити пропозицію 
 
 test('D61: інструкція агента v0.8 містить правила пропозиції (цитата, лише proposed, «не зазначено»), заборону чіпати назву процесу, без службових приміток', () => {
   const i = loadInstruction();
-  assert.equal(i.version, 'analyst-v0.8');
+  assert.equal(i.version, 'analyst-v0.9');
   for (const needle of ['notation_requirements', 'status: "proposed"', 'Ніколи не став `confirmed`', 'не зазначено', 'process_name', 'назву кейсу не вживай']) {
     assert.ok(i.text.includes(needle), `інструкція не містить «${needle}»`);
   }

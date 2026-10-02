@@ -459,8 +459,8 @@ test('K9. Старий контракт працює як раніше; відп
 test('K9. Контракт має власну версію інструкції; спільні правила аналізу однакові', () => {
   const fullIns = loadInstruction(undefined, 'full');
   const deltaIns = loadInstruction(undefined, 'delta');
-  assert.equal(fullIns.version, 'analyst-v0.8');
-  assert.equal(deltaIns.version, 'analyst-v0.8+delta-v1');
+  assert.equal(fullIns.version, 'analyst-v0.9');
+  assert.equal(deltaIns.version, 'analyst-v0.9+delta-v1');
   assert.notEqual(fullIns.hash, deltaIns.hash);
   assert.match(fullIns.text, /повна оновлена версія/);
   assert.match(deltaIns.text, /лише нові й змінені елементи/);
@@ -479,7 +479,7 @@ test('K9. Запуск за запитом контракту видно в жу
   assert.ok(r.ok);
   const row = one<{ output_contract: string; instruction_version: string }>(db, 'SELECT output_contract, instruction_version FROM run WHERE id = ?', r.runId)!;
   assert.equal(row.output_contract, 'delta');
-  assert.equal(row.instruction_version, 'analyst-v0.8+delta-v1');
+  assert.equal(row.instruction_version, 'analyst-v0.9+delta-v1');
 });
 
 // ───────── Злиття окремо від запуску (межові правила) ─────────

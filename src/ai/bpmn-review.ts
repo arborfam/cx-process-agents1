@@ -339,7 +339,11 @@ export async function runBpmnReview(client: BpmnReviewClient, instruction: Instr
     try {
       opts.beforeAttempt?.(attempt, costs);
     } catch (e) {
-      last = { kind: 'other', message: (e instanceof Error ? e.message : 'Спробу не дозволено.').slice(0, 600) + ' Повторну спробу не виконано.', violations: [] };
+      // Первинна причина — ПЕРШОЮ: блокування повтору (бюджет, ліміт) це наслідок, а не причина відхилення.
+      // Повідомлення бюджету вже саме каже, що повторну спробу не виконано й що перша була оплачена (D81).
+      const blocked = e instanceof Error ? e.message : 'Спробу не дозволено.';
+      const primary = attempt > 1 && last.message !== 'Перевірку не виконано.' ? `Первинна причина (спроба 1): ${last.message} ` : '';
+      last = { kind: 'other', message: (primary + blocked).slice(0, 1500), violations: last.violations };
       failedAttempts.push({ attempt, ...last });
       break;
     }

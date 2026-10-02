@@ -29,6 +29,24 @@ export function selfConsistency(base: Content, out: Content): { violations: Viol
   const changedStep = new Set(out.steps.filter((s) => baseStep.get(s.id) !== canonical(s)).map((s) => s.id));
   const stepById = new Map(out.steps.map((s) => [s.id, s]));
 
+  // Чи існував цей зв'язок у ВХІДНІЙ версії (тобто його створила не ця відповідь).
+  const baseStepById = new Map(base.steps.map((s) => [s.id, s]));
+  const baseQById = new Map(base.questions.map((q) => [q.id, q]));
+  const linkInBase = (qid: string, a: { step_id: string; condition: string }): boolean =>
+    (baseQById.get(qid)?.affects_transitions ?? []).some((l) => l.step_id === a.step_id && l.condition === a.condition);
+  /**
+   * Чи був цей зв'язок РОЗІРВАНИЙ уже у вхідній версії: він там був, а переходу (чи кроку) з такою умовою
+   * там не було. Тоді це не самосуперечність ЦІЄЇ відповіді, і відхиляти її не можна (той самий принцип,
+   * що у D73): програма позначає місце для аналітикині. Прив'язку відкритого питання агент однаково не
+   * переносить (`protectAnalystEdits`), тож відмова лишала б агента без жодного дозволеного виходу.
+   */
+  const linkWasBroken = (qid: string, a: { step_id: string; condition: string }): boolean => {
+    if (!linkInBase(qid, a)) return false;
+    const bs = baseStepById.get(a.step_id);
+    if (!bs) return true;
+    return !bs.next.some((n) => n.condition === a.condition);
+  };
+
   // 1–3. Прив'язки питань до потоку й невідомі переходи.
   const openDirection = (stepId: string, cond: string) =>
     out.questions.some((q) => q.status === 'open' && (q.affects_transitions ?? []).some((a) => a.step_id === stepId && a.condition === cond && kindOf(a) === 'direction'));
@@ -40,10 +58,42 @@ export function selfConsistency(base: Content, out: Content): { violations: Viol
       const kind = kindOf(a);
       const path = `questions (${q.id}) → крок ${a.step_id}`;
       const step = stepById.get(a.step_id);
-      if (!step) { v.push({ code: 'LINK_BROKEN', path, message: 'питання прив’язане до кроку, якого немає' }); continue; }
+      if (!step) {
+        if (linkWasBroken(q.id, a)) {
+          warnings.push(`Питання ${q.id} прив’язане до кроку ${a.step_id}, якого в опису немає, — так було вже у вхідній версії, не через цю відповідь. ` +
+            'Програма прив’язку не змінює: виправити її може аналітикиня явним рішенням.');
+          continue;
+        }
+        v.push({ code: 'LINK_BROKEN', path, message: `питання прив’язане до кроку ${a.step_id}, якого немає в повному результаті` });
+        continue;
+      }
       if (kind === 'step_detail') continue;
       const tr = step.next.find((n) => n.condition === a.condition);
-      if (!tr) { v.push({ code: 'LINK_BROKEN', path, message: `питання прив’язане до переходу з умовою «${a.condition}», якого в кроці немає` }); continue; }
+      if (!tr) {
+        // Що саме доступно в кроці — у повідомленні: інакше ні агент у повторній спробі, ні людина не бачать,
+        // з чим саме не збіглась умова (умови порівнюються дослівно).
+        const available = step.next.length
+          ? `У кроці ${a.step_id} зараз такі переходи: ${step.next.map((n) => `«${n.condition}» → ${n.to}`).join('; ')}.`
+          : `У кроці ${a.step_id} переходів немає жодного.`;
+        if (linkWasBroken(q.id, a)) {
+          warnings.push(`Питання ${q.id}: прив’язка до переходу з умовою «${a.condition}» у кроці ${a.step_id} не збігається з жодним переходом — ` +
+            `зв’язок був розірваний уже у вхідній версії, не через цю відповідь. ${available} ` +
+            'Прив’язку відкритого питання змінює лише аналітикиня явним рішенням; перевірте, чи питання ще стосується цього кроку.');
+          continue;
+        }
+        v.push({ code: 'LINK_BROKEN', path, message:
+          `питання прив’язане до переходу з умовою «${a.condition}», якого в кроці немає. ${available} ` +
+          'Умова порівнюється дослівно, і порожня умова «» — це конкретний перехід (звичайна послідовність), а не «будь-який перехід». ' +
+          'Перевірка виконується на ПОВНОМУ результаті, тому перехід має бути в тому кроці, який ти повертаєш (крок повертається з усіма своїми переходами). ' +
+          (linkInBase(q.id, a)
+            ? 'Цей зв’язок був у вхідній версії, а умову переходу змінила ця відповідь: поверни умову такою, якою вона була, ' +
+              'або додай новий перехід, не прибираючи старого. Прив’язку відкритого питання агент не переносить і не знімає — це рішення аналітикині.'
+            : (a.kind === undefined ? 'Вид прив’язки не зазначено, тому його прийнято як «direction». ' : '') +
+              'Обери одне: (а) питання про зміст кроку — kind «step_detail», такий зв’язок переходу не потребує, і вигадувати перехід для нього не треба; ' +
+              `(б) продовження справді невідоме — поверни крок із переходом «${UNKNOWN}» і прив’яжи питання до нього (kind «direction»); ` +
+              '(в) питання про наявний перехід — вкажи його умову дослівно так, як вона записана в кроці.') });
+        continue;
+      }
       // Уже відомий невизначений перехід, який агент «закрив» без закриття питання, програма сама поверне в «невідомо» (протокол конфлікту) — це не нова самосуперечність.
       const wasUnknown = base.steps.find((x) => x.id === a.step_id)?.next.some((n) => n.condition === a.condition && n.to === UNKNOWN) ?? false;
       if (kind === 'direction' && tr.to !== UNKNOWN && !wasUnknown) {

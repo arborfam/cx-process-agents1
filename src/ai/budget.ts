@@ -125,13 +125,30 @@ export function unknownCostRuns(db: DB): number {
   return one<{ n: number }>(db, `SELECT COUNT(*) AS n FROM run WHERE mode = 'real' AND cost_known = 0`)?.n ?? 0;
 }
 
-function checkMoney(db: DB, p: ModelPolicy, worst: number, alreadyUsd: number, excludeRunId?: string): void {
+/**
+ * `phase: 'retry'` — перевірка ПЕРЕД повторною спробою, коли перша вже виконана й оплачена. Тоді писати
+ * «запуск не виконано» неправильно: запуск відбувся, і витрати є. Текст називає обидва числа окремо —
+ * уже витрачене й найгіршу оцінку наступної спроби, — щоб було видно, що це сума, а не подвоєння оцінки.
+ */
+function checkMoney(db: DB, p: ModelPolicy, worst: number, alreadyUsd: number, excludeRunId?: string, phase: 'first' | 'retry' = 'first'): void {
+  const retry = phase === 'retry';
+  const breakdown = `на цей запуск уже витрачено $${alreadyUsd.toFixed(2)}, найгірша оцінка повторної спроби — $${worst.toFixed(2)}, разом $${(alreadyUsd + worst).toFixed(2)}`;
+  const tail = retry
+    ? 'Повторну спробу не виконано (оцінка рахує стелю виходу, а не очікувану вартість). Перша спроба вже виконана й оплачена, її результат не прийнято.'
+    : 'Запуск не виконано.';
   if (alreadyUsd + worst > p.budgetPerRunUsd) {
-    throw new DomainError('BUDGET_PER_RUN', `Найгірша оцінка вартості запуску $${(alreadyUsd + worst).toFixed(2)} перевищує ліміт на запуск $${p.budgetPerRunUsd.toFixed(2)}. Запуск не виконано.`, 429);
+    throw new DomainError('BUDGET_PER_RUN',
+      retry
+        ? `Повтор заблоковано лімітом на запуск $${p.budgetPerRunUsd.toFixed(2)}: ${breakdown}. ${tail}`
+        : `Найгірша оцінка вартості запуску $${(alreadyUsd + worst).toFixed(2)} перевищує ліміт на запуск $${p.budgetPerRunUsd.toFixed(2)}. ${tail}`, 429);
   }
   const spent = spentUsd(db, excludeRunId);
   if (spent + alreadyUsd + worst > p.budgetTotalUsd + 1e-12) {
-    throw new DomainError('BUDGET_TOTAL', `Запуск може коштувати до $${worst.toFixed(2)} (оцінка), а вільно $${Math.max(0, p.budgetTotalUsd - spent - alreadyUsd).toFixed(2)}: витрачено й зарезервовано $${spent.toFixed(2)} із $${p.budgetTotalUsd.toFixed(2)} (враховано активні запуски й запуски з невідомою вартістю). Запуск не виконано.`, 429);
+    throw new DomainError('BUDGET_TOTAL',
+      (retry
+        ? `Повтор заблоковано загальним бюджетом: ${breakdown}; `
+        : `Запуск може коштувати до $${worst.toFixed(2)} (оцінка), а `) +
+      `вільно $${Math.max(0, p.budgetTotalUsd - spent - alreadyUsd).toFixed(2)}: витрачено й зарезервовано $${spent.toFixed(2)} із $${p.budgetTotalUsd.toFixed(2)} (враховано активні запуски й запуски з невідомою вартістю). ${tail}`, 429);
   }
 }
 
@@ -155,9 +172,9 @@ export function preflight(db: DB, caseId: string, p: ModelPolicy, promptChars: n
  */
 export function reserveRetry(db: DB, runId: string, p: ModelPolicy, promptChars: number, known: number, unknownReserve: number, schemaLen?: number): number {
   return tx(db, () => {
-    if (promptChars > p.maxInputChars) throw new DomainError('INPUT_TOO_LARGE', 'Обсяг запиту перевищує ліміт.', 413);
+    if (promptChars > p.maxInputChars) throw new DomainError('INPUT_TOO_LARGE', 'Обсяг запиту перевищує ліміт; повторну спробу не виконано.', 413);
     const worst = worstCaseCostUsd(p, promptChars, schemaLen);
-    checkMoney(db, p, worst, known + unknownReserve, runId);
+    checkMoney(db, p, worst, known + unknownReserve, runId, 'retry');
     run(db, `UPDATE run SET cost_usd = ?, reserved_usd = ? WHERE id = ?`, known, unknownReserve + worst, runId);
     return worst;
   });
