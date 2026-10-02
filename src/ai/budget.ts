@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { all, one, run, tx, type DB } from '../db.ts';
-import { ContentSchema } from '../schema.ts';
+import { ContentSchema, type Content } from '../schema.ts';
 import { DomainError } from '../errors.ts';
 import type { Effort, ModelConfig, Pricing } from '../config.ts';
 import type { Usage } from './types.ts';
@@ -45,6 +45,45 @@ export function schemaChars(): number {
 }
 /** `schemaLen` — розмір JSON-схеми відповіді саме цього агента (за замовчуванням — агента 1); бюджет спільний, оцінка — для кожного агента своя. */
 export const estimateInputTokens = (chars: number, schemaLen: number = schemaChars()) => Math.ceil(((chars + schemaLen) / CHARS_PER_TOKEN) * INPUT_MARGIN);
+
+/**
+ * Скільки символів відповіді припадає на один вихідний токен. Виміряно на справжніх прогонах контрольного
+ * запуску (D78): етап 1 — 2 спроби × 21 739 симв. промпта → 16 133 вх. токени; етап 2 — 37 610 симв. → 14 970.
+ * Обидва дають ≈ 2,5 символа на токен для цього змісту (українська + JSON).
+ */
+export const CHARS_PER_OUTPUT_TOKEN = 2.5;
+/** Запас до виміряного значення: токенізація залежить від тексту. */
+export const OUTPUT_MARGIN = 1.25;
+/**
+ * Скільки токенів міркувань припадає на токен відповіді. Виміряно ОДИН раз (етап 2 контрольного прогону:
+ * 25 836 вихідних токенів при відповіді ≈ 14 000 ⇒ ≈ 0,84). Узято 1,0 із запасом.
+ * ВАЖЛИВО: в Opus 5.5 міркування вимкнути не можна, вони завжди оплачуються й рахуються в `output_tokens`,
+ * а `max_tokens` — спільна жорстка стеля для міркувань і відповіді, про яку модель не знає.
+ * Розділити їх постфактум неможливо: окремого лічильника токенів міркувань API не повертає.
+ */
+export const THINKING_RATIO = 1.0;
+
+export interface AnswerFeasibility {
+  ok: boolean;
+  /** Скільки символів має щонайменше містити відповідь: увесь накопичений зміст. */
+  contentChars: number;
+  answerTokens: number;
+  /** Відповідь + міркування. */
+  needTokens: number;
+  maxOutputTokens: number;
+}
+
+/**
+ * Чи вміститься відповідь у стелю виходу. Агент зобов'язаний повернути ПОВНУ оновлену версію змісту
+ * (інструкція, розділ «Вихід»), тож відповідь не може бути меншою за накопичений зміст — його розмір
+ * і є нижньою межею. Це оцінка, а не гарантія: вона потрібна, щоб не платити за завідомо обірваний виклик.
+ */
+export function answerFeasibility(content: Content, maxOutputTokens: number): AnswerFeasibility {
+  const contentChars = JSON.stringify(content).length;
+  const answerTokens = Math.ceil((contentChars / CHARS_PER_OUTPUT_TOKEN) * OUTPUT_MARGIN);
+  const needTokens = Math.ceil(answerTokens * (1 + THINKING_RATIO));
+  return { ok: needTokens <= maxOutputTokens, contentChars, answerTokens, needTokens, maxOutputTokens };
+}
 
 export function worstCaseCostUsd(p: ModelPolicy, promptChars: number, schemaLen?: number): number {
   return (estimateInputTokens(promptChars, schemaLen) * p.price.input + p.maxOutputTokens * p.price.output) / 1e6;

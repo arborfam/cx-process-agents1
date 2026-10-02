@@ -379,9 +379,9 @@ test('D61: агент не може підтвердити пропозицію 
   assert.equal(all(db, 'SELECT id FROM as_is_version WHERE case_id = ?', c.id).length, 2);
 });
 
-test('D61: інструкція агента v0.7 містить правила пропозиції (цитата, лише proposed, «не зазначено»), заборону чіпати назву процесу, без службових приміток', () => {
+test('D61: інструкція агента v0.8 містить правила пропозиції (цитата, лише proposed, «не зазначено»), заборону чіпати назву процесу, без службових приміток', () => {
   const i = loadInstruction();
-  assert.equal(i.version, 'analyst-v0.7');
+  assert.equal(i.version, 'analyst-v0.8');
   for (const needle of ['notation_requirements', 'status: "proposed"', 'Ніколи не став `confirmed`', 'не зазначено', 'process_name', 'назву кейсу не вживай']) {
     assert.ok(i.text.includes(needle), `інструкція не містить «${needle}»`);
   }

@@ -5,7 +5,7 @@ import {
   type Actor, type VersionRow,
 } from './domain.ts';
 import { type Content } from './schema.ts';
-import { actualCostUsd, preflight, reserveRetry, type ModelPolicy } from './ai/budget.ts';
+import { actualCostUsd, answerFeasibility, preflight, reserveRetry, type ModelPolicy } from './ai/budget.ts';
 import { idMaps } from './ai/idmap.ts';
 import { buildUserMessage, loadInstruction } from './ai/prompt.ts';
 import { redact } from './ai/redact.ts';
@@ -65,7 +65,7 @@ export function beginAnalystRun(db: DB, caseId: string, client: AnalystClient, o
     return beginInner(db, caseId, client, opts);
   } catch (e) {
     // Відмову записуємо поза скасованою транзакцією: видно, що запуск не виконано й чому.
-    if (e instanceof DomainError && ['INPUT_TOO_LARGE', 'RUN_LIMIT_CASE', 'RUN_LIMIT_DAY', 'BUDGET_PER_RUN', 'BUDGET_TOTAL', 'REAL_DATA_BLOCKED', 'AI_UNAVAILABLE'].includes(e.code)) {
+    if (e instanceof DomainError && ['INPUT_TOO_LARGE', 'RUN_LIMIT_CASE', 'RUN_LIMIT_DAY', 'BUDGET_PER_RUN', 'BUDGET_TOTAL', 'REAL_DATA_BLOCKED', 'AI_UNAVAILABLE', 'OUTPUT_TOO_LARGE'].includes(e.code)) {
       audit(db, caseId, AGENT_SYSTEM_ACTOR, 'run_refused', { code: e.code });
     }
     throw e;
@@ -96,6 +96,20 @@ function beginInner(db: DB, caseId: string, client: AnalystClient, opts: RunOpti
           'У кейсі є джерела з позначкою «реальні дані». У цьому прототипі вони не надсилаються постачальнику моделі (рішення D18). Запуск не виконано.', 409);
       }
       if (!opts.policy) throw new DomainError('AI_UNAVAILABLE', 'Для справжньої моделі не задано ліміти й ціни; запуск не виконано.', 409);
+      // Чи вміститься відповідь у стелю виходу. Агент повертає ПОВНУ оновлену версію, тож накопичений зміст —
+      // нижня межа відповіді; разом із міркуваннями (їх в Opus 5.5 не вимкнути) вони ділять один `max_tokens`.
+      // Без цієї перевірки обірваний виклик оплачується повністю, а версія не змінюється (D78).
+      const fit = answerFeasibility(versionContent(base), opts.policy.maxOutputTokens);
+      if (!fit.ok) {
+        throw new DomainError('OUTPUT_TOO_LARGE',
+          `Опис уже завеликий, щоб агент міг повернути його цілим: у ньому ${fit.contentChars} символів, а відповідь має містити весь опис ` +
+          `(≈ ${fit.answerTokens} токенів) плюс міркування моделі — разом ≈ ${fit.needTokens} при стелі ${fit.maxOutputTokens}. ` +
+          'Виклик не виконано, витрат немає: обірвана відповідь коштує повну ціну й не зберігається. ' +
+          'Що можна зробити: розділити дослідження на менші етапи (менше нових джерел за раз), ' +
+          'закрити вже з’ясовані питання уточненнями й прийняти пропозиції, щоб опис перестав рости, ' +
+          'або свідомо підняти CX_MAX_OUTPUT_TOKENS — але тоді наступний етап упреться в ту саму межу.',
+          413, { size: fit });
+      }
       reservedUsd = preflight(db, caseId, opts.policy, instruction.text.length + buildUserMessage(input).length).worstCaseUsd;
     }
     const runId = `run_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
@@ -105,7 +119,11 @@ function beginInner(db: DB, caseId: string, client: AnalystClient, opts: RunOpti
          technical_state, started_at, scenario_stage, reserved_usd) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       runId, caseId, 'analyst', instruction.version, instruction.hash, client.mode, client.model, base.id, JSON.stringify(sourceIds), 'running',
       new Date().toISOString(), c.scenario_id ? c.scenario_stage : null, reservedUsd);
-    audit(db, caseId, AGENT_SYSTEM_ACTOR, 'run_started', { run_id: runId, base_version_id: base.id, mode: client.mode, model: client.model, sources: sourceIds.length });
+    // Розмір запиту й очікуваної відповіді — у журнал: зростання опису має бути видно до того, як воно впреться в стелю.
+    const promptChars = instruction.text.length + buildUserMessage(input).length;
+    const size = { content_chars: JSON.stringify(versionContent(base)).length, prompt_chars: promptChars, answer_tokens: answerFeasibility(versionContent(base), opts.policy?.maxOutputTokens ?? 0).answerTokens };
+    run(db, 'UPDATE run SET checks_json = ? WHERE id = ?', JSON.stringify({ size }), runId);
+    audit(db, caseId, AGENT_SYSTEM_ACTOR, 'run_started', { run_id: runId, base_version_id: base.id, mode: client.mode, model: client.model, sources: sourceIds.length, size });
     return { runId, caseId, base, sourceIds, input, startedMs: Date.now(), reservedUsd };
   });
 }
@@ -215,8 +233,11 @@ export function completeAnalystRun(db: DB, runId: string, rawOutput: unknown): V
       // зміст змінився — погодження втрачає чинність
       if (c.state !== 'research') returnAfterAgentChange(db, caseId);
     }
+    // checks_json доповнюємо, а не перезаписуємо: розмір запиту записано на початку запуску (D78).
+    let checks: Record<string, unknown> = {};
+    try { checks = JSON.parse(one<{ checks_json: string }>(db, 'SELECT checks_json FROM run WHERE id = ?', runId)?.checks_json ?? '{}') as Record<string, unknown>; } catch { checks = {}; }
     run(db, `UPDATE run SET technical_state = 'done', finished_at = ?, output_version_id = ?, checks_json = ? WHERE id = ?`,
-      new Date().toISOString(), v.id, JSON.stringify({ warnings: checked.warnings, stale: isStale }), runId);
+      new Date().toISOString(), v.id, JSON.stringify({ ...checks, warnings: checked.warnings, stale: isStale }), runId);
     audit(db, caseId, AGENT_SYSTEM_ACTOR, isStale ? 'run_proposal_saved' : 'run_completed', { run_id: runId, version_id: v.id, stale: isStale });
     return v;
   });
