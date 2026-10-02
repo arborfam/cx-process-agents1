@@ -112,11 +112,40 @@ export function packageFields(content: Content): string[] {
 }
 
 /**
- * Чи лежить цитата знахідки в тексті САМОГО названого кроку (дія, роль, умова входу, вхідний артефакт,
- * результат, умови його переходів). Для кандидата на непідтримувану нотацію це важливо: вимога до нотації —
- * твердження про те, що має показати СХЕМА для цього кроку, а схема будується з кроків і переходів. Цитата
- * із суті, бізнес-контексту чи питання описує контекст, а не поведінку кроку (D83).
- * `null` — коли названих кроків немає в пакеті (це й так порушення) або цитати в пакеті немає.
+ * Де саме в погодженому пакеті лежить цитата (D85). Підставою знахідки може бути **будь-яке** поле пакета —
+ * крок, суть, бізнес-контекст, межі, питання; жодне не має переваги. Але людині, яка ухвалює рішення, корисно
+ * бачити, звідки взято доказ: якщо він з одного поля, а названо крок, варто перевірити, чи поля узгоджені
+ * між собою (суперечність — сама по собі прогалина, і вирішує її людина, а не програма).
+ */
+export function quoteLocations(content: Content, quote: string): string[] {
+  const out: string[] = [];
+  const add = (label: string, text: unknown) => {
+    if (typeof text !== 'string' || text.trim() === '') return;
+    if (findQuote(text, quote).kind !== 'not_found') out.push(label);
+  };
+  add('назва процесу', content.process_name ?? '');
+  add('суть', content.summary);
+  add('бізнес-контекст', content.business_context);
+  const BL: Record<string, string> = { trigger: 'тригер', input: 'вхід', completion: 'завершення', result: 'результат' };
+  for (const [k, label] of Object.entries(BL)) add(`межі · ${label}`, content.boundaries[k as keyof Content['boundaries']]);
+  for (const r of content.roles) add('ролі', r);
+  for (const st of content.steps) {
+    add(`крок ${st.id} · роль`, st.role);
+    add(`крок ${st.id} · дія`, st.action);
+    add(`крок ${st.id} · умова входу`, st.entry_condition);
+    add(`крок ${st.id} · вхідний артефакт`, st.input_artifact);
+    add(`крок ${st.id} · результат`, st.result);
+    for (const n of st.next) add(`крок ${st.id} · умова переходу`, n.condition);
+  }
+  for (const r of content.notation_requirements ?? []) if (r.status === 'confirmed') add(`вимога до нотації ${r.id}`, r.detail);
+  for (const q of content.questions) { add(`питання ${q.id}`, q.text); add(`питання ${q.id} · відповідь`, q.answer); }
+  return [...new Set(out)];
+}
+
+/**
+ * Чи лежить цитата знахідки в тексті названого кроку (дія, роль, умова входу, вхідний артефакт, результат,
+ * умови його переходів). Це **довідкова ознака для людини**, а не критерій допустимості знахідки: підстава
+ * може бути в будь-якому полі пакета (D85). `null` — коли названих кроків немає або цитати в пакеті немає.
  */
 export function quoteFromCitedStep(content: Content, f: Pick<ReviewFinding, 'step_ids' | 'quote'>): boolean | null {
   const cited = f.step_ids.flatMap((id) => stepFields(content, id));

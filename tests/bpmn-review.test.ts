@@ -49,7 +49,7 @@ const run = (c: BpmnReviewClient, p: ReviewPackage = pkg(), o = {}) => runBpmnRe
 // ───────── Інструкція й схема ─────────
 
 test('інструкція v0.3 завантажується з маркерів; усі шість кодів із таблиці збігаються зі схемою; приклад відповіді в ній чинний', () => {
-  assert.equal(INSTR.version, 'bpmn-v0.4');
+  assert.equal(INSTR.version, 'bpmn-v0.5');
   assert.match(INSTR.hash, /^[0-9a-f]{64}$/);
   const inTable = [...INSTR.text.matchAll(/^\| `([A-Z_]+)` \|/gm)].map((m) => m[1]);
   assert.deepEqual([...inTable].sort(), [...FINDING_CODES].sort());
@@ -205,7 +205,7 @@ test('успішний запуск: прив’язка до версії, хе
   assert.equal(r.status, 'completed');
   assert.deepEqual(r.binding, {
     versionId: p.versionId, contentHash: p.contentHash, contentFingerprint: sha256(canonical(p.content)), clientMode: 'real',
-    clientModel: 'ПІДСТАВНИЙ-КЛІЄНТ (тест, не модель)', instructionVersion: 'bpmn-v0.4', instructionHash: INSTR.hash,
+    clientModel: 'ПІДСТАВНИЙ-КЛІЄНТ (тест, не модель)', instructionVersion: 'bpmn-v0.5', instructionHash: INSTR.hash,
   });
   assert.equal(r.status === 'completed' && r.findings.length, 1);
   assert.equal(canonical(p.content), before, 'агент не змінює пакет');
