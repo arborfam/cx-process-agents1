@@ -495,9 +495,11 @@ export function checkResolution(res: ResolutionRow, review: RecordRow, findings:
     if (!actual) bad.push('Зауваження з таким ключем у цій перевірці немає.');
     else {
       if (canonical(actual) !== canonical(stored)) bad.push('Збережена копія зауваження не збігається із зауваженням перевірки.');
-      // Допустимість: відхиляти можна лише те, що блокує потік, і ніколи — кандидата на непідтримувану нотацію (D21).
-      if (actual.code === 'UNSUPPORTED_CANDIDATE') bad.push('Кандидата на непідтримувану нотацію відхилити не можна (D21).');
-      else if (actual.class !== 'blocks_flow') bad.push('Зауваження не блокує потік: рішення щодо нього не приймається.');
+      // Допустимість: рішення приймається щодо того, що блокує побудову — знахідки класу `blocks_flow`
+      // і припущення про непідтримувану нотацію (D84, варіант 1). Незаблокувальні зауваження рішення не потребують.
+      if (actual.code !== 'UNSUPPORTED_CANDIDATE' && actual.class !== 'blocks_flow') {
+        bad.push('Зауваження не блокує потік: рішення щодо нього не приймається.');
+      }
     }
   }
 
@@ -534,11 +536,9 @@ export function findingsView(findings: readonly ReviewFinding[], resolutions: re
     const unsupported = f.code === 'UNSUPPORTED_CANDIDATE';
     const key = findingKey(f);
     return {
-      key, finding: f, blocking: unsupported || f.class === 'blocks_flow', can_reject: !unsupported && f.class === 'blocks_flow',
+      key, finding: f, blocking: unsupported || f.class === 'blocks_flow', can_reject: unsupported || f.class === 'blocks_flow',
       resolution: byKey.get(key) ?? null,
-      reject_blocked_reason: unsupported
-        ? 'Кандидата на непідтримувану нотацію відхилити не можна (D21): схема не спрощується. Потрібне рішення щодо вимоги до нотації або зміна опису.'
-        : f.class === 'blocks_flow' ? null : 'Зауваження не блокує потік: рішення не потрібне.',
+      reject_blocked_reason: unsupported || f.class === 'blocks_flow' ? null : 'Зауваження не блокує потік: рішення не потрібне.',
       quote_from_step: content ? quoteFromCitedStep(content, f) : null,
       quote_locations: content ? quoteLocations(content, f.quote) : [],
     };
@@ -552,12 +552,15 @@ export function listResolutions(db: DB, caseId: string): ResolutionRow[] {
 export const MIN_EXPLANATION_CHARS = 10;
 
 /**
- * Відхилення знахідки `blocks_flow` аналітикинею з обов'язковим поясненням (D31). Незмінний запис, прив'язаний до
- * конкретної знахідки (її ключ), запису перевірки, запуску, погодження, версії й хеша пакета.
+ * Рішення аналітикині щодо зауваження, яке блокує побудову, з обов'язковим поясненням (D31; D84 — тепер і
+ * припущення про непідтримувану нотацію, `UNSUPPORTED_CANDIDATE`). Незмінний запис, прив'язаний до конкретної
+ * знахідки (її ключ), запису перевірки, запуску, погодження, версії й хеша пакета.
  *
  * Чого ця дія НЕ робить: не змінює AS-IS, не скасовує погодження, не чіпає знахідку й не відкриває генерацію сама.
- * Шлюз і всі програмні перевірки виконуються заново при побудові (`buildArtifact`). `UNSUPPORTED_CANDIDATE` і
- * `informational` відхилити не можна. «Уточнити AS-IS» рішенням тут не є: це звичайна нова версія AS-IS.
+ * Шлюз і всі програмні перевірки виконуються заново при побудові (`buildArtifact`): підтверджена вимога до
+ * нотації (D21/D61) далі веде до `unsupported` без моделі, структурні блокери, інші невирішені знахідки й
+ * зворотна перевірка файлів лишаються чинними. `informational` відхилити не можна — воно нічого не блокує.
+ * Нова версія AS-IS чи нова перевірка рішення НЕ успадковують. «Уточнити AS-IS» рішенням тут не є.
  */
 export function rejectFinding(db: DB, actor: Actor, caseId: string, args: { reviewId: string; findingKey: string; explanation: string }): ResolutionRow {
   requireHuman(actor, 'рішення щодо зауваження смислової перевірки');

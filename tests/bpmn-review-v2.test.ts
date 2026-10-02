@@ -276,8 +276,7 @@ test('2. Запис із порожнім чи надто коротким по�
   }
 });
 
-test('2. Рішення для зауваження, яке відхиляти не можна, не рахується (informational і UNSUPPORTED_CANDIDATE)', async () => {
-  // informational: шлюз і так відкритий, але рішення не має показуватись як чинне
+test('2. Рішення щодо незаблокувального зауваження не рахується (informational)', async () => {
   const dbI = freshDb();
   const sI = await reviewed(dbI, [okStep([finding({ class: 'informational' })])]);
   const vI = getCaseReview(dbI, sI.caseId).findingsView![0]!;
@@ -285,16 +284,51 @@ test('2. Рішення для зауваження, яке відхиляти �
   const rI = getCaseReview(dbI, sI.caseId);
   assert.equal(rI.findingsView![0]!.resolution, null, 'рішення щодо незаблокованого зауваження не є чинним');
   assert.ok((rI.invalidResolutions ?? []).length === 1);
+});
 
-  // UNSUPPORTED_CANDIDATE: шлюз лишається закритим
-  const dbU = freshDb();
-  const sU = await reviewed(dbU, [okStep([finding({ code: 'UNSUPPORTED_CANDIDATE' })])]);
-  const vU = getCaseReview(dbU, sU.caseId).findingsView![0]!;
-  forgeResolution(dbU, sU.caseId, sU.reviewId, { finding_key: vU.key, finding_json: JSON.stringify(vU.finding), explanation: EXPL }, true);
-  const rU = getCaseReview(dbU, sU.caseId);
-  assert.equal(rU.gate!.ok, false);
-  assert.equal(rU.gate!.code, 'UNSUPPORTED_CANDIDATE');
-  assert.equal(rU.findingsView![0]!.resolution, null);
+// Вимога змінилась за рішенням власниці (D84): рішення щодо припущення про непідтримувану нотацію тепер
+// допустиме. Тому коректно оформлений запис шлюз відкриває — як і для будь-якої іншої блокувальної знахідки;
+// перевіряємо, що НЕКОРЕКТНИЙ не відкриває. Межа лишається тією самою, що в D75: контрольна сума виявляє
+// пошкодження запису, але не захищає від того, хто може переписати базу й узгоджено перерахувати суми.
+test('2. Припущення агента: пошкоджений чи чужий запис рішення шлюз не відкриває (D84)', async () => {
+  for (const [label, over, recompute] of [
+    ['зіпсована контрольна сума', {}, false],
+    ['порожнє пояснення', { explanation: '   ' }, true],
+    ['ключ іншої знахідки', { finding_key: 'не-той-ключ' }, true],
+  ] as [string, Partial<ResolutionRow>, boolean][]) {
+    const db = freshDb();
+    const sU = await reviewed(db, [okStep([finding({ code: 'UNSUPPORTED_CANDIDATE' })])]);
+    const v = getCaseReview(db, sU.caseId).findingsView![0]!;
+    forgeResolution(db, sU.caseId, sU.reviewId, { finding_key: v.key, finding_json: JSON.stringify(v.finding), explanation: EXPL, ...over }, recompute);
+    const r = getCaseReview(db, sU.caseId);
+    assert.equal(r.gate!.ok, false, `${label}: шлюз має лишитись закритим`);
+    assert.equal(r.gate!.code, 'UNSUPPORTED_CANDIDATE', label);
+    assert.equal(r.findingsView![0]!.resolution, null, label);
+    assert.ok((r.invalidResolutions ?? []).length >= 1, `${label}: причину недовіри названо`);
+  }
+  // Чужу версію чи погодження база вставити не дає (зовнішні ключі), тому прив'язку перевіряємо напряму —
+  // і саме для припущення агента, щоб переконатися, що перевірки прив'язок діють і для цього коду.
+  const db = freshDb();
+  const sU = await reviewed(db, [okStep([finding({ code: 'UNSUPPORTED_CANDIDATE' })])]);
+  const review = getCaseReview(db, sU.caseId);
+  const view = review.findingsView![0]!;
+  const rev = one<Record<string, any>>(db, 'SELECT * FROM bpmn_review WHERE id = ?', sU.reviewId)!;
+  const base: Omit<ResolutionRow, 'record_hash'> = {
+    id: 'fres_direct_u', case_id: sU.caseId, review_id: sU.reviewId, run_id: rev.run_id, approval_id: rev.approval_id,
+    version_id: rev.version_id, content_hash: rev.content_hash, finding_key: view.key,
+    finding_json: JSON.stringify(view.finding), decision: 'rejected', explanation: EXPL,
+    decided_by: 'Аналітикиня', decided_at: '2026-01-01T00:00:00.000Z',
+  };
+  const withHash = (o: Omit<ResolutionRow, 'record_hash'>): ResolutionRow => ({ ...o, record_hash: resolutionHash(o) });
+  assert.deepEqual(checkResolution(withHash(base), rev as any, review.findings!), [], 'коректне рішення щодо припущення агента приймається');
+  for (const [what, over, re] of [
+    ['версія', { version_id: 'ver_000000000000' }, /Версія в рішенні/],
+    ['погодження', { approval_id: 'appr_000000000000' }, /Погодження в рішенні/],
+    ['хеш пакета', { content_hash: 'ІНШИЙ' }, /Хеш пакета/],
+  ] as [string, Partial<ResolutionRow>, RegExp][]) {
+    const reasons = checkResolution(withHash({ ...base, ...over }), rev as any, review.findings!);
+    assert.ok(reasons.some((x) => re.test(x)), `прив'язка «${what}»: отримали ${reasons.join(' | ')}`);
+  }
 });
 
 test('2. Справжнє рішення людини лишається чинним і після перезапуску — без звернення до моделі', async () => {

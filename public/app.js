@@ -402,20 +402,35 @@ async function loadDiagram() {
   if (state.tab === 'diagram') renderTabs();
 }
 
+/**
+ * Рішення людини щодо зауваження, яке блокує побудову. Для припущення про непідтримувану нотацію дія
+ * називається «Відхилити припущення агента» (D84). Показуємо саму знахідку, цитату й місця її походження;
+ * пояснення обов'язкове й НЕ підставляється автоматично — жодного готового тексту в полі немає.
+ */
 function rejectDialog(card, reviewId, view) {
-  const ta = el('textarea', { rows: '4', placeholder: 'Чому ви вважаєте опис однозначним (не менше 10 символів). Пояснення зберігається незмінно й буде у звіті.' });
+  const f = view.finding;
+  const candidate = f.code === 'UNSUPPORTED_CANDIDATE';
+  const ta = el('textarea', { rows: '4', placeholder: candidate
+    ? 'Чому ця конструкція не потрібна (не менше 10 символів): що саме в описі ви читаєте інакше, ніж агент. Пояснення зберігається незмінно й буде у звіті.'
+    : 'Чому ви вважаєте опис однозначним (не менше 10 символів). Пояснення зберігається незмінно й буде у звіті.' });
   openDialog(
-    el('h3', {}, 'Відхилити зауваження з поясненням'),
-    el('p', { class: 'small muted' }, 'Відхилення не скасовує програмних перевірок: їх буде виконано заново під час побудови. Опис AS-IS і погодження не змінюються.'),
-    el('blockquote', {}, view.finding.question),
+    el('h3', {}, candidate ? 'Відхилити припущення агента' : 'Відхилити зауваження з поясненням'),
+    el('div', { class: 'small' }, el('strong', {}, (FINDING_CODE_LABEL[f.code] || f.code) + ' · кроки: ' + f.step_ids.join(', '))),
+    el('div', {}, el('strong', {}, 'Питання агента: '), f.question),
+    el('blockquote', {}, '«', f.quote, '»'),
+    (view.quote_locations || []).length ? el('p', { class: 'small muted' }, 'Цитата з: ' + view.quote_locations.join('; ') + '.') : null,
+    el('p', { class: 'small muted' }, candidate
+      ? 'Рішення стосується лише цього припущення в цій перевірці погодженої версії. Воно НЕ означає, що непідтримувану конструкцію можна побудувати: підтверджені вимоги до нотації, структурні перевірки, інші зауваження й перевірка готових файлів діють як раніше. Нова версія опису чи нова перевірка це рішення не успадковують. Опис AS-IS і погодження не змінюються; запис незмінний, із вашим ім’ям і поясненням.'
+      : 'Відхилення не скасовує програмних перевірок: їх буде виконано заново під час побудови. Опис AS-IS і погодження не змінюються.'),
     ta,
     el('div', { class: 'row' },
       el('button', { class: 'primary', onclick: async () => {
+        if (ta.value.trim().length < 10) { toast('Потрібне пояснення (не менше 10 символів).'); return; }
         dlg.close();
         await act(() => api('POST', `/api/cases/${card.case.id}/bpmn/findings/reject`,
           { review_id: reviewId, finding_key: view.key, explanation: ta.value }), 'Рішення записано');
         await loadDiagram();
-      } }, 'Відхилити з поясненням'),
+      } }, candidate ? 'Відхилити припущення' : 'Відхилити з поясненням'),
       el('button', { onclick: () => dlg.close() }, 'Скасувати')));
 }
 
@@ -445,7 +460,8 @@ function findingBox(card, reviewId, view, canDecide) {
           el('div', { class: 'small muted' }, `${view.resolution.decided_by}, ${view.resolution.decided_at}. Запис незмінний.`))
       : view.can_reject
         ? (canDecide ? el('div', { class: 'row' },
-            el('button', { onclick: () => rejectDialog(card, reviewId, view) }, 'Відхилити з поясненням'),
+            el('button', { 'data-act': 'reject', onclick: () => rejectDialog(card, reviewId, view) },
+              f.code === 'UNSUPPORTED_CANDIDATE' ? 'Відхилити припущення агента…' : 'Відхилити з поясненням'),
             el('button', { onclick: () => showTab('edit') }, 'Уточнити опис (нова версія)')) : null)
         : el('div', { class: 'small muted' }, view.reject_blocked_reason));
 }

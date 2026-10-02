@@ -137,21 +137,34 @@ test('HTTP: відхилення з чужим ID перевірки та виг
 
 // ───────── 3. Непідтримувана нотація ─────────
 
-test('HTTP: кандидат на непідтримувану нотацію не відхиляється й схему не відкриває', async () => {
+// Вимога змінилась за явним рішенням власниці (D84, варіант 1): припущення агента про непідтримувану нотацію
+// тепер можна мотивовано відхилити — рішення незмінне, з поясненням, прив'язане до цієї знахідки й перевірки.
+// Раніше цей тест перевіряв заборону (D21/D31); тепер він перевіряє саме погоджену поведінку, не послаблюючи
+// жодної іншої: без рішення кандидат блокує, порожнє пояснення не проходить, програмні перевірки лишаються.
+test('HTTP: припущення агента блокує побудову, доки немає рішення; порожнє пояснення не проходить', async () => {
   const db = freshDb();
   const { s, caseId } = await server(db, [okStep([finding({ code: 'UNSUPPORTED_CANDIDATE' })])]);
   try {
     await s.call('POST', `/api/cases/${caseId}/bpmn/review`, {});
     const rev = await waitReview(s, caseId, ['awaiting_analyst']);
     const v = rev.findings_view[0];
-    assert.equal(v.can_reject, false);
-    assert.match(v.reject_blocked_reason, /не можна/);
-    const r = await s.call('POST', `/api/cases/${caseId}/bpmn/findings/reject`, { review_id: rev.review_id, finding_key: v.key, explanation: EXPL });
-    assert.equal(r.status, 409);
-    assert.equal(r.body.error.code, 'CANNOT_REJECT');
-    const b = await s.call('POST', `/api/cases/${caseId}/bpmn/build`, {});
-    assert.equal(b.body.error.code, 'UNSUPPORTED_CANDIDATE');
+    assert.equal(v.can_reject, true, 'дія доступна людині');
+    assert.equal(v.blocking, true);
+    // Без рішення побудова закрита.
+    const blocked = await s.call('POST', `/api/cases/${caseId}/bpmn/build`, {});
+    assert.equal(blocked.body.error.code, 'UNSUPPORTED_CANDIDATE');
     assert.equal(all(db, 'SELECT id FROM bpmn_artifact').length, 0);
+    // Порожнє пояснення не приймається.
+    const empty = await s.call('POST', `/api/cases/${caseId}/bpmn/findings/reject`, { review_id: rev.review_id, finding_key: v.key, explanation: '   ' });
+    assert.equal(empty.status, 400);
+    assert.equal(empty.body.error.code, 'EXPLANATION_REQUIRED');
+    assert.equal(all(db, 'SELECT id FROM finding_resolution').length, 0);
+    // Рішення з поясненням приймається й знімає саме це блокування.
+    const ok = await s.call('POST', `/api/cases/${caseId}/bpmn/findings/reject`, { review_id: rev.review_id, finding_key: v.key, explanation: EXPL });
+    assert.equal(ok.status, 201);
+    const after = await s.call('GET', `/api/cases/${caseId}/bpmn/review`);
+    assert.equal(after.body.generation_gate.ok, true, JSON.stringify(after.body.generation_gate));
+    assert.equal(after.body.findings_view[0].resolution.explanation, EXPL);
   } finally { await s.close(); }
 });
 

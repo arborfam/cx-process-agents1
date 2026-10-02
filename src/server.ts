@@ -225,10 +225,11 @@ export function createApp(opts: ServerOptions): Server {
       return json(res, 200, {
         state: r.state, run_id: r.runId ?? null, review_id: r.reviewId ?? null, created_at: r.createdAt ?? null,
         findings: r.findings ?? [], warnings: r.warnings ?? [], requirements: r.requirements ?? [], reasons: r.reasons ?? [], error: r.error ?? null,
-        // Знахідки з ключем, рішенням людини й тим, чи їх узагалі можна відхилити (UNSUPPORTED_CANDIDATE — ніколи, D21).
+        // Знахідки з ключем, рішенням людини, тим, чи їх можна відхилити (D31; припущення про непідтримувану
+        // нотацію — теж, за рішенням D84), і тим, де в пакеті знайдено цитату (довідка, D85).
         findings_view: (r.findingsView ?? []).map((v) => ({
           key: v.key, finding: v.finding, blocking: v.blocking, can_reject: v.can_reject,
-          reject_blocked_reason: v.reject_blocked_reason,
+          reject_blocked_reason: v.reject_blocked_reason, quote_from_step: v.quote_from_step, quote_locations: v.quote_locations,
           resolution: v.resolution ? { explanation: v.resolution.explanation, decided_by: v.resolution.decided_by, decided_at: v.resolution.decided_at } : null,
         })),
         earlier_resolutions: (r.earlierResolutions ?? []).map((x) => ({ explanation: x.explanation, decided_by: x.decided_by, decided_at: x.decided_at })),

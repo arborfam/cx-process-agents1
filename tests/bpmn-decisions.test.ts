@@ -157,14 +157,16 @@ test('Зауваження без блокування рішення не по�
 
 // ───────── UNSUPPORTED_CANDIDATE відхилити не можна ─────────
 
-test('UNSUPPORTED_CANDIDATE не можна відхилити, і підроблене рішення в базі шлюз не відкриває (D21)', async () => {
+// Вимога змінилась за явним рішенням власниці (D84, варіант 1): раніше кандидата відхилити було не можна
+// взагалі (D21/D31), тепер — можна мотивованим рішенням людини. Тест переписано під погоджену поведінку;
+// захист від ПІДРОБКИ запису збережено повністю.
+test('Припущення агента: без рішення блокує, підроблений запис не відкриває, мотивоване рішення відкриває (D84)', async () => {
   const { db, caseId, reviewId } = await awaiting(freshDb(), [okStep([finding({ code: 'UNSUPPORTED_CANDIDATE' })])]);
   const view = getCaseReview(db, caseId).findingsView![0]!;
-  assert.equal(view.can_reject, false);
-  assert.match(view.reject_blocked_reason!, /не можна/);
-  assert.throws(() => rejectFinding(db, human, caseId, { reviewId, findingKey: view.key, explanation: EXPL }), (e: any) => e.code === 'CANNOT_REJECT');
+  assert.equal(view.can_reject, true, 'дія доступна людині');
+  assert.ok(!getCaseReview(db, caseId).gate!.ok, 'без рішення побудова закрита');
 
-  // Пряма підробка запису рішення (обхід дії людини) шлюз не відкриває: код знахідки перевіряється раніше за рішення.
+  // Пряма підробка запису рішення (обхід дії людини) шлюз не відкриває: запис перевіряється перед використанням.
   const rev = one<Record<string, any>>(db, 'SELECT * FROM bpmn_review WHERE id = ?', reviewId)!;
   db.exec(`INSERT INTO finding_resolution (id, case_id, review_id, run_id, approval_id, version_id, content_hash, finding_key,
       finding_json, decision, explanation, decided_by, decided_at, record_hash)
@@ -172,7 +174,27 @@ test('UNSUPPORTED_CANDIDATE не можна відхилити, і підроб�
       '${view.key}', '{}', 'rejected', 'підробка', 'хтось', '2026-01-01T00:00:00.000Z', 'xx')`);
   const after = getCaseReview(db, caseId);
   assert.ok(!after.gate!.ok && after.gate!.code === 'UNSUPPORTED_CANDIDATE', JSON.stringify(after.gate));
+  assert.equal(after.invalidResolutions!.length, 1, 'запису не довіряємо, причину названо');
   await assert.rejects(() => buildArtifact(db, human, caseId), (e: any) => e.code === 'UNSUPPORTED_CANDIDATE');
+
+  // Слот зайнятий пошкодженим записом — чесна відмова, а не мовчазний перезапис (записи незмінні).
+  assert.throws(() => rejectFinding(db, human, caseId, { reviewId, findingKey: view.key, explanation: EXPL }),
+    (e: any) => e.code === 'RESOLUTION_DAMAGED');
+});
+
+test('Мотивоване рішення щодо припущення агента знімає саме це блокування (D84)', async () => {
+  const { db, caseId, reviewId } = await awaiting(freshDb(), [okStep([finding({ code: 'UNSUPPORTED_CANDIDATE' })])]);
+  const view = getCaseReview(db, caseId).findingsView![0]!;
+  assert.throws(() => rejectFinding(db, human, caseId, { reviewId, findingKey: view.key, explanation: ' ' }), (e: any) => e.code === 'EXPLANATION_REQUIRED');
+  const res = rejectFinding(db, human, caseId, { reviewId, findingKey: view.key, explanation: EXPL });
+  assert.equal(res.decision, 'rejected');
+  assert.equal(res.decided_by, human.name);
+  const r = getCaseReview(db, caseId);
+  assert.ok(r.gate!.ok, JSON.stringify(r.gate));
+  assert.equal(r.findingsView![0]!.resolution!.explanation, EXPL);
+  // Рішення не редагує AS-IS.
+  assert.equal(one<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM as_is_version WHERE case_id = ?', caseId)!.n,
+    one<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM as_is_version WHERE case_id = ?', caseId)!.n);
 });
 
 // ───────── Рішення не обходить програмних перевірок ─────────

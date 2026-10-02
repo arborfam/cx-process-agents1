@@ -497,8 +497,17 @@ export function generationGate(review: ReviewResult | null | undefined, pkg: Rev
   if (b.instructionVersion !== instruction.version || b.instructionHash !== instruction.hash) {
     return { ok: false, code: 'REVIEW_INSTRUCTION_MISMATCH', message: 'Перевірка виконана іншою версією інструкції агента 2; потрібна нова перевірка.' };
   }
-  if (review.findings.some((f) => f.code === 'UNSUPPORTED_CANDIDATE')) {
-    return { ok: false, code: 'UNSUPPORTED_CANDIDATE', message: 'Знайдено кандидата на непідтримувану нотацію; його не можна відхилити (D21).' };
+  // Кандидат на непідтримувану нотацію блокує побудову, доки щодо НЬОГО немає рішення аналітикині (D84,
+  // варіант 1, погоджено). Рішення — незмінний запис із поясненням, прив'язаний до цієї знахідки, цієї
+  // перевірки, цього погодження й цієї версії; його перевіряє `checkResolution`. Нова версія чи нова
+  // перевірка рішення не успадковують: ключі перераховуються, прив'язки не збігаються.
+  // Рішення НЕ дозволяє генерувати непідтримувану конструкцію: підтверджена вимога до нотації (D21/D61) веде
+  // до `unsupported` без моделі, структурні перевірки, шлюз і зворотна перевірка файлів виконуються як раніше.
+  const unresolvedCandidates = review.findings.filter((f) => f.code === 'UNSUPPORTED_CANDIDATE' && !resolvedKeys.has(findingKey(f)));
+  if (unresolvedCandidates.length > 0) {
+    return { ok: false, code: 'UNSUPPORTED_CANDIDATE', message:
+      `Є припущення агента про непідтримувану нотацію (${unresolvedCandidates.length}) без вашого рішення. Схема не спрощується: ` +
+      'або зафіксуйте вимогу до нотації, або відхиліть припущення агента з поясненням.' };
   }
   const unresolved = review.findings.filter((f) => f.class === 'blocks_flow' && !resolvedKeys.has(findingKey(f)));
   if (unresolved.length > 0) {
