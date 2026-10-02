@@ -62,7 +62,12 @@ export function exportDrawio(model: BpmnModel, pkg: ApprovedPackage, _map: StepM
     const laneId = laneOfNode.get(nd.id);
     const lr = laneId ? laneRect.get(laneId) : undefined;
     if (!r || !laneId || !lr) return failed([err('DRAWIO_EXPORT', `Немає геометрії чи доріжки для елемента ${nd.id}: експорт неможливий.`, [nd.id])]);
-    const style = nd.tag === 'task' ? TASK_STYLE : nd.tag === 'startEvent' ? START_STYLE : nd.tag === 'endEvent' ? END_STYLE : GATEWAY_STYLE;
+    // Для події з зовнішнім підписом ширина колонки переносу береться з рамки підпису `.bpmn` (D86).
+    const lbox = model.shapeLabels.get(nd.id);
+    const style = nd.tag === 'task' ? TASK_STYLE
+      : nd.tag === 'startEvent' || nd.tag === 'endEvent'
+        ? vertexStyleOf(nd.tag, lbox && nd.name?.trim() ? { labelWidth: lbox.w } : {})
+        : GATEWAY_STYLE;
     out.push(`        <mxCell id="${escapeAttr(nd.id)}" value="${escapeAttr(nd.name ?? '')}" style="${style}" vertex="1" parent="${escapeAttr(laneId)}"><mxGeometry x="${n2(r.x - lr.x)}" y="${n2(r.y - lr.y)}" width="${n2(r.w)}" height="${n2(r.h)}" as="geometry" /></mxCell>`);
   }
   for (const f of model.flows) {
@@ -402,7 +407,12 @@ export function verifyDrawio(xml: string, pkg: ApprovedPackage, bpmn: BpmnModel)
         ports = { exitX: a.x, exitY: a.y, entryX: b.x, entryY: b.y };
       }
     }
-    issues.push(...checkCellStyle({ cellId: c.id, label, kind, style: c.style, ...(ports ? { ports } : {}) }));
+    const lb = kind === 'startEvent' || kind === 'endEvent' ? bpmn.shapeLabels.get(c.id) : undefined;
+    const named = kind === 'startEvent' || kind === 'endEvent' ? !!bpmn.nodes.get(c.id)?.name?.trim() : false;
+    issues.push(...checkCellStyle({
+      cellId: c.id, label, kind, style: c.style, ...(ports ? { ports } : {}),
+      ...(lb && named ? { labelWidth: lb.w } : {}),
+    }));
     // службові параметри клітинки (visible, collapsed, connectable …)
     const wantAttrs = kind === 'edge' ? ['id', 'value', 'style', 'edge', 'parent', 'source', 'target'] : kind === 'pool' ? ['style', 'vertex', 'parent'] : ['id', 'value', 'style', 'vertex', 'parent'];
     if (!sameSet(c.attrNames, wantAttrs)) {

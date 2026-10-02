@@ -10,7 +10,7 @@
 import { UNKNOWN, type Content, type Step } from '../schema.ts';
 import { notationIssues, transitionIssues, unknownTransitions } from '../domain.ts';
 import { MAX_STEP_ID, STEP_ID_RE } from './ids.ts';
-import { MAX_LABEL_CHARS, TO_DEFINE_RE, textProblem } from './text.ts';
+import { MAX_EVENT_LABEL_CHARS, MAX_LABEL_CHARS, TO_DEFINE_RE, textProblem } from './text.ts';
 import { poolNameOf, type ApprovedPackage, type Finding, type UnsupportedKind } from './types.ts';
 
 const clip = (t: string, n = 40): string => (t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t);
@@ -55,17 +55,17 @@ export function analyzePackage(pkg: ApprovedPackage): Analysis {
   const steps = c.steps;
 
   // ── тексти ──
-  const checkLabel = (value: string, where: string, refs: string[], allowEmpty = true): void => {
+  const checkLabel = (value: string, where: string, refs: string[], allowEmpty = true, max = MAX_LABEL_CHARS): void => {
     const p = textProblem(value);
     if (p) bad('INVALID_TEXT', `${where} ${p}. Виправте текст у погодженому описі — схема переносить текст дослівно.`, refs);
     if (!allowEmpty && value.trim() === '') bad('EMPTY_TEXT', `${where} порожній.`, refs);
     if (TO_DEFINE_RE.test(value)) {
       k1('TO_DEFINE', `${where} містить «[TO DEFINE …]» — невизначене місце не може потрапити на схему.`, refs);
     }
-    if (value.length > MAX_LABEL_CHARS) {
+    if (value.length > max) {
       unsupported.push({
         code: 'LABEL_TOO_LONG', class: 'UNSUPPORTED', refs,
-        message: `${where} має ${value.length} символів (межа розбірливого підпису — ${MAX_LABEL_CHARS}). Підпис не буде скорочено: це обмеження генератора, а не помилка опису.`,
+        message: `${where} має ${value.length} символів (межа розбірливого підпису тут — ${max}). Підпис не буде скорочено: це обмеження генератора, а не помилка опису.`,
       });
     }
   };
@@ -76,7 +76,9 @@ export function analyzePackage(pkg: ApprovedPackage): Analysis {
   } else {
     checkLabel(poolName, 'Назва процесу (напис на пулі)', []);
   }
-  checkLabel(c.boundaries.trigger, 'Тригер процесу (назва початкової події)', []);
+  // Тригер — ЗОВНІШНІЙ підпис початкової події: генератор робить для нього окрему рамку з переносами (D86),
+  // тому межа тут вища, ніж для підписів усередині фігур і заголовків.
+  checkLabel(c.boundaries.trigger, 'Тригер процесу (назва початкової події)', [], true, MAX_EVENT_LABEL_CHARS);
   if (c.boundaries.trigger.trim() === '') {
     knownLimits.push({ code: 'START_UNNAMED', class: 'K2', refs: [], message: 'Тригер процесу порожній: початкова подія на схемі буде без назви.' });
   }

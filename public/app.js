@@ -434,6 +434,27 @@ function rejectDialog(card, reviewId, view) {
       el('button', { onclick: () => dlg.close() }, 'Скасувати')));
 }
 
+/**
+ * Технічні обмеження генератора, видимі ДО платної перевірки (D86): їх знаходить програма без моделі.
+ * Нічого не вирішує за людину — лише показує, що зупинить побудову, якщо лишити опис як є.
+ */
+function technicalLimitsBox(tl) {
+  if (!tl) return null;
+  if (!tl.available) return el('p', { class: 'small muted', 'data-block': 'tech-limits' }, 'Технічну перевірку опису поки не виконано: ' + (tl.reason || 'немає чинного погодження.'));
+  const hard = [...(tl.blocking || []), ...(tl.unsupported || [])];
+  const soft = tl.known_limits || [];
+  if (!hard.length && !soft.length) {
+    return el('p', { class: 'small muted', 'data-block': 'tech-limits' }, 'Технічних обмежень генератора в цьому описі не знайдено (перевірено без моделі, до запуску перевірки).');
+  }
+  const list = (items) => el('ul', { class: 'small' }, items.map((i) => el('li', {}, el('code', {}, i.code), ' ', i.message)));
+  return el('div', { class: hard.length ? 'warnbox' : 'infobox', 'data-block': 'tech-limits' },
+    el('strong', {}, hard.length ? 'Технічні обмеження генератора (побудову зупинять)' : 'Відомі обмеження генератора (побудову не зупиняють)'),
+    el('p', { class: 'small' }, 'Це перевірено ПРОГРАМОЮ без моделі — до платної смислової перевірки. Модель їх не виправить: ' +
+      'або змініть опис (нова версія й нове погодження), або прийміть, що схему для цього місця не буде побудовано.'),
+    hard.length ? list(hard) : null,
+    soft.length ? el('details', {}, el('summary', { class: 'small' }, 'Обмеження, які побудову не зупиняють (' + soft.length + ')'), list(soft)) : null);
+}
+
 function findingBox(card, reviewId, view, canDecide) {
   const f = view.finding;
   const cls = view.resolution ? 'finding resolved' : view.blocking ? 'finding blocking' : 'finding info';
@@ -956,6 +977,7 @@ PANELS.diagram = (card) => {
     if (review.state === 'none' || review.state === 'stale' || review.state === 'failed' || review.state === 'untrusted') {
       if ((review.reasons || []).length) out.push(el('div', { class: 'warnbox' }, review.reasons.join(' ')));
       if (review.error) out.push(el('div', { class: 'warnbox' }, String(review.error)));
+      out.push(technicalLimitsBox(review.technical_limits));
       out.push(el('p', { class: 'small' }, ai.available
         ? 'Наступна дія: запустити смислову перевірку опису моделлю. Схему вона не будує — лише шукає неоднозначності.'
         : 'Наступна дія недоступна: смислову перевірку виконує модель, а вона не підключена. Демо-відповіді для цієї перевірки не вигадуються.'));

@@ -18,7 +18,7 @@ import { beginAnalystRun, executeAnalystRun, type RunOptions } from './runs.ts';
 import { budgetLeftUsd, spentUsd, unknownCostRuns, type ModelPolicy } from './ai/budget.ts';
 import type { AnalystClient, InstructionInfo, OutputContract } from './ai/types.ts';
 import { beginBpmnReview, executeBpmnReview, getCaseReview, rejectFinding, type Reviewer } from './review-runs.ts';
-import { buildArtifact, buildPreflight, getCaseArtifact, listCaseArtifacts, readArtifactFile, type ArtifactView } from './bpmn-artifacts.ts';
+import { buildArtifact, buildPreflight, getCaseArtifact, listCaseArtifacts, readArtifactFile, technicalLimits, type ArtifactView } from './bpmn-artifacts.ts';
 import { addExplicitClarification, advanceScenario, createScenarioCase, scenarioInfo, TOTAL_STAGES } from './scenarios.ts';
 
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -222,8 +222,12 @@ export function createApp(opts: ServerOptions): Server {
     if ((m = /^\/api\/cases\/([\w-]+)\/bpmn\/review$/.exec(path)) && method === 'GET') {
       getCase(db, m[1]!);
       const r = getCaseReview(db, m[1]!, opts.reviewer?.instruction);
+      // Технічні обмеження генератора — ДО платної перевірки: той самий розбір, що й на початку побудови,
+      // виконується без моделі й без файлів (D86). Користувач бачить їх одразу, а не після оплати.
+      const tech = technicalLimits(db, m[1]!);
       return json(res, 200, {
         state: r.state, run_id: r.runId ?? null, review_id: r.reviewId ?? null, created_at: r.createdAt ?? null,
+        technical_limits: tech,
         findings: r.findings ?? [], warnings: r.warnings ?? [], requirements: r.requirements ?? [], reasons: r.reasons ?? [], error: r.error ?? null,
         // Знахідки з ключем, рішенням людини, тим, чи їх можна відхилити (D31; припущення про непідтримувану
         // нотацію — теж, за рішенням D84), і тим, де в пакеті знайдено цитату (довідка, D85).

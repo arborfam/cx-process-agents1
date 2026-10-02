@@ -11,7 +11,7 @@
 import { layoutProcess, LayoutError } from 'bpmn-auto-layout';
 import { NS } from './ids.ts';
 import { parseXml, serialize, attr, elementChildren, type XmlElement } from './xml.ts';
-import { neededTaskHeight, textWidth } from './text.ts';
+import { EVENT_LABEL_GAP, EVENT_LABEL_PAD, eventLabelBox, neededTaskHeight, textWidth } from './text.ts';
 import { poolNameOf, type ApprovedPackage, type Issue } from './types.ts';
 
 export interface LayoutOutcome {
@@ -23,9 +23,13 @@ export interface LayoutOutcome {
 }
 
 const WIDTHS = [100, 140, 180, 220, 260];
+/** Ширше за це рамку підпису події не робимо: інакше схема «розповзається» вшир заради одного підпису. */
+const MAX_EVENT_LABEL_WIDTH = 260;
 const DEFAULT_W = 100;
 const DEFAULT_H = 80;
 const HEADER = 30;
+/** Ширина заголовка доріжки (вертикальна назва ролі): підпис події не має на неї налазити. */
+const LANE_HEADER = 30;
 
 /** Підбір розміру задачі за найдовшою дією: перша ширина, за якої всі підписи вміщаються без надмірної висоти. */
 export function chooseTaskSize(actions: string[]): { width: number; height: number } {
@@ -152,6 +156,50 @@ export async function layoutAndScale(semanticXml: string, pkg: ApprovedPackage):
   }
   const poolH = pool.b.rect.h;
   sy = Math.max(sy, (textWidth(poolNameOf(pkg)) / 2 + 24) / poolH);
+
+  /**
+   * Зовнішні підписи подій (тригер процесу) — D86. Лейаутер дає подію 36×36 і крихітну рамку підпису, тож довгий
+   * тригер або обрізається, або налазить на сусідні блоки. Тут для кожної названої події рахується рамка під
+   * РЕАЛЬНИЙ текст, а масштаб збільшується так, щоб для неї вистачило місця: по горизонталі — щоб рамка не
+   * дійшла до наступного блока, по вертикалі — щоб вона вмістилася в доріжку під подією. Текст не скорочується.
+   */
+  const MARGIN = 12;
+  const labelPlans = new Map<string, { w: number; h: number }>();
+  const nodeShapes = [...shapes.entries()].filter(([id]) => {
+    const t = semTag.get(id);
+    return t !== undefined && t !== 'lane' && t !== 'participant';
+  });
+  const laneRectOf = (id: string): Rect | null => {
+    const lane = laneShapes.find(([lid]) => {
+      const laneEl = findFirst(root, (e) => e.ns === NS.bpmn && e.local === 'lane' && attr(e, 'id') === lid);
+      return !!laneEl && elementChildren(laneEl).some((c) => c.local === 'flowNodeRef' && (c.children[0] as string | undefined)?.trim() === id);
+    });
+    return lane ? lane[1].b.rect : null;
+  };
+  for (const [id, sh] of nodeShapes) {
+    const tag = semTag.get(id)!;
+    if (tag !== 'startEvent' && tag !== 'endEvent') continue;
+    const name = findFirst(root, (e) => e.ns === NS.bpmn && e.local === tag && attr(e, 'id') === id);
+    const text = name ? attr(name, 'name') ?? '' : '';
+    if (!text.trim()) continue;
+    const box = eventLabelBox(text, MAX_EVENT_LABEL_WIDTH);
+    labelPlans.set(id, box);
+    const o = sh.b.rect;
+    const ocx = o.x + o.w / 2;
+    // по горизонталі: рамка стоїть під подією, але не лівіше поля пулу — тож рахуємо обидва варіанти
+    const toRight = nodeShapes
+      .filter(([oid, os]) => oid !== id && os.b.rect.x + os.b.rect.w / 2 > ocx)
+      .map(([, os]) => ({ dcx: os.b.rect.x + os.b.rect.w / 2 - ocx, halfW: os.b.rect.w / 2, fromX0: os.b.rect.x + os.b.rect.w / 2 - (pool.b.rect.x + HEADER) }));
+    for (const t of toRight) {
+      if (t.dcx - t.halfW > 0) sx = Math.max(sx, (box.w / 2 + MARGIN) / (t.dcx - t.halfW));
+      if (t.fromX0 - t.halfW > 0) sx = Math.max(sx, (LANE_HEADER + 2 + box.w + MARGIN) / (t.fromX0 - t.halfW));
+    }
+    // по вертикалі: від центра події до низу доріжки має вистачити на подію, проміжок і рамку
+    const lane = laneRectOf(id);
+    const below = lane ? lane.y + lane.h - (o.y + o.h / 2) : 0;
+    if (below > 0) sy = Math.max(sy, (o.h / 2 + EVENT_LABEL_GAP + box.h + EVENT_LABEL_PAD + 4) / below);
+  }
+
   sx = Math.max(1, r2(sx));
   sy = Math.max(1, r2(Math.ceil(sy * 20) / 20));
 
@@ -183,15 +231,23 @@ export async function layoutAndScale(semanticXml: string, pkg: ApprovedPackage):
     n = { x: r2(n.x), y: r2(n.y), w: r2(n.w), h: r2(n.h) };
     newRects.set(id, n);
     setBounds(s.b.node, n);
-    // підпис події (зовнішній) — переносимо центр, розмір лишаємо
-    // підпис події (зовнішній): відстань від центра події лишається незмінною (масштабується лише положення події)
+    // підпис події (зовнішній)
     const label = elementChildren(s.node).find((c) => c.ns === NS.bpmndi && c.local === 'BPMNLabel');
     const lb = label ? boundsOf(label) : null;
     if (lb) {
-      const ocx = o.x + o.w / 2, ocy = o.y + o.h / 2;
-      const ncx = n.x + n.w / 2, ncy = n.y + n.h / 2;
-      const cx = ncx + (lb.rect.x + lb.rect.w / 2 - ocx), cy = ncy + (lb.rect.y + lb.rect.h / 2 - ocy);
-      setBounds(lb.node, { x: cx - lb.rect.w / 2, y: cy - lb.rect.h / 2, w: lb.rect.w, h: lb.rect.h });
+      const plan = labelPlans.get(id);
+      if (plan) {
+        // Рамка під реальний текст: ширина з розрахунку, висота — на всі рядки переносу; під подією, але не лівіше поля пулу (D86).
+        // лівий край: за заголовком доріжки (там вертикальна назва ролі), а не одразу за полем пулу
+        const x = Math.max(pool.b.rect.x + HEADER + LANE_HEADER + 2, n.x + n.w / 2 - plan.w / 2);
+        setBounds(lb.node, { x: r2(x), y: r2(n.y + n.h + EVENT_LABEL_GAP), w: plan.w, h: plan.h });
+      } else {
+        // Без тексту (чи для інших фігур): відстань від центра події лишається незмінною.
+        const ocx = o.x + o.w / 2, ocy = o.y + o.h / 2;
+        const ncx = n.x + n.w / 2, ncy = n.y + n.h / 2;
+        const cx = ncx + (lb.rect.x + lb.rect.w / 2 - ocx), cy = ncy + (lb.rect.y + lb.rect.h / 2 - ocy);
+        setBounds(lb.node, { x: cx - lb.rect.w / 2, y: cy - lb.rect.h / 2, w: lb.rect.w, h: lb.rect.h });
+      }
     }
   }
 

@@ -91,7 +91,9 @@ test('сервер і доменний шар генератор не імпор
 test('усі маршрути, що видають схему чи файли, проходять через шлюзований модуль', () => {
   const server = read('src/server.ts');
   // Сервер може звертатися лише до функцій шлюзованого модуля.
-  const allowed = ['buildArtifact', 'getCaseArtifact', 'listCaseArtifacts', 'getArtifactById', 'readArtifactFile', 'buildPreflight', 'ArtifactView'];
+  // `technicalLimits` додано свідомо (D86): воно лише ЧИТАЄ — повертає технічні обмеження пакета (той самий
+  // розбір, що й на початку побудови), не генерує схеми, не створює файлів і нічого не дозволяє.
+  const allowed = ['buildArtifact', 'getCaseArtifact', 'listCaseArtifacts', 'getArtifactById', 'readArtifactFile', 'buildPreflight', 'technicalLimits', 'ArtifactView'];
   const imported = /import\s*\{([^}]+)\}\s*from\s*['"]\.\/bpmn-artifacts\.ts['"]/.exec(server);
   assert.ok(imported, 'сервер має імпортувати шлюзований модуль іменовано');
   for (const name of imported![1]!.split(',').map((x) => x.trim().replace(/^type\s+/, '')).filter(Boolean)) {

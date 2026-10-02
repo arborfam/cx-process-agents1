@@ -22,6 +22,7 @@ import { getCaseReview, staleReasons, type CaseReview } from './review-runs.ts';
 import type { InstructionInfo } from './ai/types.ts';
 import { packageFromApproval } from './bpmn/approved.ts';
 import { generateBpmn, type GenerateFaultInjection } from './bpmn/generate.ts';
+import { analyzePackage } from './bpmn/validate.ts';
 import { GENERATOR_NAME } from './bpmn/ids.ts';
 import type { ApprovedPackage, Finding, Issue, StepMapRow } from './bpmn/types.ts';
 
@@ -214,6 +215,40 @@ export function buildPreflight(db: DB, caseId: string, instruction?: Instruction
     return { ok: false, code: 'STALE', message: 'Пакет не збігається з погодженою версією: побудова скасована.' };
   }
   return { ok: true, review, pkg, reviewId: review.reviewId!, runId: review.runId!, approvalId: approval.id };
+}
+
+/**
+ * Технічні обмеження генератора для поточного погодженого пакета — БЕЗ моделі, без файлів, лише читання (D86).
+ *
+ * Навіщо: смислова перевірка платна, а частину обмежень (задовгий підпис, непідтримувана нотація, порушення
+ * структури) програма бачить сама. Користувач має побачити їх ДО оплати, а не після неї.
+ * Нічого не змінює й нічого не дозволяє: це той самий розбір, який виконується на початку побудови.
+ */
+export interface TechnicalLimits {
+  /** Чи вдалося розібрати пакет (потрібне чинне погодження; інакше причина в `reason`). */
+  available: boolean;
+  reason: string | null;
+  /** Непідтримувана нотація й задовгі підписи: схему не буде побудовано, доки це лишається в описі. */
+  unsupported: Finding[];
+  /** Порушення, через які побудова неможлива (структура потоку, порожні обов'язкові поля). */
+  blocking: Finding[];
+  /** Відомі обмеження, які побудову не зупиняють (показуються як застереження). */
+  known_limits: Finding[];
+}
+
+export function technicalLimits(db: DB, caseId: string): TechnicalLimits {
+  getCase(db, caseId);
+  const none = (reason: string): TechnicalLimits => ({ available: false, reason, unsupported: [], blocking: [], known_limits: [] });
+  const g = bpmnGuard(db, caseId, { ignoreActiveRun: true });
+  if (!g.ok) return none(`Серверний дозвіл на побудову ще не надано: ${g.reasons.map((r) => r.message).join(' ')}`);
+  let pkg: ApprovedPackage;
+  try {
+    pkg = packageFromApproval(db, caseId);
+  } catch (e) {
+    return none(e instanceof Error ? e.message : 'Пакет не вдалося зібрати.');
+  }
+  const a = analyzePackage(pkg);
+  return { available: true, reason: null, unsupported: a.unsupported, blocking: a.blocking, known_limits: a.knownLimits };
 }
 
 export interface BuildOutcome {

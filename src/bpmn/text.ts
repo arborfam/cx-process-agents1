@@ -4,8 +4,17 @@
  */
 import { isXmlChar } from './xml.ts';
 
-/** Довший підпис не поміститься на схемі розбірливо: це обмеження інструмента, а не помилка опису (unsupported, D21). */
+/**
+ * Межі довжини підпису. Вони РІЗНІ, бо різні місця схеми мають різні можливості показати текст (D86):
+ *  • `MAX_LABEL_CHARS` — підписи, які живуть усередині фігури або заголовка: дія задачі, назва ролі (доріжка),
+ *    назва процесу (пул), умова переходу. Там висота обмежена самою фігурою чи заголовком;
+ *  • `MAX_EVENT_LABEL_CHARS` — ЗОВНІШНІЙ підпис початкової/кінцевої події (тригер процесу). Він стоїть під
+ *    подією окремою рамкою, яку генератор розширює під текст: переноси за словами, рамка рахується з реальної
+ *    ширини тексту, доріжка збільшується, щоб підпис не наклався. Тому межа тут вища — і вона підтверджена
+ *    фактичним виглядом (`tests/bpmn-long-label.test.ts`, знімок у переглядачі), а не просто піднятою константою.
+ */
 export const MAX_LABEL_CHARS = 600;
+export const MAX_EVENT_LABEL_CHARS = 1200;
 
 /**
  * Чому текст не можна записати у схему дослівно (або null, якщо можна).
@@ -97,3 +106,30 @@ export function neededTaskHeight(text: string, boxWidth: number): number {
 
 /** Відношення справжньої ширини тексту в Arial до нашої оцінки (виміряно 0,82–0,86). Для м'якої перевірки зовнішніх підписів. */
 export const ARIAL_FACTOR = 0.86;
+
+
+// ───────────────────────── рамка зовнішнього підпису події ─────────────────────────
+
+/** Поля всередині рамки підпису (px) і відступ від самої події. */
+export const EVENT_LABEL_PAD = 4;
+export const EVENT_LABEL_GAP = 6;
+/** Ширини рамки підпису події: від звичайної вузької колонки до широкої для довгого тригера. */
+const EVENT_LABEL_WIDTHS = [100, 140, 180, 220, 260, 300, 340];
+
+/**
+ * Рамка зовнішнього підпису події під текст: обирається найвужча ширина, за якої підпис не стає «стовпчиком»
+ * (більше ніж `maxLines` рядків), і висота рахується з реального переносу. Якщо навіть найширша колонка не
+ * прибирає висоту — беремо її й віддаємо потрібну висоту: текст НЕ обрізається, рамка просто вища.
+ * `availableWidth` обмежує ширину місцем, яке є на схемі (щоб підпис не наліз на сусідній блок).
+ */
+export function eventLabelBox(text: string, availableWidth = Infinity, maxLines = 6): { w: number; h: number } {
+  const widths = EVENT_LABEL_WIDTHS.filter((w) => w <= availableWidth);
+  const usable = widths.length ? widths : [Math.max(60, Math.min(EVENT_LABEL_WIDTHS[0]!, Math.floor(availableWidth)))];
+  const heightFor = (w: number): number => wrapLines(text, Math.max(20, w - 2 * EVENT_LABEL_PAD)).length * LINE_HEIGHT + 2 * EVENT_LABEL_PAD;
+  for (const w of usable) {
+    const h = heightFor(w);
+    if (h <= maxLines * LINE_HEIGHT + 2 * EVENT_LABEL_PAD) return { w, h: Math.ceil(h) };
+  }
+  const w = usable[usable.length - 1]!;
+  return { w, h: Math.ceil(heightFor(w)) };
+}

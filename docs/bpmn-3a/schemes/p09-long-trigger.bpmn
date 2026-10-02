@@ -1,34 +1,33 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:cx="urn:cx-process-agents:as-is-binding" id="Definitions_1" targetNamespace="urn:cx-process-agents:as-is">
   <bpmn:collaboration id="Collaboration_1">
-    <bpmn:participant id="Participant_1" name="Оплата рахунку постачальника" processRef="Process_1" />
+    <bpmn:participant id="Participant_1" name="Зміна умов обслуговування (синтетичний процес)" processRef="Process_1" />
   </bpmn:collaboration>
   <bpmn:process id="Process_1" isExecutable="false">
     <bpmn:extensionElements>
-      <cx:asIsBinding versionId="TEST-P08-V1" contentHash="927c1cefb307377a0c21b5f217f7a76d50d3f1ed83fdd1b19bc4e074e0ccbf73" origin="test-fixture" generator="cx-bpmn-generator-3a" />
+      <cx:asIsBinding versionId="TEST-P09-V1" contentHash="1c32b702c492263acd68ee56dc5e7662b98428af5b0d1136292ceac1a42fb25e" origin="test-fixture" generator="cx-bpmn-generator-3a" />
     </bpmn:extensionElements>
     <bpmn:laneSet id="LaneSet_1">
-      <bpmn:lane id="Lane_0" name="Бухгалтер">
+      <bpmn:lane id="Lane_0" name="Менеджер">
         <bpmn:flowNodeRef>StartEvent_1</bpmn:flowNodeRef>
         <bpmn:flowNodeRef>Task_S1</bpmn:flowNodeRef>
         <bpmn:flowNodeRef>Task_S3</bpmn:flowNodeRef>
         <bpmn:flowNodeRef>End_S3_1</bpmn:flowNodeRef>
       </bpmn:lane>
-      <bpmn:lane id="Lane_1" name="Фінансовий директор">
+      <bpmn:lane id="Lane_1" name="Оператор">
         <bpmn:flowNodeRef>Task_S2</bpmn:flowNodeRef>
         <bpmn:flowNodeRef>Gateway_S2</bpmn:flowNodeRef>
         <bpmn:flowNodeRef>End_S2_2</bpmn:flowNodeRef>
       </bpmn:lane>
-      <bpmn:lane id="Lane_2" name="Архіваріус" />
     </bpmn:laneSet>
-    <bpmn:startEvent id="StartEvent_1" name="Надійшов рахунок від постачальника">
+    <bpmn:startEvent id="StartEvent_1" name="Клієнт або внутрішня команда повідомляє про потребу змінити умови обслуговування, і цю потребу треба зафіксувати до початку будь-яких дій; джерело звернення буває різним: лист, чат, усна домовленість на зустрічі або запис у системі обліку звернень; Клієнт або внутрішня команда повідомляє про потребу змінити умови обслуговування, і цю потребу треба зафіксувати до початку будь-яких дій; джерело звернення буває різним: лист, чат, усна домовленість на зустрічі або запис у системі обліку звернень; Клієнт або внутрішня команда повідомляє про потребу змінити умови обслуговування, і цю потребу треба зафіксувати до початку будь-яких дій; джерело звернення буває різним: лист, чат, усна домовленість на зустрічі або з">
       <bpmn:outgoing>Flow_start</bpmn:outgoing>
     </bpmn:startEvent>
-    <bpmn:task id="Task_S1" name="Реєструє рахунок">
+    <bpmn:task id="Task_S1" name="Реєструє звернення клієнта">
       <bpmn:incoming>Flow_start</bpmn:incoming>
       <bpmn:outgoing>Flow_S1_1</bpmn:outgoing>
     </bpmn:task>
-    <bpmn:task id="Task_S2" name="Затверджує оплату">
+    <bpmn:task id="Task_S2" name="Вносить зміну в договір">
       <bpmn:incoming>Flow_S1_1</bpmn:incoming>
       <bpmn:outgoing>Flow_S2_g</bpmn:outgoing>
     </bpmn:task>
@@ -40,7 +39,7 @@
     <bpmn:endEvent id="End_S2_2">
       <bpmn:incoming>Flow_S2_2</bpmn:incoming>
     </bpmn:endEvent>
-    <bpmn:task id="Task_S3" name="Здійснює оплату">
+    <bpmn:task id="Task_S3" name="Повідомляє клієнта про результат">
       <bpmn:incoming>Flow_S2_1</bpmn:incoming>
       <bpmn:outgoing>Flow_S3_1</bpmn:outgoing>
     </bpmn:task>
@@ -50,79 +49,76 @@
     <bpmn:sequenceFlow id="Flow_start" sourceRef="StartEvent_1" targetRef="Task_S1" />
     <bpmn:sequenceFlow id="Flow_S1_1" sourceRef="Task_S1" targetRef="Task_S2" />
     <bpmn:sequenceFlow id="Flow_S2_g" sourceRef="Task_S2" targetRef="Gateway_S2" />
-    <bpmn:sequenceFlow id="Flow_S2_1" name="сума до 50 000 грн" sourceRef="Gateway_S2" targetRef="Task_S3" />
-    <bpmn:sequenceFlow id="Flow_S2_2" name="оплату відхилено" sourceRef="Gateway_S2" targetRef="End_S2_2" />
+    <bpmn:sequenceFlow id="Flow_S2_1" name="зміна можлива" sourceRef="Gateway_S2" targetRef="Task_S3" />
+    <bpmn:sequenceFlow id="Flow_S2_2" name="зміна неможлива" sourceRef="Gateway_S2" targetRef="End_S2_2" />
     <bpmn:sequenceFlow id="Flow_S3_1" sourceRef="Task_S3" targetRef="End_S3_1" />
   </bpmn:process>
   <bpmndi:BPMNDiagram id="BPMNDiagram_Collaboration_1">
     <bpmndi:BPMNPlane id="BPMNPlane_Collaboration_1" bpmnElement="Collaboration_1">
       <bpmndi:BPMNShape id="BPMNShape_Participant_1" bpmnElement="Participant_1" isHorizontal="true">
-        <dc:Bounds x="80" y="80" width="1032" height="688.8" />
+        <dc:Bounds x="80" y="80" width="1763.46" height="1788" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="BPMNShape_Lane_0" bpmnElement="Lane_0" isHorizontal="true">
-        <dc:Bounds x="110" y="80" width="1002" height="252" />
+        <dc:Bounds x="110" y="80" width="1733.46" height="720" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="BPMNShape_Lane_1" bpmnElement="Lane_1" isHorizontal="true">
-        <dc:Bounds x="110" y="332" width="1002" height="373.8" />
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="BPMNShape_Lane_2" bpmnElement="Lane_2" isHorizontal="true">
-        <dc:Bounds x="110" y="705.8" width="1002" height="63" />
+        <dc:Bounds x="110" y="800" width="1733.46" height="1068" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="BPMNShape_StartEvent_1" bpmnElement="StartEvent_1">
-        <dc:Bounds x="150" y="188" width="36" height="36" />
+        <dc:Bounds x="192.34" y="422" width="36" height="36" />
         <bpmndi:BPMNLabel>
-          <dc:Bounds x="142" y="230" width="100" height="66" />
+          <dc:Bounds x="142" y="464" width="260" height="325" />
         </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="BPMNShape_Task_S1" bpmnElement="Task_S1">
-        <dc:Bounds x="286" y="164" width="100" height="84" />
+        <dc:Bounds x="414.48" y="320" width="173" height="240" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="BPMNShape_Task_S2" bpmnElement="Task_S2">
-        <dc:Bounds x="486" y="416" width="100" height="84" />
+        <dc:Bounds x="760.48" y="1040" width="173" height="240" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="BPMNShape_Gateway_S2" bpmnElement="Gateway_S2" isMarkerVisible="true">
-        <dc:Bounds x="686" y="433" width="50" height="50" />
+        <dc:Bounds x="1124.73" y="1135" width="50" height="50" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="BPMNShape_End_S2_2" bpmnElement="End_S2_2">
-        <dc:Bounds x="868" y="584.9" width="36" height="36" />
+        <dc:Bounds x="1434.48" y="1556" width="36" height="36" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="BPMNShape_Task_S3" bpmnElement="Task_S3">
-        <dc:Bounds x="836" y="164" width="100" height="84" />
+        <dc:Bounds x="1365.98" y="320" width="173" height="240" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="BPMNShape_End_S3_1" bpmnElement="End_S3_1">
-        <dc:Bounds x="1036" y="188" width="36" height="36" />
+        <dc:Bounds x="1725.12" y="422" width="36" height="36" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNEdge id="BPMNEdge_Flow_start" bpmnElement="Flow_start">
-        <di:waypoint x="186" y="206" />
-        <di:waypoint x="286" y="206" />
+        <di:waypoint x="228.34" y="440" />
+        <di:waypoint x="414.48" y="440" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="BPMNEdge_Flow_S1_1" bpmnElement="Flow_S1_1">
-        <di:waypoint x="386" y="206" />
-        <di:waypoint x="536" y="206" />
-        <di:waypoint x="536" y="416" />
+        <di:waypoint x="587.48" y="440" />
+        <di:waypoint x="846.98" y="440" />
+        <di:waypoint x="846.98" y="1040" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="BPMNEdge_Flow_S2_g" bpmnElement="Flow_S2_g">
-        <di:waypoint x="586" y="458" />
-        <di:waypoint x="686" y="458" />
+        <di:waypoint x="933.48" y="1160" />
+        <di:waypoint x="1124.73" y="1160" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="BPMNEdge_Flow_S2_1" bpmnElement="Flow_S2_1">
-        <di:waypoint x="736" y="458" />
-        <di:waypoint x="886" y="458" />
-        <di:waypoint x="886" y="248" />
+        <di:waypoint x="1174.73" y="1160" />
+        <di:waypoint x="1452.48" y="1160" />
+        <di:waypoint x="1452.48" y="560" />
         <bpmndi:BPMNLabel>
-          <dc:Bounds x="777" y="417" width="68" height="28" />
+          <dc:Bounds x="1288.03" y="1119" width="53" height="28" />
         </bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="BPMNEdge_Flow_S3_1" bpmnElement="Flow_S3_1">
-        <di:waypoint x="936" y="206" />
-        <di:waypoint x="1036" y="206" />
+        <di:waypoint x="1538.98" y="440" />
+        <di:waypoint x="1725.12" y="440" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="BPMNEdge_Flow_S2_2" bpmnElement="Flow_S2_2">
-        <di:waypoint x="711" y="483" />
-        <di:waypoint x="711" y="602.9" />
-        <di:waypoint x="868" y="602.9" />
+        <di:waypoint x="1149.73" y="1185" />
+        <di:waypoint x="1149.73" y="1574" />
+        <di:waypoint x="1434.48" y="1574" />
         <bpmndi:BPMNLabel>
-          <dc:Bounds x="724" y="529.48" width="67" height="28" />
+          <dc:Bounds x="1162.73" y="1367.22" width="67" height="28" />
         </bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>

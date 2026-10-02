@@ -178,7 +178,7 @@
       <bpmndi:BPMNShape id="BPMNShape_StartEvent_1" bpmnElement="StartEvent_1">
         <dc:Bounds x="173.2" y="200" width="36" height="36" />
         <bpmndi:BPMNLabel>
-          <dc:Bounds x="147.2" y="241" width="88" height="70" />
+          <dc:Bounds x="142" y="242" width="100" height="80" />
         </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="BPMNShape_Task_S1" bpmnElement="Task_S1">

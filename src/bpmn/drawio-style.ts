@@ -14,8 +14,13 @@ export type CellKind = 'pool' | 'lane' | 'task' | 'startEvent' | 'endEvent' | 'e
 export const POOL_STYLE = 'swimlane;html=0;childLayout=stackLayout;horizontal=0;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;collapsible=0;swimlaneFillColor=#ffffff;whiteSpace=wrap;fontStyle=0;fontSize=12;';
 export const LANE_STYLE = 'swimlane;html=0;startSize=30;horizontal=0;collapsible=0;swimlaneLine=1;swimlaneFillColor=#ffffff;fillColor=none;whiteSpace=wrap;fontStyle=0;fontSize=12;';
 export const EVENT_BASE = 'points=[[0.145,0.145,0],[0.5,0,0],[0.855,0.145,0],[1,0.5,0],[0.855,0.855,0],[0.5,1,0],[0.145,0.855,0],[0,0.5,0]];shape=mxgraph.bpmn.event;html=0;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;verticalAlign=top;align=center;perimeter=ellipsePerimeter;outlineConnect=0;aspect=fixed;fontSize=12;';
-// підпис початкової події переноситься в колонку ≈100 px (від'ємні відступи розширюють текстове поле; без них draw.io малює або один довгий рядок, або колонку 36 px)
-export const START_STYLE = EVENT_BASE + 'whiteSpace=wrap;spacingLeft=-32;spacingRight=-32;outline=standard;symbol=general;';
+/**
+ * Підпис події переноситься в колонку ШИРИНОЮ З РАМКИ ПІДПИСУ `.bpmn` (`labelWidth`, D86). Раніше ширину задавали
+ * від'ємними відступами (`spacingLeft/-Right=-32`) — колонка завжди виходила ≈100 px, і довгий тригер ставав
+ * вузьким стовпчиком на пів схеми. Тепер обидва формати показують підпис однаково, а звірка `.drawio` порівнює
+ * `labelWidth` саме з рамкою в `.bpmn`: розбіжність — помилка експорту.
+ */
+export const START_STYLE = EVENT_BASE + 'whiteSpace=wrap;outline=standard;symbol=general;';
 export const END_STYLE = EVENT_BASE + 'outline=end;symbol=general;';
 export const GATEWAY_STYLE = 'points=[[0.25,0.25,0],[0.5,0,0],[0.75,0.25,0],[1,0.5,0],[0.75,0.75,0],[0.5,1,0],[0.25,0.75,0],[0,0.5,0]];shape=mxgraph.bpmn.gateway2;html=0;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;verticalAlign=top;align=center;perimeter=rhombusPerimeter;outlineConnect=0;outline=none;symbol=none;gwType=exclusive;fontSize=12;';
 // нейтральна задача: маркер «abstract» (без іконки «людина», бо тип виконавця в AS-IS не заданий)
@@ -29,13 +34,18 @@ export const GRAPH_MODEL_ATTRS: Record<string, string> = {
   dx: '1000', dy: '700', grid: '1', gridSize: '10', guides: '1', tooltips: '1', connect: '1', arrows: '1', fold: '1', page: '0', pageScale: '1', math: '0', shadow: '0',
 };
 
-export function vertexStyleOf(kind: Exclude<CellKind, 'edge'>): string {
+/**
+ * Еталонний стиль клітинки. `labelWidth` (ширина рамки зовнішнього підпису події) додається лише там, де в
+ * `.bpmn` справді є рамка підпису: він задає ширину колонки переносу в draw.io (D86).
+ */
+export function vertexStyleOf(kind: Exclude<CellKind, 'edge'>, opts: { labelWidth?: number } = {}): string {
+  const label = opts.labelWidth !== undefined ? `labelWidth=${Math.round(opts.labelWidth)};` : '';
   switch (kind) {
     case 'pool': return POOL_STYLE;
     case 'lane': return LANE_STYLE;
     case 'task': return TASK_STYLE;
-    case 'startEvent': return START_STYLE;
-    case 'endEvent': return END_STYLE;
+    case 'startEvent': return START_STYLE + label;
+    case 'endEvent': return END_STYLE + label;
     case 'exclusiveGateway': return GATEWAY_STYLE;
   }
 }
@@ -81,6 +91,8 @@ export interface StyleCheckInput {
   style: string;
   /** Для ліній: очікувані точки виходу/входу (частки 0…1) із геометрії .bpmn. */
   ports?: { exitX: number; exitY: number; entryX: number; entryY: number };
+  /** Для подій із зовнішнім підписом: ширина рамки підпису з `.bpmn` (px). */
+  labelWidth?: number;
 }
 
 /** Повна звірка стилю клітинки з еталоном. Повертає помилки (порожньо = стиль відповідає еталону). */
@@ -88,7 +100,7 @@ export function checkCellStyle(input: StyleCheckInput): Issue[] {
   const out: Issue[] = [];
   const err = (code: string, message: string): void => { out.push({ code, severity: 'error', message: `Клітинка ${input.label}: ${message}.`, refs: [input.cellId] }); };
   const got = parseStyle(input.style);
-  const baseStyle = input.kind === 'edge' ? EDGE_STYLE_FIXED : vertexStyleOf(input.kind);
+  const baseStyle = input.kind === 'edge' ? EDGE_STYLE_FIXED : vertexStyleOf(input.kind, input.labelWidth !== undefined ? { labelWidth: input.labelWidth } : {});
   const want = parseStyle(baseStyle).map;
   for (const d of got.duplicates) err('DRAWIO_STYLE_MISMATCH', `параметр стилю «${d}» записано двічі (який діє — залежить від програми)`);
   const classify = (k: string, g: string | undefined, w: string | undefined): void => {
