@@ -35,6 +35,14 @@ export function selfConsistency(base: Content, out: Content): { violations: Viol
   const linkInBase = (qid: string, a: { step_id: string; condition: string }): boolean =>
     (baseQById.get(qid)?.affects_transitions ?? []).some((l) => l.step_id === a.step_id && l.condition === a.condition);
   /**
+   * Чи ЗНЯЛА цю прив'язку аналітикиня явним рішенням (запис в історії без `to`, D82). Таку прив'язку агент
+   * відновити не може: `protectAnalystEdits` її приберe й запише конфлікт. Тому це не самосуперечність
+   * відповіді, а місце для відомості людини — інакше оплачена відповідь падала б через те, що програма
+   * однаково виправляє детерміновано.
+   */
+  const humanUnlinked = (qid: string, a: { step_id: string; condition: string }): boolean =>
+    (baseQById.get(qid)?.link_history ?? []).some((h) => h.to === undefined && h.step_id === a.step_id && h.condition === a.condition);
+  /**
    * Чи був цей зв'язок РОЗІРВАНИЙ уже у вхідній версії: він там був, а переходу (чи кроку) з такою умовою
    * там не було. Тоді це не самосуперечність ЦІЄЇ відповіді, і відхиляти її не можна (той самий принцип,
    * що у D73): програма позначає місце для аналітикині. Прив'язку відкритого питання агент однаково не
@@ -57,6 +65,11 @@ export function selfConsistency(base: Content, out: Content): { violations: Viol
       if (!qChanged && !changedStep.has(a.step_id)) continue;
       const kind = kindOf(a);
       const path = `questions (${q.id}) → крок ${a.step_id}`;
+      if (humanUnlinked(q.id, a)) {
+        warnings.push(`Питання ${q.id}: агент повернув прив’язку до кроку ${a.step_id}${a.condition ? ` («${a.condition}»)` : ''}, яку аналітикиня явно зняла. ` +
+          'Її рішення збережено: прив’язку не відновлено, спробу записано конфліктом у версії.');
+        continue;
+      }
       const step = stepById.get(a.step_id);
       if (!step) {
         if (linkWasBroken(q.id, a)) {

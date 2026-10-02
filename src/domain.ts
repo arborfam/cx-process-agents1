@@ -344,6 +344,21 @@ export function protectAnalystEdits(
           note: 'Прив’язку відкритого питання до потоку агент не змінює: це блокувальний зміст. Змінити її може аналітикиня з поясненням або закриття питання відповіддю з джерела.' });
       }
     }
+    // Прив'язку, яку аналітикиня ЯВНО зняла (запис в історії без `to`, D82), агент не відновлює — ні цією
+    // відповіддю, ні пізнішою: інакше явне рішення людини тихо скасовувалось би наступним запуском.
+    {
+      const unlinked = new Set((bq.link_history ?? []).filter((h) => h.to === undefined).map((h) => `${h.step_id}\u0000${h.condition}`));
+      if (unlinked.size > 0) {
+        const back = (oq.affects_transitions ?? []).filter((a) => unlinked.has(`${a.step_id}\u0000${a.condition}`));
+        if (back.length > 0) {
+          oq.affects_transitions = (oq.affects_transitions ?? []).filter((a) => !unlinked.has(`${a.step_id}\u0000${a.condition}`));
+          if (oq.affects_transitions.length === 0) delete oq.affects_transitions;
+          conflicts.push({ key: `question:${bq.id}.link`, kept: 'прив’язку знято аналітикинею',
+            proposed: back.map((a) => `крок ${a.step_id}${a.condition ? ` («${a.condition}»)` : ''}`).join('; '),
+            note: 'Агент повернув прив’язку, яку аналітикиня явно зняла. Її рішення збережено; якщо прив’язка потрібна, це окреме рішення аналітикині.' });
+        }
+      }
+    }
     if (bq.critical && !oq.critical) {
       oq.critical = true;
       conflicts.push({ key: `question:${bq.id}.critical`, kept: 'критичне', proposed: 'некритичне',
@@ -830,6 +845,134 @@ export function relinkQuestion(
   });
 }
 
+/**
+ * Прив'язки ВІДКРИТИХ питань до кроків, яких у описі немає. Типово з'являються після прийнятого вилучення
+ * кроку: саме питання лишається потрібним, а його прив'язка вказує в пустоту й стає технічною прогалиною
+ * (`QUESTION_LINK_BROKEN`). Нічого не змінює — лише показує; знімає прив'язку тільки людина (D82).
+ */
+export interface StaleQuestionLink {
+  question_id: string;
+  question_text: string;
+  critical: boolean;
+  step_id: string;
+  condition: string;
+  kind: LinkKindT;
+  kind_label: string;
+}
+
+export function staleQuestionLinks(c: Content): StaleQuestionLink[] {
+  const steps = new Set(c.steps.map((s) => s.id));
+  const out: StaleQuestionLink[] = [];
+  for (const q of c.questions) {
+    if (q.status !== 'open') continue;
+    for (const a of q.affects_transitions ?? []) {
+      if (steps.has(a.step_id)) continue;
+      const kind = linkKindOf(a);
+      out.push({ question_id: q.id, question_text: q.text, critical: q.critical, step_id: a.step_id, condition: a.condition, kind, kind_label: LINK_KIND_LABEL[kind] });
+    }
+  }
+  return out;
+}
+
+export interface UnlinkPreview {
+  question: { id: string; text: string; critical: boolean; status: string; impact: string; addressee: string };
+  link: { step_id: string; condition: string; kind: LinkKindT; kind_label: string };
+  /** Інші прив'язки цього питання: вони не змінюються. */
+  other_links: { step_id: string; condition: string; kind: LinkKindT; kind_label: string; step_exists: boolean }[];
+  /** Чи справді кроку немає в описі (інакше дію виконати не можна). */
+  step_missing: boolean;
+  lines: string[];
+  errors: { code: string; message: string }[];
+}
+
+const condLabel = (cond: string): string => (cond ? ` («${clipTxt(cond, 40)}»)` : ' (без умови)');
+
+/**
+ * Наслідки відкріплення ОДНОЇ прив'язки — показуються ДО підтвердження. Чиста функція: нічого не змінює.
+ * Показує саме питання, стару прив'язку, інші прив'язки (вони лишаються) і те, що саме питання не зникає.
+ */
+export function previewUnlink(c: Content, questionId: string, stepId: string, condition: string): UnlinkPreview {
+  const errors: { code: string; message: string }[] = [];
+  const q = c.questions.find((x) => x.id === questionId);
+  if (!q) {
+    return { question: { id: questionId, text: '', critical: false, status: 'unknown', impact: '', addressee: '' },
+      link: { step_id: stepId, condition, kind: 'direction', kind_label: LINK_KIND_LABEL.direction }, other_links: [], step_missing: false,
+      lines: [], errors: [{ code: 'NOT_FOUND', message: `Питання ${questionId} не знайдено` }] };
+  }
+  const links = q.affects_transitions ?? [];
+  const link = links.find((a) => a.step_id === stepId && a.condition === condition);
+  const kind = link ? linkKindOf(link) : 'direction';
+  const stepMissing = !c.steps.some((s) => s.id === stepId);
+  if (!link) errors.push({ code: 'LINK_NOT_FOUND', message: `У питання ${q.id} немає прив'язки до кроку ${stepId}${condLabel(condition)}` });
+  if (q.status !== 'open') errors.push({ code: 'QUESTION_CLOSED', message: `Питання ${q.id} закрите: його прив'язка нічого не блокує, відкріплення не потрібне` });
+  if (link && !stepMissing) {
+    errors.push({ code: 'STEP_EXISTS', message:
+      `Крок ${stepId} у описі Є. Прив'язку чинного кроку так не знімають: якщо питання не про напрямок — змініть ВИД прив'язки; ` +
+      'якщо перехід справді невідомий — з’ясуйте напрямок. Відкріпленням невизначений чи непідтверджений перехід приховати не можна.' });
+  }
+  const other = links.filter((a) => a !== link).map((a) => {
+    const k = linkKindOf(a);
+    return { step_id: a.step_id, condition: a.condition, kind: k, kind_label: LINK_KIND_LABEL[k], step_exists: c.steps.some((s) => s.id === a.step_id) };
+  });
+  const lines: string[] = [];
+  if (errors.length === 0) {
+    lines.push(`Буде знято ЛИШЕ цю прив'язку: крок ${stepId}${condLabel(condition)} — ${LINK_KIND_LABEL[kind]}. Кроку ${stepId} в описі немає.`);
+    lines.push(`Питання ${q.id} лишається відкритим${q.critical ? ' і КРИТИЧНИМ' : ' і некритичним'}: текст, вплив, адресат, джерела й критичність не змінюються.`);
+    lines.push(other.length
+      ? `Інші прив'язки цього питання (${other.length}) не змінюються: ${other.map((o) => `крок ${o.step_id}${condLabel(o.condition)} — ${o.kind_label}`).join('; ')}.`
+      : 'Інших прив’язок у цього питання немає.');
+    lines.push(`Зникне технічна прогалина «питання ${q.id} стосується кроку ${stepId}, якого в описі немає».`);
+    lines.push(q.critical
+      ? `Критичне відкрите питання лишається блокером погодження — відкріплення цього не змінює.`
+      : 'Питання некритичне: блокером погодження воно й не було.');
+    lines.push('Буде створено НОВУ версію з записом в історії прив’язки (хто, коли, від якого кроку, чому). Попередні версії й погодження не переписуються; чинне погодження (якщо є) скасується, кейс повернеться до дослідження.');
+  } else {
+    for (const e of errors) lines.push(e.message);
+  }
+  return {
+    question: { id: q.id, text: q.text, critical: q.critical, status: q.status, impact: q.impact, addressee: q.addressee },
+    link: { step_id: stepId, condition, kind, kind_label: LINK_KIND_LABEL[kind] },
+    other_links: other, step_missing: stepMissing, lines, errors,
+  };
+}
+
+/**
+ * Явне рішення аналітикині: ВІДКРІПИТИ питання від кроку, якого в описі немає (D82).
+ *
+ * Навіщо: після прийнятого вилучення кроку питання лишається потрібним, але його прив'язка вказує в пустоту —
+ * і погодження блокує технічна прогалина, яку нічим було прибрати (зміна виду прив'язки відсутнього кроку не
+ * лікує: крок однаково відсутній).
+ *
+ * Межі дії: знімається РІВНО одна названа прив'язка, і лише якщо кроку справді немає. Питання, його текст,
+ * вплив, адресат, джерела, ВІДКРИТИЙ статус і КРИТИЧНІСТЬ лишаються; інші прив'язки не змінюються; питання не
+ * закривається. Для чинного кроку дія недоступна — інакше нею можна було б приховати невизначений чи
+ * непідтверджений перехід. Створюється нова версія; попередні й погодження не переписуються.
+ */
+export function unlinkQuestionFromMissingStep(
+  db: DB, actor: Actor, caseId: string,
+  input: { baseVersionId: string; questionId: string; stepId: string; condition: string; note: string },
+): VersionRow {
+  requireHuman(actor, 'відкріплення питання від вилученого кроку');
+  const note = (input.note ?? '').trim();
+  if (note.length < 5) throw new DomainError('VALIDATION', 'Поясніть, чому прив’язку знято (обов’язково)', 400);
+  return tx(db, () => {
+    const head = assertBase(db, caseId, input.baseVersionId);
+    const c = versionContent(head);
+    const pv = previewUnlink(c, input.questionId, input.stepId, input.condition);
+    const err = pv.errors[0];
+    if (err) throw new DomainError(err.code, err.message, err.code === 'NOT_FOUND' || err.code === 'LINK_NOT_FOUND' ? 404 : 409, { preview: pv });
+    const q = c.questions.find((x) => x.id === input.questionId)!;
+    const links = q.affects_transitions ?? [];
+    q.affects_transitions = links.filter((a) => !(a.step_id === input.stepId && a.condition === input.condition));
+    if (q.affects_transitions.length === 0) delete q.affects_transitions;
+    q.link_history = [...(q.link_history ?? []),
+      { at: now(), by: actor.name, step_id: input.stepId, condition: input.condition, from: pv.link.kind, note }];
+    audit(db, caseId, actor, 'question_unlinked', { question_id: q.id, step_id: input.stepId, condition: input.condition, from: pv.link.kind });
+    return commitAnalystVersion(db, actor, caseId, head, c, JSON.parse(head.covered_json) as string[],
+      `Питання ${q.id}: знято прив’язку до вилученого кроку ${input.stepId}${condLabel(input.condition)} (${LINK_KIND_LABEL[pv.link.kind]}): ${note}`);
+  });
+}
+
 // ───────────────────────── пропозиції щодо кроків: наслідки до прийняття ─────────────────────────
 
 export interface ProposalEffects {
@@ -902,6 +1045,11 @@ export interface ProposalPreview {
   introduced: string[];
   /** Проблеми потоку після прийняття, що пов'язані з цією зміною (нові або на кроках, яких вона торкнулась). */
   residual: string[];
+  /**
+   * Прив'язки ВІДКРИТИХ питань, які після прийняття вказуватимуть на кроки, яких уже не буде (D82).
+   * Автоматично нічого не відкріплюється й не закривається: це явне рішення людини після прийняття.
+   */
+  stale_links: StaleQuestionLink[];
   needs_ack: boolean;
   errors: ProposalEffects['errors'];
   lines: string[];
@@ -931,6 +1079,7 @@ export function previewAccept(content: Content, ids: string[], scope: PreviewSco
   }
   const before = flowKeys(content);
   const after = flowKeys(c);
+  const staleBefore = staleQuestionLinks(content);
   const touched = new Set<string>([...fx.removed.map((r) => r.id), ...fx.rewired.map((r) => r.from), ...fx.orphan_candidates, ...fx.new_unknown.map((u) => u.from)]);
   if (fx.entry.after !== null) touched.add(fx.entry.after);
   const introduced = after.filter((k) => !before.includes(k));
@@ -946,12 +1095,19 @@ export function previewAccept(content: Content, ids: string[], scope: PreviewSco
   if (resolved.length) lines.push(`Буде усунуто: ${resolved.map((k) => flowKeyText(content, k)).join('; ')}.`);
   if (after.length === 0) lines.push('Після прийняття проблем потоку (недосяжних кроків, кроків без виходу) не лишиться.');
   else lines.push(`Після прийняття ЛИШАТЬСЯ проблеми потоку: ${after.map((k) => flowKeyText(c, k)).join('; ')}.`);
+  // Наслідки для відкритих питань (D82): прив'язка до вилученого кроку сама не зникає — її знімає людина окремою дією.
+  const staleAfter = staleQuestionLinks(c);
+  const staleNew = staleAfter.filter((x) => !staleBefore.some((b) => b.question_id === x.question_id && b.step_id === x.step_id && b.condition === x.condition));
+  for (const x of staleNew) {
+    lines.push(`Питання ${x.question_id} (${x.critical ? 'КРИТИЧНЕ' : 'некритичне'}, відкрите) лишиться прив’язаним до вилученого кроку ${x.step_id}${x.condition ? ` («${clipTxt(x.condition, 40)}»)` : ''} — ${x.kind_label}. ` +
+      'Автоматично воно не закривається й не відкріплюється: після прийняття приберіть цю прив’язку дією «Відкріпити від вилученого кроку» з поясненням.');
+  }
   for (const e of fx.errors) lines.push(`Помилка: ${e.message}.`);
-  const hash = sha256(canonical({ scope, ids: [...ids].sort(), base: sha256(canonical(content)), removed: fx.removed.map((r) => r.id), rewired: fx.rewired, new_unknown: fx.new_unknown.map((u) => [u.from, u.condition]), entry: fx.entry, after, errors: fx.errors.map((e) => e.code) }));
+  const hash = sha256(canonical({ scope, ids: [...ids].sort(), base: sha256(canonical(content)), removed: fx.removed.map((r) => r.id), rewired: fx.rewired, new_unknown: fx.new_unknown.map((u) => [u.from, u.condition]), entry: fx.entry, after, stale: staleAfter.map((x) => [x.question_id, x.step_id, x.condition]), errors: fx.errors.map((e) => e.code) }));
   return {
     proposal_ids: [...ids], removed: fx.removed, rewired: fx.rewired, new_unknown: fx.new_unknown,
     entry: { before: fx.entry.before, after: fx.entry.after, changed: entryChanged },
-    flow_before: before, flow_after: after, resolved, introduced, residual, needs_ack: needsAck, errors: fx.errors, lines, hash,
+    flow_before: before, flow_after: after, resolved, introduced, residual, stale_links: staleAfter, needs_ack: needsAck, errors: fx.errors, lines, hash,
   };
 }
 
@@ -1322,10 +1478,14 @@ export function transitionIssues(c: Content): Blocker[] {
         ? c.steps.some((s) => s.id === a.step_id)
         : c.steps.some((s) => s.id === a.step_id && s.next.some((n) => n.condition === a.condition));
       if (!exists) {
+        // Якщо кроку немає зовсім (типово після прийнятого вилучення), прогалину прибирає явне відкріплення
+        // людиною; якщо крок є, а переходу немає — це інша ситуація (змінено умову) і лікується інакше (D82).
+        const stepMissing = !c.steps.some((s) => s.id === a.step_id);
         out.push({ code: 'QUESTION_LINK_BROKEN', severity: 'critical', ref: q.id,
-          message: kind === 'step_detail'
-            ? `Питання ${q.id} стосується кроку ${a.step_id}, якого в описі немає.`
-            : `Питання ${q.id} стосується переходу ${condText(a.condition)} кроку ${a.step_id}, якого в описі немає (змінено умову чи крок?).` });
+          message: stepMissing
+            ? `Питання ${q.id} стосується кроку ${a.step_id}, якого в описі немає (крок вилучено). ` +
+              'Приберіть неактуальну прив’язку в картці питання дією «Відкріпити від вилученого кроку» (з поясненням): питання лишиться відкритим, його критичність не зміниться.'
+            : `Питання ${q.id} стосується переходу ${condText(a.condition)} кроку ${a.step_id}, якого в цьому кроці немає (змінено умову?). Перевірте прив’язку або умову переходу.` });
       }
     }
   }
@@ -1995,6 +2155,8 @@ export function buildCard(db: DB, caseId: string, mode: string) {
     runs: all(db, 'SELECT * FROM run WHERE case_id = ? ORDER BY started_at DESC LIMIT 20', caseId),
     audit: all(db, 'SELECT at, actor, action, details_json FROM audit_log WHERE case_id = ? ORDER BY id DESC LIMIT 40', caseId),
     proposal_previews: previewProposals(content, { caseId, versionId: head.id }),
+    // Прив'язки відкритих питань до кроків, яких немає (D82): показ і наслідки для кожної — з програми, а не з браузера.
+    stale_links: staleQuestionLinks(content).map((x) => ({ ...x, preview: previewUnlink(content, x.question_id, x.step_id, x.condition) })),
     link_kinds: LINK_KIND_LABEL,
     cause_statuses: CAUSE_STATUS_LABEL,
     // Підстава причини проблеми (D70): видно, що сказало джерело, що є гіпотезою агента, а де причину не з'ясовано.

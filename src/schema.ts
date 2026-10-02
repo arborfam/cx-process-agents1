@@ -106,8 +106,12 @@ const Question = z
      *  • step_detail — уточнення змісту кроку, перехід не стосується (саме по собі не блокує).
      */
     affects_transitions: z.array(LinkSchema).optional(),
-    /** Історія явних виправлень прив'язки аналітикинею (хто, коли, з якого виду на який, чому). Агент її не змінює. */
-    link_history: z.array(z.object({ at: z.string(), by: z.string(), step_id: z.string(), condition: z.string(), from: LinkKind, to: LinkKind, note: z.string() }).strict()).optional(),
+    /**
+     * Історія явних рішень аналітикині щодо прив'язки (хто, коли, що саме, чому). Агент її не змінює.
+     * `to` — новий вид прив'язки; **відсутнє `to` означає, що прив'язку знято** (питання відкріплено від
+     * кроку, якого в описі немає, — D82). Старі записи завжди мають `to`, тому читаються як раніше.
+     */
+    link_history: z.array(z.object({ at: z.string(), by: z.string(), step_id: z.string(), condition: z.string(), from: LinkKind, to: LinkKind.optional(), note: z.string() }).strict()).optional(),
   })
   .strict();
 

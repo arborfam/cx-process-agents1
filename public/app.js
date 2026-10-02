@@ -806,10 +806,19 @@ function questionView(card, q) {
   return el('div', { class: 'claim ' + (open && q.critical ? 'unknown' : ''), id: 'q-' + q.id },
     el('div', {}, el('span', { class: 'chip' }, q.id + ' · ' + (q.critical ? 'КРИТИЧНЕ' : 'некритичне') + ' · ' + (open ? 'відкрите' : 'закрите')), ' ', q.text),
     el('div', { class: 'small muted' }, 'Вплив: ' + (q.impact || '—') + (q.addressee ? ' · Кому: ' + q.addressee : '') + origin),
-    (q.affects_transitions || []).map((a) => el('div', { class: 'small', 'data-block': 'link' },
-      `Прив’язка: крок ${a.step_id}${a.condition ? ' («' + a.condition + '»)' : ''} — ${(card.link_kinds || {})[a.kind || 'direction']}.`,
-      open ? el('button', { class: 'link', onclick: () => relinkDialog(card, q, a) }, 'Змінити вид прив’язки…') : null)),
-    (q.link_history || []).map((h) => el('div', { class: 'small muted' }, `Прив’язку змінено (${h.by}): ${(card.link_kinds || {})[h.from]} → ${(card.link_kinds || {})[h.to]}. Причина: ${h.note}`)),
+    (q.affects_transitions || []).map((a) => {
+      // Прив'язка до кроку, якого в описі немає (типово після прийнятого вилучення): вид прив'язки цього не лікує,
+      // потрібне явне відкріплення людиною (D82).
+      const stale = (card.stale_links || []).find((x) => x.question_id === q.id && x.step_id === a.step_id && x.condition === a.condition);
+      return el('div', { class: 'small' + (stale ? ' unknown' : ''), 'data-block': 'link' },
+        `Прив’язка: крок ${a.step_id}${a.condition ? ' («' + a.condition + '»)' : ''} — ${(card.link_kinds || {})[a.kind || 'direction']}.`,
+        stale ? el('span', { style: 'color:var(--danger)' }, ' ⚠ Кроку ' + a.step_id + ' у описі немає (вилучено). Прив’язка неактуальна й блокує передачу на погодження як технічна прогалина.') : null,
+        open && stale ? el('button', { class: 'link', 'data-act': 'unlink', onclick: () => unlinkDialog(card, q, stale) }, 'Відкріпити від вилученого кроку…') : null,
+        open && !stale ? el('button', { class: 'link', onclick: () => relinkDialog(card, q, a) }, 'Змінити вид прив’язки…') : null);
+    }),
+    (q.link_history || []).map((h) => el('div', { class: 'small muted' }, h.to === undefined || h.to === null
+      ? `Прив’язку знято (${h.by}): крок ${h.step_id}${h.condition ? ' («' + h.condition + '»)' : ''}, було «${(card.link_kinds || {})[h.from]}». Причина: ${h.note}`
+      : `Прив’язку змінено (${h.by}): ${(card.link_kinds || {})[h.from]} → ${(card.link_kinds || {})[h.to]}. Причина: ${h.note}`)),
     q.criticality_note ? el('div', { class: 'small' }, 'Пояснення щодо критичності: ' + q.criticality_note) : null,
     open ? el('div', {}, ans,
       // Походження вказує людина явно: ні тип кейсу, ні текст відповіді його не визначають (D77).
@@ -839,6 +848,29 @@ function relinkDialog(card, q, a) {
     sel, note, el('div', { class: 'actions' },
       el('button', { class: 'primary', onclick: async () => { dlg.close(); const r = await act(() => api('POST', `/api/cases/${card.case.id}/questions/relink`, { base_version_id: card.head.id, question_id: q.id, step_id: a.step_id, condition: a.condition, to_kind: sel.value, note: note.value }), 'Прив’язку змінено; створено нову версію'); if (r) await refresh(); } }, 'Підтвердити'),
       el('button', { onclick: () => dlg.close() }, 'Скасувати')));
+}
+
+/**
+ * Відкріплення питання від вилученого кроку: показуємо саме питання, стару прив'язку й наслідки (їх рахує
+ * програма, не браузер), пояснення обов'язкове. Нічого не закривається й не змінює критичності (D82).
+ */
+function unlinkDialog(card, q, stale) {
+  const pv = stale.preview || { lines: [], question: q, link: stale };
+  const note = el('input', { type: 'text', placeholder: 'Чому ця прив’язка неактуальна (обов’язково)' });
+  const btn = el('button', { class: 'primary', onclick: async () => {
+    if (note.value.trim().length < 5) { toast('Поясніть, чому прив’язку знято (обов’язково).'); return; }
+    dlg.close();
+    const r = await act(() => api('POST', `/api/cases/${card.case.id}/questions/unlink`, {
+      base_version_id: card.head.id, question_id: q.id, step_id: stale.step_id, condition: stale.condition, note: note.value,
+    }), 'Прив’язку знято; створено нову версію');
+    if (r) await refresh();
+  } }, 'Відкріпити');
+  openDialog(el('h2', {}, 'Відкріпити питання ' + q.id + ' від вилученого кроку ' + stale.step_id),
+    el('p', {}, el('span', { class: 'chip' }, q.id + ' · ' + (q.critical ? 'КРИТИЧНЕ' : 'некритичне') + ' · відкрите'), ' ', q.text),
+    el('p', { class: 'small' }, 'Стара прив’язка: крок ' + stale.step_id + (stale.condition ? ' («' + stale.condition + '»)' : ' (без умови)') + ' — ' + stale.kind_label + '.'),
+    el('div', { class: 'small', 'data-block': 'preview' }, el('strong', {}, 'Що зміниться: '), el('ul', {}, pv.lines.map((l) => el('li', {}, l)))),
+    el('p', { class: 'hint' }, 'Питання НЕ закривається й критичність не змінюється. Дія доступна лише для кроку, якого в описі немає: невизначений чи непідтверджений перехід чинного кроку так приховати не можна.'),
+    note, el('div', { class: 'actions' }, btn, el('button', { onclick: () => dlg.close() }, 'Скасувати')));
 }
 
 function critDialog(card, q) {

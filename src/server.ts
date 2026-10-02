@@ -7,7 +7,7 @@ import { DEMO_BANNER, type ModelConfig } from './config.ts';
 import { DomainError } from './errors.ts';
 import { sha256 } from './hash.ts';
 import {
-  acceptDraft, addQuestion, addNotationRequirement, decideNotationRequirement, removeNotationRequirement, decideStepProposal, decideStepProposals, relinkQuestion, addSource, addSourceFromFile, answerQuestion, approve, buildCard, createCase, getCase,
+  acceptDraft, addQuestion, addNotationRequirement, decideNotationRequirement, removeNotationRequirement, decideStepProposal, decideStepProposals, relinkQuestion, unlinkQuestionFromMissingStep, addSource, addSourceFromFile, answerQuestion, approve, buildCard, createCase, getCase,
   listCases, listSources, previewOriginCorrection, applyOriginCorrection, requestBpmnStart, returnToResearch, saveAnalystVersion, setQuestionCritical, submitForApproval,
   type Actor, type EditFields,
 } from './domain.ts';
@@ -376,6 +376,15 @@ export function createApp(opts: ServerOptions): Server {
           const v = relinkQuestion(db, human, caseId, {
             baseVersionId: str(b.base_version_id, 'base_version_id'), questionId: str(b.question_id, 'question_id'), stepId: str(b.step_id, 'step_id'),
             condition: str(b.condition, 'condition', false), toKind: str(b.to_kind, 'to_kind') as LinkKindT, note: str(b.note, 'note'),
+          });
+          return json(res, 201, { version_id: v.id });
+        }
+        case 'questions/unlink': {
+          // Явне рішення людини: зняти прив'язку питання до кроку, якого в описі немає (D82).
+          // Пояснення обов'язкове; для чинного кроку дія недоступна — це перевіряє домен.
+          const v = unlinkQuestionFromMissingStep(db, human, caseId, {
+            baseVersionId: str(b.base_version_id, 'base_version_id'), questionId: str(b.question_id, 'question_id'),
+            stepId: str(b.step_id, 'step_id'), condition: str(b.condition, 'condition', false), note: str(b.note, 'note'),
           });
           return json(res, 201, { version_id: v.id });
         }
