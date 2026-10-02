@@ -83,7 +83,7 @@ test('Агент не може перетворити «невідомо» на 
 
 test('Після уточнення перехід лишається «невідомо», доки крок не оновлено; далі прогалин немає', () => {
   const { db, id, card } = seeded();
-  const v3 = answerQuestion(db, human, id, { baseVersionId: card().head.id, questionId: 'Q1', answer: 'Керівник повідомляє клієнта листом.' });
+  const v3 = answerQuestion(db, human, id, { baseVersionId: card().head.id, questionId: 'Q1', answer: 'Керівник повідомляє клієнта листом.' , origin: 'synthetic' });
   const b = submissionBlockers(db, id);
   assert.ok(b.some((x) => x.code === 'UNKNOWN_QUESTION_CLOSED' && x.ref === 'S5'));
   assert.ok(!b.some((x) => x.code === 'CRITICAL_QUESTION'));
@@ -143,7 +143,7 @@ test('Захист у глибину: погоджена версія з нев�
 // ───────── змістовний огляд змін ─────────
 test('Огляд змін показує зміст (було → стало), а не лише назву поля', () => {
   const { db, id, card } = seeded();
-  const v3 = answerQuestion(db, human, id, { baseVersionId: card().head.id, questionId: 'Q1', answer: 'Керівник повідомляє клієнта листом.' });
+  const v3 = answerQuestion(db, human, id, { baseVersionId: card().head.id, questionId: 'Q1', answer: 'Керівник повідомляє клієнта листом.' , origin: 'synthetic' });
   let texts = card().changes.map((x) => x.text);
   assert.ok(texts.some((t) => t.startsWith('Закрито Q1') && t.includes('Керівник повідомляє клієнта листом.')), texts.join('\n'));
   assert.ok(texts.some((t) => t.startsWith('Враховано нове джерело')));
@@ -194,7 +194,7 @@ test('Прогалини й статус чернетки — окремі бл�
   assert.equal(c0.review.checks.find((x) => x.key === 'accepted')!.status, 'fail');
   assert.equal(c0.review.checks.find((x) => x.key === 'sources')!.detail, '2 з 2');
 
-  const v3 = answerQuestion(db, human, id, { baseVersionId: c0.head.id, questionId: 'Q1', answer: 'Керівник повідомляє клієнта листом.' });
+  const v3 = answerQuestion(db, human, id, { baseVersionId: c0.head.id, questionId: 'Q1', answer: 'Керівник повідомляє клієнта листом.' , origin: 'synthetic' });
   const v4 = saveAnalystVersion(db, human, id, { baseVersionId: v3.id,
     fields: { steps_text: card().editable.steps_text.replace(S5_UNKNOWN, S5_UNKNOWN.replace('? (відхилено)', 'S6 (відхилено)')) +
       '\nS6 | Керівник відділу | Повідомляє клієнта листом | Клієнта поінформовано | END' } });

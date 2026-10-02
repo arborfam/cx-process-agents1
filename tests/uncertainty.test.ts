@@ -25,7 +25,7 @@ test('K2: некритичні прогалини лишаються в пого
   assert.equal((q2.affects_transitions ?? []).length, 0, 'Q2 не пов’язане з переходами: це K2');
 
   // усуваємо лише K1 (питання Q1 і невизначений перехід S5)
-  const v3 = answerQuestion(db, human, id, { baseVersionId: card.head.id, questionId: 'Q1', answer: 'Керівник повідомляє клієнта листом.' });
+  const v3 = answerQuestion(db, human, id, { baseVersionId: card.head.id, questionId: 'Q1', answer: 'Керівник повідомляє клієнта листом.' , origin: 'synthetic' });
   const v4 = saveAnalystVersion(db, human, id, {
     baseVersionId: v3.id,
     fields: { steps_text: buildCard(db, id, 'demo').editable.steps_text.replace(S5_UNKNOWN, S5_UNKNOWN.replace('? (відхилено)', 'S6 (відхилено)')) +

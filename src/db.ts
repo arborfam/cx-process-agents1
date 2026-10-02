@@ -180,11 +180,27 @@ CREATE TABLE IF NOT EXISTS bpmn_artifact (
   record_hash TEXT NOT NULL
 );
 
+-- Виправлення помилково позначеного походження джерела (D77). Сам рядок таблиці source НЕ переписується:
+-- виправлення — окремий незмінний запис, а чинне походження обчислюється як останнє виправлення (інакше — збережене).
+-- Дозволений напрям лише real -> synthetic і лише для уточнень: послабити захист D18 цим шляхом неможливо.
+CREATE TABLE IF NOT EXISTS source_origin_correction (
+  id TEXT PRIMARY KEY,
+  case_id TEXT NOT NULL REFERENCES "case"(id),
+  source_id TEXT NOT NULL REFERENCES source(id),
+  question_id TEXT,
+  from_origin TEXT NOT NULL CHECK (from_origin IN ('real')),
+  to_origin TEXT NOT NULL CHECK (to_origin IN ('synthetic')),
+  reason TEXT NOT NULL,
+  corrected_by TEXT NOT NULL,
+  corrected_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_origin_correction_case ON source_origin_correction(case_id);
 CREATE INDEX IF NOT EXISTS idx_source_case ON source(case_id, seq);
 CREATE INDEX IF NOT EXISTS idx_version_case ON as_is_version(case_id, number);
 `;
 
-const IMMUTABLE_TABLES = ['source', 'as_is_version', 'version_acceptance', 'approval', 'approval_revocation', 'audit_log', 'bpmn_review', 'finding_resolution', 'bpmn_artifact'];
+const IMMUTABLE_TABLES = ['source', 'as_is_version', 'version_acceptance', 'approval', 'approval_revocation', 'audit_log', 'bpmn_review', 'finding_resolution', 'bpmn_artifact', 'source_origin_correction'];
 
 function immutabilityTriggers(): string {
   return IMMUTABLE_TABLES.map(

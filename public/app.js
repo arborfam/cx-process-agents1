@@ -634,7 +634,8 @@ const PANELS = {
   sources: (card) => {
     const list = card.sources.length ? el('table', {}, el('thead', {}, el('tr', {}, ['Джерело', 'Тип', 'Походження', 'Читання', 'Враховано у версії'].map((h) => el('th', {}, h)))),
       el('tbody', {}, card.sources.map((s) => el('tr', {}, el('td', {}, s.read_status === 'ok' ? el('button', { class: 'link', onclick: () => showSource(s.id) }, s.title) : s.title, s.required ? ' (обов’язкове)' : ''),
-        el('td', {}, KIND_LABEL[s.kind]), el('td', {}, ORIGIN_LABEL[s.origin]),
+        el('td', {}, KIND_LABEL[s.kind]),
+        el('td', {}, ORIGIN_LABEL[s.origin], s.origin_corrected ? el('div', { class: 'small muted' }, 'походження виправлено аналітикинею') : null),
         el('td', {}, s.read_status === 'ok' ? 'прочитано' : el('span', { style: 'color:var(--danger)' }, '⚠ НЕ прочитано: ' + (s.read_error || ''))),
         el('td', {}, s.read_status !== 'ok' ? 'ні (не опрацьовано)' : s.covered ? 'так' : el('strong', { style: 'color:var(--danger)' }, 'ні — нове, не враховано')))))) : el('p', { class: 'muted' }, 'Джерел ще немає.');
     const form = el('form', { onsubmit: async (e) => {
@@ -810,8 +811,20 @@ function questionView(card, q) {
       open ? el('button', { class: 'link', onclick: () => relinkDialog(card, q, a) }, 'Змінити вид прив’язки…') : null)),
     (q.link_history || []).map((h) => el('div', { class: 'small muted' }, `Прив’язку змінено (${h.by}): ${(card.link_kinds || {})[h.from]} → ${(card.link_kinds || {})[h.to]}. Причина: ${h.note}`)),
     q.criticality_note ? el('div', { class: 'small' }, 'Пояснення щодо критичності: ' + q.criticality_note) : null,
-    open ? el('div', {}, ans, el('div', { class: 'actions' },
-      el('button', { onclick: async () => { const r = await act(() => api('POST', `/api/cases/${card.case.id}/questions/answer`, { base_version_id: card.head.id, question_id: q.id, answer: ans.value }), 'Уточнення додано; створено нову версію'); if (r) await refresh(); } }, 'Закрити питання уточненням'),
+    open ? el('div', {}, ans,
+      // Походження вказує людина явно: ні тип кейсу, ні текст відповіді його не визначають (D77).
+      el('fieldset', { class: 'origin-pick' },
+        el('legend', { class: 'small' }, 'Походження уточнення (обов’язково)'),
+        el('label', {}, el('input', { type: 'radio', name: 'origin-' + q.id, value: 'synthetic' }), ' синтетичне — вигадане для навчального прикладу'),
+        el('label', {}, el('input', { type: 'radio', name: 'origin-' + q.id, value: 'real' }), ' реальні дані — з роботи з людьми'),
+        el('div', { class: 'small muted' }, 'Реальні дані моделі не надсилаються (D18): кейс із ними не можна передати на аналіз.')),
+      el('div', { class: 'actions' },
+      el('button', { onclick: async () => {
+        const picked = document.querySelector(`input[name="origin-${q.id}"]:checked`);
+        if (!picked) { toast('Оберіть походження уточнення: синтетичне чи реальні дані.'); return; }
+        const r = await act(() => api('POST', `/api/cases/${card.case.id}/questions/answer`, { base_version_id: card.head.id, question_id: q.id, answer: ans.value, origin: picked.value }), 'Уточнення додано; створено нову версію');
+        if (r) await refresh();
+      } }, 'Закрити питання уточненням'),
       q.critical ? el('button', { onclick: () => critDialog(card, q) }, 'Зробити некритичним…') : null))
       : el('div', { class: 'small' }, 'Відповідь: ' + q.answer, ' · ', q.closed_by_source_id ? el('button', { class: 'link', onclick: () => showSource(q.closed_by_source_id) }, 'джерело відповіді') : ''));
 }

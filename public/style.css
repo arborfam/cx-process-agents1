@@ -87,3 +87,8 @@ details > summary { cursor: pointer; }
 .stale { background: #fff4d6; border: 1px solid #b7791f; color: #744210; border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
 .group-h { margin: 16px 0 4px; padding-top: 10px; border-top: 1px solid var(--line); }
 .group-h:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+
+/* Явний вибір походження уточнення (D77): без нього уточнення не створюється. */
+.origin-pick { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; margin: 6px 0; }
+.origin-pick legend { padding: 0 4px; color: var(--muted); }
+.origin-pick label { display: block; margin: 3px 0; }

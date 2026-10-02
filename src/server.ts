@@ -8,7 +8,7 @@ import { DomainError } from './errors.ts';
 import { sha256 } from './hash.ts';
 import {
   acceptDraft, addQuestion, addNotationRequirement, decideNotationRequirement, removeNotationRequirement, decideStepProposal, decideStepProposals, relinkQuestion, addSource, addSourceFromFile, answerQuestion, approve, buildCard, createCase, getCase,
-  listCases, listSources, requestBpmnStart, returnToResearch, saveAnalystVersion, setQuestionCritical, submitForApproval,
+  listCases, listSources, previewOriginCorrection, applyOriginCorrection, requestBpmnStart, returnToResearch, saveAnalystVersion, setQuestionCritical, submitForApproval,
   type Actor, type EditFields,
 } from './domain.ts';
 import { LinkKind, type LinkKindT } from './schema.ts';
@@ -277,7 +277,11 @@ export function createApp(opts: ServerOptions): Server {
       const b = await readBody(req);
       switch (action) {
         case 'sources': {
-          const origin = b.origin === 'real' || b.origin === 'synthetic' ? b.origin : 'synthetic';
+          // Походження вказується явно: мовчазна підстановка «синтетичне» могла б відправити моделі справжні дані.
+          if (b.origin !== 'real' && b.origin !== 'synthetic') {
+            throw new DomainError('VALIDATION', 'Вкажіть походження джерела: «синтетичне» або «реальні дані» (реальні дані моделі не надсилаються, D18).', 400);
+          }
+          const origin = b.origin;
           const kind = str(b.kind, 'kind') as 'request' | 'transcript' | 'document' | 'analyst_note' | 'clarification';
           const s = addSource(db, human, caseId, { kind, title: str(b.title, 'title'), content: str(b.content, 'content'), origin, required: b.required === true });
           return json(res, 201, { source_id: s.id });
@@ -307,10 +311,28 @@ export function createApp(opts: ServerOptions): Server {
           return json(res, 201, { version_id: v.id });
         }
         case 'questions/answer': {
+          // Походження задає людина явно: ні тип кейсу, ні текст відповіді його не визначають (D77).
           const v = answerQuestion(db, human, caseId, {
-            baseVersionId: str(b.base_version_id, 'base_version_id'), questionId: str(b.question_id, 'question_id'), answer: str(b.answer, 'answer'),
+            baseVersionId: str(b.base_version_id, 'base_version_id'), questionId: str(b.question_id, 'question_id'),
+            answer: str(b.answer, 'answer'), origin: b.origin as 'real' | 'synthetic',
           });
           return json(res, 201, { version_id: v.id });
+        }
+        case 'sources/origin/preview': {
+          // Лише показує, що буде перекласифіковано. Нічого не змінює.
+          const p = previewOriginCorrection(db, caseId, {
+            questionIds: Array.isArray(b.question_ids) ? (b.question_ids as unknown[]).map((x) => String(x)) : undefined,
+            sourceIds: Array.isArray(b.source_ids) ? (b.source_ids as unknown[]).map((x) => String(x)) : undefined,
+          });
+          return json(res, 200, p);
+        }
+        case 'sources/origin/correct': {
+          const r = applyOriginCorrection(db, human, caseId, {
+            questionIds: Array.isArray(b.question_ids) ? (b.question_ids as unknown[]).map((x) => String(x)) : undefined,
+            sourceIds: Array.isArray(b.source_ids) ? (b.source_ids as unknown[]).map((x) => String(x)) : undefined,
+            confirmToken: str(b.confirm_token, 'confirm_token'), reason: str(b.reason, 'reason'),
+          });
+          return json(res, 201, { ...r, note: 'Текст уточнень, їхні зв’язки й історія версій не змінені; змінено лише позначку походження.' });
         }
         case 'questions/criticality': {
           const v = setQuestionCritical(db, human, caseId, {

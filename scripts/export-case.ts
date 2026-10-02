@@ -42,14 +42,20 @@ export function listCases(db: DatabaseSync): Row[] {
   return db.prepare(`SELECT c.id, c.title, c.state, c.scenario_id, c.scenario_stage, c.created_at,
       (SELECT COUNT(*) FROM as_is_version v WHERE v.case_id = c.id) AS versions,
       (SELECT COUNT(*) FROM run r WHERE r.case_id = c.id) AS runs,
-      (SELECT COUNT(*) FROM source s WHERE s.case_id = c.id AND s.origin = 'real') AS real_sources
+      (SELECT COUNT(*) FROM source s WHERE s.case_id = c.id AND COALESCE(
+         (SELECT k.to_origin FROM source_origin_correction k WHERE k.source_id = s.id ORDER BY k.rowid DESC LIMIT 1),
+         s.origin) = 'real') AS real_sources
     FROM "case" c ORDER BY c.created_at DESC`).all() as Row[];
 }
 
 export function exportCase(db: DatabaseSync, caseId: string): ExportResult | ExportRefusal {
   const c = db.prepare('SELECT * FROM "case" WHERE id = ?').get(caseId) as Row | undefined;
   if (!c) return { ok: false, reason: `Кейсу ${caseId} немає в базі.` };
-  const sources = db.prepare('SELECT * FROM source WHERE case_id = ? ORDER BY seq').all(caseId) as Row[];
+  // Чинне походження враховує виправлення (D77): рядок джерела не переписується, тож читаємо так само, як продукт.
+  const sources = db.prepare(`SELECT s.*, COALESCE(
+      (SELECT k.to_origin FROM source_origin_correction k WHERE k.source_id = s.id ORDER BY k.rowid DESC LIMIT 1),
+      s.origin) AS origin
+    FROM source s WHERE s.case_id = ? ORDER BY s.seq`).all(caseId) as Row[];
   if (sources.some((s) => s.origin === 'real')) {
     return { ok: false, reason: 'У кейсі є джерела з позначкою «реальні». Реальні дані не експортуються (рішення D18). Експорт не виконано.' };
   }

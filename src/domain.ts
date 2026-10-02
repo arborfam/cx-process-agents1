@@ -122,8 +122,28 @@ export function headVersion(db: DB, caseId: string): VersionRow {
   return getVersion(db, c.head_version_id);
 }
 
+/**
+ * Джерела кейсу з ЧИННИМ походженням: якщо для джерела є виправлення (D77), береться воно, інакше — збережене.
+ * Рядок таблиці `source` при цьому не переписується: виправлення живе окремим незмінним записом.
+ * Усі перевірки D18 («реальні дані моделі не надсилаються») читають джерела саме звідси, тож чинне
+ * походження діє скрізь одночасно.
+ */
 export function listSources(db: DB, caseId: string): SourceRow[] {
-  return all<SourceRow>(db, 'SELECT * FROM source WHERE case_id = ? ORDER BY seq', caseId);
+  return all<SourceRow>(db,
+    `SELECT s.*, COALESCE(
+       (SELECT c.to_origin FROM source_origin_correction c WHERE c.source_id = s.id ORDER BY c.rowid DESC LIMIT 1),
+       s.origin) AS origin
+     FROM source s WHERE s.case_id = ? ORDER BY s.seq`, caseId);
+}
+
+/** Чи було виправлено походження цього джерела (для показу в інтерфейсі й журналі). */
+export function originCorrections(db: DB, caseId: string): OriginCorrectionRow[] {
+  return all<OriginCorrectionRow>(db, 'SELECT * FROM source_origin_correction WHERE case_id = ? ORDER BY rowid', caseId);
+}
+
+export interface OriginCorrectionRow {
+  id: string; case_id: string; source_id: string; question_id: string | null;
+  from_origin: 'real'; to_origin: 'synthetic'; reason: string; corrected_by: string; corrected_at: string;
 }
 
 export function versionContent(v: VersionRow): Content {
@@ -616,26 +636,139 @@ export function addQuestion(
 /** Уточнення = нове джерело (автор і дата) + нова версія, де питання закрите з посиланням на це джерело. */
 export function answerQuestion(
   db: DB, actor: Actor, caseId: string,
-  input: { baseVersionId: string; questionId: string; answer: string },
+  input: { baseVersionId: string; questionId: string; answer: string; origin: 'real' | 'synthetic' },
 ): VersionRow {
   requireHuman(actor, 'відповідь на питання');
   if (!input.answer.trim()) throw new DomainError('VALIDATION', 'Текст уточнення порожній', 400);
+  // Походження задає людина ЯВНО. Раніше воно вгадувалося за типом кейсу (`is_demo_script ? synthetic : real`),
+  // через що синтетичні уточнення навчального сценарію ставали «реальними даними» й блокували запуск моделі (D77).
+  // Ні тип кейсу, ні текст відповіді тут нічого не вирішують: здогадка в обидва боки небезпечна —
+  // або марно блокує роботу, або мовчки відправляє справжні дані постачальнику моделі.
+  if (input.origin !== 'real' && input.origin !== 'synthetic') {
+    throw new DomainError('VALIDATION',
+      'Вкажіть походження уточнення: «синтетичне» (вигадане для навчального прикладу) або «реальні дані» (з роботи з людьми). Реальні дані моделі не надсилаються (D18).', 400);
+  }
   return tx(db, () => {
     const head = assertBase(db, caseId, input.baseVersionId);
     const c = versionContent(head);
     const q = c.questions.find((x) => x.id === input.questionId);
     if (!q) throw new DomainError('NOT_FOUND', 'Питання не знайдено', 404);
     if (q.status === 'closed') throw new DomainError('VALIDATION', 'Питання вже закрите', 400);
-    const demo = getCase(db, caseId).is_demo_script === 1;
     const src = addSource(db, actor, caseId, {
       kind: 'clarification', title: `Уточнення до ${q.id} (${actor.name})`, content: input.answer.trim(),
-      origin: demo ? 'synthetic' : 'real',
+      origin: input.origin,
     });
     q.status = 'closed';
     q.answer = input.answer.trim();
     q.closed_by_source_id = src.id;
     const covered = [...(JSON.parse(head.covered_json) as string[]), src.id];
     return commitAnalystVersion(db, actor, caseId, head, c, covered, `Закрито питання ${q.id} уточненням`);
+  });
+}
+
+// ───────── виправлення помилково позначеного походження уточнень (D77) ─────────
+
+export interface OriginCorrectionCandidate {
+  source_id: string;
+  question_id: string | null;
+  title: string;
+  added_at: string;
+  from_origin: 'real';
+  to_origin: 'synthetic';
+  /** Початок тексту уточнення — щоб людина побачила, що саме перекласифіковує. */
+  content_preview: string;
+}
+
+export interface OriginCorrectionPreview {
+  case_id: string;
+  sources: OriginCorrectionCandidate[];
+  /** Підтвердження саме цього набору: для іншого набору чи іншого стану воно не підходить. */
+  confirm_token: string;
+}
+
+/** Уточнення, прив'язане до питання: шукаємо у ВСІХ версіях кейсу (питання могло закритись у будь-якій). */
+function clarificationQuestionIds(db: DB, caseId: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const v of all<{ content_json: string }>(db, 'SELECT content_json FROM as_is_version WHERE case_id = ? ORDER BY number', caseId)) {
+    for (const q of (JSON.parse(v.content_json) as Content).questions) {
+      if (q.closed_by_source_id) out.set(q.closed_by_source_id, q.id);
+    }
+  }
+  return out;
+}
+
+/**
+ * Що саме буде перекласифіковано. Нічого не змінює.
+ *
+ * У перегляд потрапляють ЛИШЕ джерела, які одночасно: належать цьому кейсу, мають вид «уточнення»,
+ * чинне походження «реальні дані» і (якщо названо питання) закривають саме ці питання. Звичайні джерела
+ * — інтерв'ю, документи, запити — сюди не потрапляють ніколи: цей шлях веде лише в бік «синтетичні»
+ * і лише для уточнень, тож послабити захист D18 ним неможливо.
+ */
+export function previewOriginCorrection(
+  db: DB, caseId: string, filter: { questionIds?: string[]; sourceIds?: string[] } = {},
+): OriginCorrectionPreview {
+  getCase(db, caseId);
+  const byQuestion = clarificationQuestionIds(db, caseId);
+  const wantQ = filter.questionIds ? new Set(filter.questionIds) : null;
+  const wantS = filter.sourceIds ? new Set(filter.sourceIds) : null;
+  const sources: OriginCorrectionCandidate[] = [];
+  for (const s of listSources(db, caseId)) {
+    if (s.kind !== 'clarification' || s.origin !== 'real') continue;
+    const qid = byQuestion.get(s.id) ?? null;
+    if (wantQ && (!qid || !wantQ.has(qid))) continue;
+    if (wantS && !wantS.has(s.id)) continue;
+    sources.push({
+      source_id: s.id, question_id: qid, title: s.title, added_at: s.added_at,
+      from_origin: 'real', to_origin: 'synthetic',
+      content_preview: s.content.length > 200 ? s.content.slice(0, 199) + '…' : s.content,
+    });
+  }
+  // Підтвердження прив'язане до кейсу й ТОЧНОГО набору джерел: для іншого набору воно не підійде.
+  const confirm_token = sha256(canonical({ case: caseId, sources: sources.map((x) => x.source_id).sort() }));
+  return { case_id: caseId, sources, confirm_token };
+}
+
+export interface OriginCorrectionResult {
+  corrected: { source_id: string; question_id: string | null; title: string }[];
+}
+
+/**
+ * Застосовує виправлення після явного підтвердження показаного набору.
+ *
+ * Що зберігається без змін: текст уточнення, його хеш, назва, порядок, прив'язка до питання, усі версії
+ * AS-IS та їхні хеші, погодження. Нової версії не створюється — змінюється лише позначка походження,
+ * і то окремим незмінним записом: рядок у таблиці джерел не переписується.
+ */
+export function applyOriginCorrection(
+  db: DB, actor: Actor, caseId: string,
+  input: { questionIds?: string[]; sourceIds?: string[]; confirmToken: string; reason: string },
+): OriginCorrectionResult {
+  requireHuman(actor, 'виправлення походження джерела');
+  const reason = (input.reason ?? '').trim();
+  if (!reason) throw new DomainError('VALIDATION', 'Вкажіть причину виправлення: вона зберігається в журналі.', 400);
+  return tx(db, () => {
+    const preview = previewOriginCorrection(db, caseId, { questionIds: input.questionIds, sourceIds: input.sourceIds });
+    if (!input.confirmToken || input.confirmToken !== preview.confirm_token) {
+      throw new DomainError('CONFIRM_REQUIRED',
+        'Спершу перегляньте перелік уточнень, які буде перекласифіковано, і підтвердьте саме його. Якщо перелік змінився, підтвердження від попереднього перегляду не діє.', 409);
+    }
+    if (preview.sources.length === 0) {
+      throw new DomainError('NOT_CORRECTABLE',
+        'Серед названих немає жодного уточнення з позначкою «реальні дані». Виправляти нічого: звичайні джерела цим шляхом не перекласифіковуються.', 409);
+    }
+    const at = now();
+    for (const c of preview.sources) {
+      run(db,
+        `INSERT INTO source_origin_correction (id, case_id, source_id, question_id, from_origin, to_origin, reason, corrected_by, corrected_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+        newId('scorr'), caseId, c.source_id, c.question_id, 'real', 'synthetic', reason, actor.name, at);
+    }
+    audit(db, caseId, actor, 'source_origin_corrected', {
+      source_ids: preview.sources.map((x) => x.source_id), question_ids: preview.sources.map((x) => x.question_id),
+      from: 'real', to: 'synthetic', reason,
+    });
+    return { corrected: preview.sources.map((x) => ({ source_id: x.source_id, question_id: x.question_id, title: x.title })) };
   });
 }
 
@@ -1841,10 +1974,15 @@ export function buildCard(db: DB, caseId: string, mode: string) {
     other_open_questions_count: content.questions.filter((q) => q.status === 'open' && !q.critical).length,
     next_action: computeNextAction(c.state, blockers, accepted, bpmn),
     bpmn_guard: bpmn,
-    sources: sources.map((s) => ({
-      id: s.id, ref: s.ref, title: s.title, kind: s.kind, origin: s.origin, required: s.required === 1, read_status: s.read_status,
-      read_error: s.read_error, author: s.author, added_at: s.added_at, covered: covered.has(s.id),
-    })),
+    // `origin` тут — ЧИННЕ походження (з урахуванням виправлень, D77); позначка показує, що воно було виправлене.
+    sources: (() => {
+      const corrected = new Set(originCorrections(db, caseId).map((x) => x.source_id));
+      return sources.map((s) => ({
+        id: s.id, ref: s.ref, title: s.title, kind: s.kind, origin: s.origin, origin_corrected: corrected.has(s.id),
+        required: s.required === 1, read_status: s.read_status,
+        read_error: s.read_error, author: s.author, added_at: s.added_at, covered: covered.has(s.id),
+      }));
+    })(),
     claims,
     versions: all<VersionRow>(db, 'SELECT * FROM as_is_version WHERE case_id = ? ORDER BY number DESC', caseId).map((v) => ({
       id: v.id, number: v.number, kind: v.kind, created_by: v.created_by, actor_name: v.actor_name, mode: v.mode,
