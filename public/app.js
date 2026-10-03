@@ -858,6 +858,7 @@ const PANELS = {
     return form;
   },
   history: (card) => el('div', {},
+    decisionsBlock(card),
     el('h3', {}, 'Версії'), el('table', {}, el('thead', {}, el('tr', {}, ['№', 'Автор', 'Режим', 'Створено', 'Примітка', 'Статус'].map((h) => el('th', {}, h)))),
       el('tbody', {}, card.versions.map((v) => el('tr', {}, el('td', {}, v.number + (v.is_head ? ' (поточна)' : '')), el('td', {}, CREATED_BY[v.created_by]), el('td', {}, v.mode === 'demo' ? 'ДЕМО' : v.mode),
         el('td', {}, fmt(v.created_at)), el('td', {}, v.note), el('td', {}, (v.kind === 'proposal' ? 'пропозиція на застарілій основі; ' : '') + (v.accepted ? 'прийнята аналітиком' : '')))))),
@@ -866,6 +867,113 @@ const PANELS = {
     el('h3', {}, 'Запуски'), card.runs.length ? el('ul', {}, card.runs.map((r) => el('li', {}, `${r.agent} · ${r.mode === 'real' ? 'справжня модель ' + r.model : 'підставний клієнт (не AI)'} · інструкція ${r.instruction_version}${r.instruction_hash ? ' (' + r.instruction_hash.slice(0, 8) + ')' : ''} · ${r.technical_state}${r.duration_ms != null ? ' · ' + (r.duration_ms / 1000).toFixed(1) + ' с' : ''}${costText(r)}${r.attempts > 1 ? ' · спроб: ' + r.attempts : ''}${r.note ? ' · ' + r.note : ''}${r.error ? ' · помилка: ' + r.error : ''}`))) : el('p', { class: 'muted' }, 'Запусків ще не було.'),
     el('h3', {}, 'Журнал подій'), el('ul', { class: 'small' }, card.audit.slice(0, 15).map((a) => el('li', {}, `${fmt(a.at)} · ${a.actor} · ${a.action}`)))),
 };
+
+// ───────────── рішення аналітикині та їхня актуальність (D96) ─────────────
+const DEC_TONE = { valid: 'ok', needs_confirmation: 'warn', review: 'warn', void: 'danger' };
+const CHECK_MARK = { ok: '✓', changed: '✗', unknown: '?' };
+
+function decisionsBlock(card) {
+  const host = el('div', { 'data-block': 'decisions' }, el('h3', {}, 'Рішення аналітикині'), el('p', { class: 'muted' }, 'Завантаження…'));
+  loadDecisions(card, host);
+  return host;
+}
+
+async function loadDecisions(card, host) {
+  const r = await api('GET', `/api/cases/${card.case.id}/decisions`).catch(() => null);
+  const items = r ? r.decisions : [];
+  host.replaceChildren(
+    el('h3', {}, 'Рішення аналітикині'),
+    el('p', { class: 'small muted' }, 'Рішення щодо окремого питання не погоджує версію AS-IS.'),
+    items.length ? el('div', {}, items.map((d) => decisionCard(card, d, host))) : el('p', { class: 'muted' }, 'Рішень ще немає.'),
+    el('div', { class: 'actions' }, el('button', { onclick: () => newDecisionDialog(card, host) }, 'Записати рішення')));
+}
+
+function decisionCard(card, d, host) {
+  const cur = d.currency;
+  const chinne = cur.state === 'valid';
+  return el('div', { class: 'finding' + (cur.state === 'void' ? ' blocking' : ''), 'data-decision': d.id },
+    el('div', { class: 'chips' },
+      el('span', { class: 'chip' }, d.id.slice(0, 10)),
+      el('span', { class: 'chip ' + (DEC_TONE[cur.state] === 'ok' ? 'ok' : '') }, cur.state_label),
+      el('span', { class: 'chip' }, d.author + ' · ' + fmt(d.created_at))),
+    el('div', {}, el('strong', {}, d.subject)),
+    el('blockquote', {}, d.explanation),
+    el('div', { class: 'small muted' }, 'Застосовано до: '
+      + [...(d.scope.question_ids || []).map((x) => 'питання ' + x), ...(d.scope.step_ids || []).map((x) => 'крок ' + x)].join(', ')),
+    (d.evidence || []).length ? el('div', { class: 'small' }, 'Докази: ', (d.evidence || []).map((e) => {
+      const src = (card.sources || []).find((x) => x.id === e.source_id);
+      return el('span', {}, el('button', { class: 'link', onclick: () => showSource(e.source_id, e.quote || undefined) },
+        (src && (src.ref || src.title)) || e.source_id), ' ');
+    })) : null,
+    el('details', {}, el('summary', { class: 'small' }, 'Що саме звірено (' + cur.checks.length + ')'),
+      el('ul', { class: 'small' }, cur.checks.map((c) => el('li', {},
+        (CHECK_MARK[c.status] || '') + ' ' + c.label + ': ' + c.detail)))),
+    chinne
+      ? el('div', { class: 'small muted' }, 'Рішення діє — підтверджувати його не потрібно.')
+      : el('div', { class: 'actions' },
+          cur.state === 'void'
+            ? el('span', { class: 'small' }, 'Підстава змінилася: перенести це рішення не можна. Запишіть нове — попереднє пояснення лишається в історії.')
+            : el('button', { onclick: () => confirmDecisionDialog(card, d, host) }, 'Переглянути й підтвердити…')),
+    (d.applications || []).length > 1
+      ? el('details', {}, el('summary', { class: 'small' }, 'Застосування (' + d.applications.length + ')'),
+          el('ul', { class: 'small' }, d.applications.map((a) => el('li', {}, `${fmt(a.at)} · ${a.actor} · ${a.kind} · ${a.note}`))))
+      : null);
+}
+
+function confirmDecisionDialog(card, d, host) {
+  const cur = d.currency;
+  const text = el('textarea', { rows: '4', style: 'width:100%' });
+  text.value = d.explanation;           // попереднє пояснення вже в полі: вводити заново не треба
+  const note = el('input', { type: 'text', placeholder: 'Коротко: що саме ви перевірили (необов’язково)', style: 'width:100%' });
+  openDialog(
+    el('h3', {}, 'Рішення: ' + d.subject),
+    el('p', { class: 'small' }, el('strong', {}, cur.state_label)),
+    cur.changed.length ? el('div', {}, el('h4', {}, 'Що змінилося'), el('ul', { class: 'small' }, cur.changed.map((x) => el('li', {}, x)))) : null,
+    cur.unknown.length ? el('div', {}, el('h4', {}, 'Чого перевірка не встановила'),
+      el('ul', { class: 'small' }, cur.unknown.map((x) => el('li', {}, x))),
+      el('p', { class: 'small warnbox' }, 'Це не означає «все гаразд»: названі місця програма перевірити не змогла.')) : null,
+    el('p', {}, el('strong', {}, 'Ваше пояснення (можна залишити як є): ')), text,
+    note,
+    el('div', { class: 'row' },
+      el('button', { class: 'primary', onclick: async () => {
+        dlg.close();
+        await act(() => api('POST', `/api/cases/${card.case.id}/decisions/confirm`,
+          { decision_id: d.id, explanation: text.value, note: note.value }), 'Рішення підтверджено для поточної версії');
+        await loadDecisions(card, host);
+      } }, 'Підтвердити'),
+      el('button', { onclick: () => dlg.close() }, 'Скасувати')));
+}
+
+function newDecisionDialog(card, host) {
+  const subject = el('input', { type: 'text', style: 'width:100%', placeholder: 'Предмет рішення' });
+  const explanation = el('textarea', { rows: '4', style: 'width:100%', placeholder: 'Чому саме так (обов’язково)' });
+  const steps = card.head.content.steps.map((s) => el('label', { class: 'inline' },
+    el('input', { type: 'checkbox', name: 'dec-step', value: s.id }), ' ' + s.id + ' — ' + s.action));
+  const qs = card.head.content.questions.map((q) => el('label', { class: 'inline' },
+    el('input', { type: 'checkbox', name: 'dec-q', value: q.id }), ' ' + q.id));
+  const srcSel = el('select', {}, el('option', { value: '' }, '— без доказу —'),
+    ...(card.sources || []).filter((x) => x.read_status === 'ok').map((x) => el('option', { value: x.id }, (x.ref ? x.ref + ' · ' : '') + x.title)));
+  const quote = el('textarea', { rows: '2', style: 'width:100%', placeholder: 'Фрагмент джерела дослівно (необов’язково)' });
+  openDialog(
+    el('h3', {}, 'Записати рішення'),
+    el('p', {}, el('strong', {}, 'Предмет: ')), subject,
+    el('p', {}, el('strong', {}, 'Пояснення: ')), explanation,
+    el('p', {}, el('strong', {}, 'До чого застосовується: ')),
+    el('div', {}, qs), el('div', {}, steps),
+    el('p', {}, el('strong', {}, 'Доказ: ')), srcSel, quote,
+    el('div', { class: 'row' },
+      el('button', { class: 'primary', onclick: async () => {
+        const pick = (n) => [...document.querySelectorAll(`input[name="${n}"]:checked`)].map((x) => x.value);
+        const ev = srcSel.value ? [{ source_id: srcSel.value, quote: quote.value }] : [];
+        dlg.close();
+        await act(() => api('POST', `/api/cases/${card.case.id}/decisions`, {
+          subject: subject.value, explanation: explanation.value,
+          question_ids: pick('dec-q'), step_ids: pick('dec-step'), evidence: ev,
+        }), 'Рішення записано');
+        await loadDecisions(card, host);
+      } }, 'Записати'),
+      el('button', { onclick: () => dlg.close() }, 'Скасувати')));
+}
 
 function notationView(card) {
   const rs = card.notation_requirements || [];

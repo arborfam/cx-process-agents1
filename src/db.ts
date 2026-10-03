@@ -211,12 +211,40 @@ CREATE TABLE IF NOT EXISTS source_origin_correction (
   corrected_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS decision (
+  id TEXT PRIMARY KEY,
+  case_id TEXT NOT NULL REFERENCES "case"(id),
+  subject TEXT NOT NULL,
+  explanation TEXT NOT NULL,
+  author TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  version_id TEXT NOT NULL REFERENCES as_is_version(id),
+  content_hash TEXT NOT NULL,
+  scope_json TEXT NOT NULL,
+  evidence_json TEXT NOT NULL,
+  record_hash TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS decision_application (
+  id TEXT PRIMARY KEY,
+  decision_id TEXT NOT NULL REFERENCES decision(id),
+  case_id TEXT NOT NULL REFERENCES "case"(id),
+  version_id TEXT NOT NULL REFERENCES as_is_version(id),
+  content_hash TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('created','confirmed','edited','superseded')),
+  actor TEXT NOT NULL,
+  at TEXT NOT NULL,
+  note TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_decision_case ON decision(case_id);
+CREATE INDEX IF NOT EXISTS idx_decision_app ON decision_application(decision_id);
 CREATE INDEX IF NOT EXISTS idx_origin_correction_case ON source_origin_correction(case_id);
 CREATE INDEX IF NOT EXISTS idx_source_case ON source(case_id, seq);
 CREATE INDEX IF NOT EXISTS idx_version_case ON as_is_version(case_id, number);
 `;
 
-const IMMUTABLE_TABLES = ['source', 'as_is_version', 'version_acceptance', 'approval', 'approval_revocation', 'audit_log', 'bpmn_review', 'finding_resolution', 'bpmn_artifact', 'source_origin_correction', 'start_label'];
+const IMMUTABLE_TABLES = ['source', 'as_is_version', 'version_acceptance', 'approval', 'approval_revocation', 'audit_log', 'bpmn_review', 'finding_resolution', 'bpmn_artifact', 'source_origin_correction', 'start_label', 'decision_application'];
 
 function immutabilityTriggers(): string {
   return IMMUTABLE_TABLES.map(

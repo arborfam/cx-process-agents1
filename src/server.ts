@@ -4,6 +4,7 @@ import { dirname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DB } from './db.ts';
 import { DEMO_BANNER, type ModelConfig } from './config.ts';
+import { confirmDecision, createDecision, decisionApplications, decisionCurrency, listDecisions } from './decisions.ts';
 import { DomainError } from './errors.ts';
 import { sha256 } from './hash.ts';
 import {
@@ -292,6 +293,19 @@ export function createApp(opts: ServerOptions): Server {
       return;
     }
 
+    // Рішення віддаються окремо від картки: `decisions.ts` спирається на домен, тож у картку його не вкладаємо.
+    if ((m = /^\/api\/cases\/([\w-]+)\/decisions$/.exec(path)) && method === 'GET') {
+      const caseId = m[1]!;
+      const items = listDecisions(db, caseId).map((d) => ({
+        ...d,
+        scope: JSON.parse(d.scope_json) as unknown,
+        evidence: JSON.parse(d.evidence_json) as unknown,
+        currency: decisionCurrency(db, caseId, d.id),
+        applications: decisionApplications(db, d.id),
+      }));
+      return json(res, 200, { decisions: items });
+    }
+
     if ((m = /^\/api\/cases\/([\w-]+)\/sources\/([\w-]+)$/.exec(path)) && method === 'GET') {
       const s = listSources(db, m[1]!).find((x) => x.id === m![2]);
       if (!s) throw new DomainError('NOT_FOUND', 'Джерело не знайдено', 404);
@@ -337,6 +351,27 @@ export function createApp(opts: ServerOptions): Server {
             affects: pickAffects(b.affects),
           });
           return json(res, 201, { version_id: v.id });
+        }
+        case 'decisions': {
+          const d = createDecision(db, human, caseId, {
+            subject: str(b.subject, 'subject'), explanation: str(b.explanation, 'explanation'),
+            scope: {
+              question_ids: Array.isArray(b.question_ids) ? (b.question_ids as unknown[]).map((x) => String(x)) : [],
+              step_ids: Array.isArray(b.step_ids) ? (b.step_ids as unknown[]).map((x) => String(x)) : [],
+            },
+            evidence: Array.isArray(b.evidence)
+              ? (b.evidence as Record<string, unknown>[]).map((e) => ({ source_id: String(e.source_id), quote: String(e.quote ?? '') }))
+              : [],
+          });
+          return json(res, 201, { decision: d, currency: decisionCurrency(db, caseId, d.id) });
+        }
+        case 'decisions/confirm': {
+          const d = confirmDecision(db, human, caseId, {
+            decisionId: str(b.decision_id, 'decision_id'),
+            explanation: str(b.explanation, 'explanation', false),
+            note: str(b.note, 'note', false),
+          });
+          return json(res, 200, { decision: d, currency: decisionCurrency(db, caseId, d.id) });
         }
         case 'questions/answer': {
           // Походження задає людина явно (D77). Підстава відповіді — теж явна (D93): фрагмент джерела
