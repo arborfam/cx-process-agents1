@@ -51,7 +51,27 @@ export interface SourceRow {
   added_at: string;
   /** Стабільний ідентифікатор для людей і моделі (SRC-01…); для звичайних джерел немає. */
   ref: string | null;
+  /** Походження інформації: джерело кейсу, на яке спирається це уточнення (null — власний висновок аналітикині). */
+  derived_from_source_id: string | null;
+  /** Точний фрагмент джерела, узятий за основу. Лишається й тоді, коли текст відредаговано. */
+  derived_quote: string | null;
+  /** Авторство редакції: хто змінив текст джерела. null — текст узято дослівно. */
+  edited_by: string | null;
+  /** Тип змісту. Редагування цитати НЕ робить її власним висновком. */
+  content_type: AnswerContentType | null;
 }
+
+/**
+ * Тип змісту уточнення. Зберігається окремо від походження інформації й від авторства редакції,
+ * бо це три різні ознаки: «звідки факт», «хто правив текст» і «чим це твердження є».
+ */
+export type AnswerContentType = 'source_quote' | 'source_quote_edited' | 'analyst_confirmed';
+
+export const ANSWER_CONTENT_TYPE_LABEL: Record<AnswerContentType, string> = {
+  source_quote: 'З джерела, дослівно',
+  source_quote_edited: 'З джерела, відредаговано аналітикинею',
+  analyst_confirmed: 'Підтверджений висновок аналітикині',
+};
 
 export interface VersionRow {
   id: string;
@@ -477,6 +497,10 @@ export interface NewSource {
   readStatus?: SourceRow['read_status'];
   readError?: string | null;
   ref?: string | null;
+  derivedFromSourceId?: string | null;
+  derivedQuote?: string | null;
+  editedBy?: string | null;
+  contentType?: AnswerContentType | null;
 }
 
 export function addSource(db: DB, actor: Actor, caseId: string, s: NewSource): SourceRow {
@@ -490,10 +514,12 @@ export function addSource(db: DB, actor: Actor, caseId: string, s: NewSource): S
     const seqRow = one<{ m: number | null }>(db, 'SELECT MAX(seq) AS m FROM source WHERE case_id = ?', caseId);
     const id = newId('src');
     run(db,
-      `INSERT INTO source (id, case_id, seq, kind, title, content, content_hash, author, origin, required, read_status, read_error, added_at, ref)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO source (id, case_id, seq, kind, title, content, content_hash, author, origin, required, read_status, read_error, added_at, ref,
+                           derived_from_source_id, derived_quote, edited_by, content_type)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       id, caseId, (seqRow?.m ?? 0) + 1, s.kind, title, s.content, sha256(s.content), actor.name,
-      s.origin ?? 'real', s.required ? 1 : 0, status, s.readError ?? null, now(), s.ref ?? null);
+      s.origin ?? 'real', s.required ? 1 : 0, status, s.readError ?? null, now(), s.ref ?? null,
+      s.derivedFromSourceId ?? null, s.derivedQuote ?? null, s.editedBy ?? null, s.contentType ?? null);
     audit(db, caseId, actor, 'source_added', { source_id: id, ref: s.ref ?? null, kind: s.kind, read_status: status, required: !!s.required });
     fallBackToResearch(db, caseId, actor, 'new_source');
     return one<SourceRow>(db, 'SELECT * FROM source WHERE id = ?', id)!;
@@ -649,19 +675,30 @@ export function addQuestion(
 }
 
 /** Уточнення = нове джерело (автор і дата) + нова версія, де питання закрите з посиланням на це джерело. */
+/**
+ * Підстава відповіді на питання (D93). Питання про фактичний AS-IS закривається лише тим, що
+ * спирається на джерело або на явно заявлений підтверджений висновок аналітикині.
+ * Бажаного варіанта процесу тут немає навмисно: пропозиції живуть у `claims` типу
+ * `improvement_proposal` і в `step_proposals` — вони опису фактів не закривають.
+ */
+export type AnswerBasis =
+  | { kind: 'source'; sourceId: string; quote: string; edited: boolean }
+  | { kind: 'analyst_confirmed'; note: string; acknowledgedFactual?: boolean };
+
 export function answerQuestion(
   db: DB, actor: Actor, caseId: string,
-  input: { baseVersionId: string; questionId: string; answer: string; origin: 'real' | 'synthetic' },
+  input: {
+    baseVersionId: string; questionId: string; answer: string;
+    origin?: 'real' | 'synthetic';
+    basis: AnswerBasis;
+  },
 ): VersionRow {
   requireHuman(actor, 'відповідь на питання');
   if (!input.answer.trim()) throw new DomainError('VALIDATION', 'Текст уточнення порожній', 400);
-  // Походження задає людина ЯВНО. Раніше воно вгадувалося за типом кейсу (`is_demo_script ? synthetic : real`),
-  // через що синтетичні уточнення навчального сценарію ставали «реальними даними» й блокували запуск моделі (D77).
-  // Ні тип кейсу, ні текст відповіді тут нічого не вирішують: здогадка в обидва боки небезпечна —
-  // або марно блокує роботу, або мовчки відправляє справжні дані постачальнику моделі.
-  if (input.origin !== 'real' && input.origin !== 'synthetic') {
+  const basis = input.basis;
+  if (!basis || (basis.kind !== 'source' && basis.kind !== 'analyst_confirmed')) {
     throw new DomainError('VALIDATION',
-      'Вкажіть походження уточнення: «синтетичне» (вигадане для навчального прикладу) або «реальні дані» (з роботи з людьми). Реальні дані моделі не надсилаються (D18).', 400);
+      'Вкажіть підставу відповіді: фрагмент джерела або власний підтверджений висновок. Бажаний варіант процесу питання про фактичний AS-IS не закриває — запишіть його як пропозицію покращення.', 400);
   }
   return tx(db, () => {
     const head = assertBase(db, caseId, input.baseVersionId);
@@ -669,14 +706,77 @@ export function answerQuestion(
     const q = c.questions.find((x) => x.id === input.questionId);
     if (!q) throw new DomainError('NOT_FOUND', 'Питання не знайдено', 404);
     if (q.status === 'closed') throw new DomainError('VALIDATION', 'Питання вже закрите', 400);
+
+    const answer = input.answer.trim();
+    let origin: 'real' | 'synthetic';
+    let derivedFromSourceId: string | null = null;
+    let derivedQuote: string | null = null;
+    let editedBy: string | null = null;
+    let contentType: AnswerContentType;
+
+    if (basis.kind === 'source') {
+      const src = one<SourceRow>(db, 'SELECT * FROM source WHERE id = ? AND case_id = ?', basis.sourceId, caseId);
+      if (!src) throw new DomainError('NOT_FOUND', 'Джерело, на яке ви посилаєтесь, у цьому кейсі не знайдено', 404);
+      if (src.read_status !== 'ok') {
+        throw new DomainError('VALIDATION', `Джерело «${src.title}» не прочитано повністю, тому спиратися на нього не можна.`, 400);
+      }
+      const quote = (basis.quote ?? '').trim();
+      if (!quote) throw new DomainError('VALIDATION', 'Укажіть фрагмент джерела, на який спирається відповідь.', 400);
+      const m = findQuote(src.content, quote);
+      if (m.kind === 'not_found') {
+        throw new DomainError('QUOTE_NOT_FOUND', `Цього фрагмента немає в джерелі «${src.title}». Підставою може бути лише те, що в джерелі справді написано.`, 400);
+      }
+      derivedFromSourceId = src.id;
+      derivedQuote = quote;
+      // Редагування НЕ перетворює відповідь на власний висновок: зв'язок із джерелом зберігається,
+      // а редакція позначається окремо. Авторство редакції й походження інформації — різні ознаки.
+      const edited = basis.edited || answer !== quote;
+      contentType = edited ? 'source_quote_edited' : 'source_quote';
+      if (edited) editedBy = actor.name;
+      // Походження матеріалу успадковується від джерела: дослівна цитата нічого нового не вносить.
+      // Але якщо текст відредаговано, а джерело синтетичне, у відповіді могли з'явитися справжні дані —
+      // тоді походження підтверджує людина явно (хибне «синтетичне» відправило б реальні дані моделі).
+      if (!edited || src.origin === 'real') {
+        origin = src.origin === 'real' ? 'real' : 'synthetic';
+      } else {
+        if (input.origin !== 'real' && input.origin !== 'synthetic') {
+          throw new DomainError('VALIDATION',
+            'Текст цитати змінено, а джерело синтетичне. Підтвердьте походження відредагованого тексту: «синтетичне» чи «реальні дані». Реальні дані моделі не надсилаються (D18).', 400);
+        }
+        origin = input.origin;
+      }
+    } else {
+      const note = (basis.note ?? '').trim();
+      if (!note) {
+        throw new DomainError('VALIDATION', 'Для власного висновку вкажіть, на чому він ґрунтується.', 400);
+      }
+      // Критичне питання про фактичний AS-IS не закривається мовчазним «я так вважаю»:
+      // потрібне явне твердження, що це встановлений факт, а не бажаний варіант процесу.
+      if (q.critical && basis.acknowledgedFactual !== true) {
+        throw new DomainError('FACTUAL_BASIS_REQUIRED',
+          'Це критичне питання про фактичний процес. Щоб закрити його власним висновком, підтвердьте, що описуєте встановлений факт, а не бажаний або запланований варіант. Інакше спирайтесь на фрагмент джерела.', 400);
+      }
+      if (input.origin !== 'real' && input.origin !== 'synthetic') {
+        throw new DomainError('VALIDATION',
+          'Вкажіть походження уточнення: «синтетичне» (вигадане для навчального прикладу) або «реальні дані» (з роботи з людьми). Реальні дані моделі не надсилаються (D18).', 400);
+      }
+      origin = input.origin;
+      contentType = 'analyst_confirmed';
+      derivedQuote = note;
+    }
+
     const src = addSource(db, actor, caseId, {
-      kind: 'clarification', title: `Уточнення до ${q.id} (${actor.name})`, content: input.answer.trim(),
-      origin: input.origin,
+      kind: 'clarification', title: `Уточнення до ${q.id} (${actor.name})`, content: answer,
+      origin, derivedFromSourceId, derivedQuote, editedBy, contentType,
     });
     q.status = 'closed';
-    q.answer = input.answer.trim();
+    q.answer = answer;
     q.closed_by_source_id = src.id;
     const covered = [...(JSON.parse(head.covered_json) as string[]), src.id];
+    audit(db, caseId, actor, 'question_answered', {
+      question_id: q.id, critical: q.critical, source_id: src.id,
+      content_type: contentType, derived_from_source_id: derivedFromSourceId, edited_by: editedBy, origin,
+    });
     return commitAnalystVersion(db, actor, caseId, head, c, covered, `Закрито питання ${q.id} уточненням`);
   });
 }
@@ -2141,6 +2241,10 @@ export function buildCard(db: DB, caseId: string, mode: string) {
         id: s.id, ref: s.ref, title: s.title, kind: s.kind, origin: s.origin, origin_corrected: corrected.has(s.id),
         required: s.required === 1, read_status: s.read_status,
         read_error: s.read_error, author: s.author, added_at: s.added_at, covered: covered.has(s.id),
+        // Підстава уточнення (D93): три ознаки окремо — звідки факт, хто правив текст, чим є твердження.
+        derived_from_source_id: s.derived_from_source_id, derived_quote: s.derived_quote,
+        edited_by: s.edited_by, content_type: s.content_type,
+        content_type_label: s.content_type ? ANSWER_CONTENT_TYPE_LABEL[s.content_type] : null,
       }));
     })(),
     claims,

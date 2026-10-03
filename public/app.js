@@ -921,7 +921,7 @@ function proposalDialog(card, p, decision) {
 function questionView(card, q) {
   const open = q.status === 'open';
   const origin = q.origin === 'demo_script' ? ' · задано сценарієм демо (не виявлено AI)' : q.origin === 'agent' ? ' · запропоновано агентом' : ' · поставила аналітикиня';
-  const ans = el('textarea', { placeholder: 'Текст уточнення (від кого, що саме). Буде збережено як окреме джерело.' });
+  const ans = el('textarea', { id: 'answer-' + q.id, placeholder: 'Текст уточнення (від кого, що саме). Буде збережено як окреме джерело.' });
   return el('div', { class: 'claim ' + (open && q.critical ? 'unknown' : ''), id: 'q-' + q.id },
     el('div', {}, el('span', { class: 'chip' }, q.id + ' · ' + (q.critical ? 'КРИТИЧНЕ' : 'некритичне') + ' · ' + (open ? 'відкрите' : 'закрите')), ' ', q.text),
     el('div', { class: 'small muted' }, 'Вплив: ' + (q.impact || '—') + (q.addressee ? ' · Кому: ' + q.addressee : '') + origin),
@@ -939,22 +939,129 @@ function questionView(card, q) {
       ? `Прив’язку знято (${h.by}): крок ${h.step_id}${h.condition ? ' («' + h.condition + '»)' : ''}, було «${(card.link_kinds || {})[h.from]}». Причина: ${h.note}`
       : `Прив’язку змінено (${h.by}): ${(card.link_kinds || {})[h.from]} → ${(card.link_kinds || {})[h.to]}. Причина: ${h.note}`)),
     q.criticality_note ? el('div', { class: 'small' }, 'Пояснення щодо критичності: ' + q.criticality_note) : null,
-    open ? el('div', {}, ans,
-      // Походження вказує людина явно: ні тип кейсу, ні текст відповіді його не визначають (D77).
-      el('fieldset', { class: 'origin-pick' },
-        el('legend', { class: 'small' }, 'Походження уточнення (обов’язково)'),
-        el('label', {}, el('input', { type: 'radio', name: 'origin-' + q.id, value: 'synthetic' }), ' синтетичне — вигадане для навчального прикладу'),
-        el('label', {}, el('input', { type: 'radio', name: 'origin-' + q.id, value: 'real' }), ' реальні дані — з роботи з людьми'),
-        el('div', { class: 'small muted' }, 'Реальні дані моделі не надсилаються (D18): кейс із ними не можна передати на аналіз.')),
-      el('div', { class: 'actions' },
-      el('button', { onclick: async () => {
-        const picked = document.querySelector(`input[name="origin-${q.id}"]:checked`);
-        if (!picked) { toast('Оберіть походження уточнення: синтетичне чи реальні дані.'); return; }
-        const r = await act(() => api('POST', `/api/cases/${card.case.id}/questions/answer`, { base_version_id: card.head.id, question_id: q.id, answer: ans.value, origin: picked.value }), 'Уточнення додано; створено нову версію');
-        if (r) await refresh();
-      } }, 'Закрити питання уточненням'),
-      q.critical ? el('button', { onclick: () => critDialog(card, q) }, 'Зробити некритичним…') : null))
-      : el('div', { class: 'small' }, 'Відповідь: ' + q.answer, ' · ', q.closed_by_source_id ? el('button', { class: 'link', onclick: () => showSource(q.closed_by_source_id) }, 'джерело відповіді') : ''));
+    open ? el('div', {}, el('label', { class: 'small', for: 'answer-' + q.id }, 'Текст уточнення'), ans) : null,
+    open ? answerBasisBlock(card, q, ans) : null,
+    open ? el('div', { class: 'actions' },
+      el('button', { onclick: () => submitAnswer(card, q, ans) }, 'Закрити питання уточненням'),
+      q.critical ? el('button', { onclick: () => critDialog(card, q) }, 'Зробити некритичним…') : null)
+      : closedAnswerBlock(card, q));
+}
+
+// ───────────── підстава відповіді на питання (D93) ─────────────
+// Три ознаки зберігаються окремо: звідки факт, хто правив текст, чим є твердження.
+// Редагування цитати НЕ перетворює відповідь на власний висновок.
+const basisState = new Map();   // question_id → { kind, sourceId, quote }
+
+function answerBasisBlock(card, q, ans) {
+  const st = basisState.get(q.id) || { kind: 'source', sourceId: '', quote: '' };
+  basisState.set(q.id, st);
+  const usable = (card.sources || []).filter((x) => x.read_status === 'ok' && x.kind !== 'clarification');
+  const box = el('div', { class: 'origin-pick', 'data-block': 'basis' });
+  const redraw = () => { const n = answerBasisBlock(card, q, ans); box.replaceWith(n); };
+
+  const pick = (value, label) => el('label', {},
+    el('input', {
+      type: 'radio', name: 'basis-' + q.id, value, checked: st.kind === value ? '' : undefined,
+      onchange: () => { st.kind = value; redraw(); },
+    }), ' ' + label);
+
+  // `append` вставив би порожні значення як текст «null» — тому відсіюємо їх
+  const put = (...xs) => box.append(...xs.filter((x) => x !== null && x !== undefined && x !== false));
+  put(
+    el('legend', { class: 'small' }, 'На чому ґрунтується відповідь (обов’язково)'),
+    pick('source', 'на фрагменті джерела'),
+    pick('analyst_confirmed', 'на моєму підтвердженому висновку'));
+
+  if (st.kind === 'source') {
+    if (!usable.length) {
+      put(el('div', { class: 'small unknown' }, 'Прочитаних джерел у кейсі ще немає — спирайтесь на власний висновок або додайте джерело.'));
+      return box;
+    }
+    const sel = el('select', { onchange: (e) => { st.sourceId = e.target.value; redraw(); } },
+      el('option', { value: '' }, '— оберіть джерело —'),
+      ...usable.map((x) => el('option', { value: x.id, selected: st.sourceId === x.id ? '' : undefined },
+        (x.ref ? x.ref + ' · ' : '') + x.title + ' (' + (x.origin === 'real' ? 'реальні дані' : 'синтетичне') + ')')));
+    const quote = el('textarea', { placeholder: 'Вставте фрагмент із джерела дослівно' }, st.quote);
+    quote.value = st.quote;
+    quote.oninput = () => { st.quote = quote.value; markEdit(); };
+    const mark = el('div', { class: 'small muted' });
+    const markEdit = () => {
+      const edited = st.quote.trim() && ans.value.trim() !== st.quote.trim();
+      mark.textContent = !st.quote.trim() ? ''
+        : edited
+          ? 'Текст відповіді відрізняється від цитати. Зв’язок із джерелом зберігається, редакцію буде записано на вас.'
+          : 'Відповідь дослівно збігається з цитатою.';
+    };
+    ans.oninput = markEdit; markEdit();
+    put(
+      el('label', { class: 'small' }, 'Джерело'), sel,
+      el('label', { class: 'small' }, 'Фрагмент джерела'), quote,
+      st.sourceId ? el('button', { class: 'link', onclick: () => showSource(st.sourceId, st.quote || undefined) }, 'Показати фрагмент у джерелі') : null,
+      mark,
+      el('div', { class: 'small muted' }, 'Походження матеріалу береться з джерела. Якщо ви зміните текст синтетичної цитати, походження доведеться підтвердити.'),
+      originPick(q, 'Походження відредагованого тексту (якщо текст змінено)'));
+  } else {
+    put(
+      el('label', { class: 'small' }, 'На чому ґрунтується висновок (обов’язково)'),
+      el('textarea', { id: 'basis-note-' + q.id, placeholder: 'Напр.: спостерігала особисто на двох кейсах у вересні' }),
+      q.critical
+        ? el('label', { class: 'small' },
+            el('input', { type: 'checkbox', id: 'basis-fact-' + q.id }),
+            ' підтверджую: це встановлений факт про фактичний процес, а не бажаний або запланований варіант')
+        : null,
+      originPick(q, 'Походження уточнення (обов’язково)'));
+  }
+  return box;
+}
+
+function originPick(q, legend) {
+  return el('fieldset', { class: 'origin-pick' },
+    el('legend', { class: 'small' }, legend),
+    el('label', {}, el('input', { type: 'radio', name: 'origin-' + q.id, value: 'synthetic' }), ' синтетичне — вигадане для навчального прикладу'),
+    el('label', {}, el('input', { type: 'radio', name: 'origin-' + q.id, value: 'real' }), ' реальні дані — з роботи з людьми'),
+    el('div', { class: 'small muted' }, 'Реальні дані моделі не надсилаються (D18).'));
+}
+
+async function submitAnswer(card, q, ans) {
+  const st = basisState.get(q.id) || { kind: 'source' };
+  const picked = document.querySelector(`input[name="origin-${q.id}"]:checked`);
+  let basis;
+  if (st.kind === 'source') {
+    if (!st.sourceId) { toast('Оберіть джерело, на яке спирається відповідь.'); return; }
+    if (!(st.quote || '').trim()) { toast('Вставте фрагмент джерела, на який спирається відповідь.'); return; }
+    basis = { kind: 'source', source_id: st.sourceId, quote: st.quote.trim(), edited: ans.value.trim() !== st.quote.trim() };
+  } else {
+    const note = (document.getElementById('basis-note-' + q.id) || {}).value || '';
+    if (!note.trim()) { toast('Напишіть, на чому ґрунтується ваш висновок.'); return; }
+    const fact = document.getElementById('basis-fact-' + q.id);
+    basis = { kind: 'analyst_confirmed', note: note.trim(), acknowledged_factual: fact ? fact.checked : true };
+    if (!picked) { toast('Оберіть походження уточнення: синтетичне чи реальні дані.'); return; }
+  }
+  const body = { base_version_id: card.head.id, question_id: q.id, answer: ans.value, basis };
+  if (picked) body.origin = picked.value;
+  const r = await act(() => api('POST', `/api/cases/${card.case.id}/questions/answer`, body), 'Уточнення додано; створено нову версію');
+  if (r) { basisState.delete(q.id); await refresh(); }
+}
+
+function closedAnswerBlock(card, q) {
+  const src = (card.sources || []).find((x) => x.id === q.closed_by_source_id);
+  const from = src && src.derived_from_source_id
+    ? (card.sources || []).find((x) => x.id === src.derived_from_source_id)
+    : null;
+  return el('div', { class: 'small' },
+    el('div', {}, 'Відповідь: ' + q.answer),
+    src ? el('div', { class: 'chips' },
+      el('span', { class: 'chip' }, src.content_type_label || 'Уточнення'),
+      from ? el('span', { class: 'chip' }, 'з ' + (from.ref || from.title)) : null,
+      src.edited_by ? el('span', { class: 'chip' }, 'редакція: ' + src.edited_by) : null,
+      el('span', { class: 'chip' }, src.origin === 'real' ? 'реальні дані' : 'синтетичне')) : null,
+    from && src.derived_quote
+      ? el('div', {}, 'Фрагмент джерела: «' + src.derived_quote + '» ',
+          el('button', { class: 'link', onclick: () => showSource(from.id, src.derived_quote) }, 'показати в джерелі'))
+      : null,
+    src && src.content_type === 'analyst_confirmed' && src.derived_quote
+      ? el('div', {}, 'Підстава висновку: ' + src.derived_quote) : null,
+    q.closed_by_source_id ? el('button', { class: 'link', onclick: () => showSource(q.closed_by_source_id) }, 'джерело відповіді') : null);
 }
 
 function relinkDialog(card, q, a) {

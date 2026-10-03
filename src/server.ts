@@ -339,10 +339,15 @@ export function createApp(opts: ServerOptions): Server {
           return json(res, 201, { version_id: v.id });
         }
         case 'questions/answer': {
-          // Походження задає людина явно: ні тип кейсу, ні текст відповіді його не визначають (D77).
+          // Походження задає людина явно (D77). Підстава відповіді — теж явна (D93): фрагмент джерела
+          // або заявлений підтверджений висновок. Редакція цитати зв'язок із джерелом не розриває.
+          const raw = (b.basis ?? {}) as Record<string, unknown>;
+          const basis = raw.kind === 'source'
+            ? { kind: 'source' as const, sourceId: str(raw.source_id, 'basis.source_id'), quote: str(raw.quote, 'basis.quote'), edited: raw.edited === true }
+            : { kind: 'analyst_confirmed' as const, note: str(raw.note, 'basis.note', false), acknowledgedFactual: raw.acknowledged_factual === true };
           const v = answerQuestion(db, human, caseId, {
             baseVersionId: str(b.base_version_id, 'base_version_id'), questionId: str(b.question_id, 'question_id'),
-            answer: str(b.answer, 'answer'), origin: b.origin as 'real' | 'synthetic',
+            answer: str(b.answer, 'answer'), origin: b.origin as 'real' | 'synthetic', basis,
           });
           return json(res, 201, { version_id: v.id });
         }

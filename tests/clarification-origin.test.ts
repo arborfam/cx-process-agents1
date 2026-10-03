@@ -67,7 +67,7 @@ async function aiBlocked(db: DB, caseId: string): Promise<boolean> {
 test('1. Уточнення в навчальному сценарії з позначкою «синтетичне» не блокує запуск AI', async () => {
   const db = freshDb();
   const { caseId, versionId } = scenarioCaseWithQuestion(db);
-  answerQuestion(db, human, caseId, { baseVersionId: versionId, questionId: 'Q1', answer: ANSWER, origin: 'synthetic' });
+  answerQuestion(db, human, caseId, { baseVersionId: versionId, questionId: 'Q1', answer: ANSWER, origin: 'synthetic', basis: { kind: 'analyst_confirmed', note: 'Підтверджено аналітикинею', acknowledgedFactual: true } });
   assert.equal(srcOf(db, caseId, /Уточнення до Q1/).origin, 'synthetic');
   assert.equal(await aiBlocked(db, caseId), false, 'синтетичне уточнення не має блокувати запуск');
 });
@@ -75,7 +75,7 @@ test('1. Уточнення в навчальному сценарії з поз
 test('1. Уточнення з позначкою «реальні дані» запуск AI блокує (захист D18 збережено)', async () => {
   const db = freshDb();
   const { caseId, versionId } = scenarioCaseWithQuestion(db);
-  answerQuestion(db, human, caseId, { baseVersionId: versionId, questionId: 'Q1', answer: ANSWER, origin: 'real' });
+  answerQuestion(db, human, caseId, { baseVersionId: versionId, questionId: 'Q1', answer: ANSWER, origin: 'real', basis: { kind: 'analyst_confirmed', note: 'Підтверджено аналітикинею', acknowledgedFactual: true } });
   assert.equal(srcOf(db, caseId, /Уточнення до Q1/).origin, 'real');
   assert.equal(await aiBlocked(db, caseId), true, 'реальні дані мають блокувати запуск');
 });
@@ -87,7 +87,7 @@ test('1. Походження обов’язкове: без нього й з �
   const versionsBefore = all(db, 'SELECT id FROM as_is_version WHERE case_id = ?', caseId).length;
   for (const bad of [undefined, '', 'demo_script', 'SYNTHETIC', 'так']) {
     assert.throws(
-      () => answerQuestion(db, human, caseId, { baseVersionId: versionId, questionId: 'Q1', answer: ANSWER, origin: bad as never }),
+      () => answerQuestion(db, human, caseId, { baseVersionId: versionId, questionId: 'Q1', answer: ANSWER, origin: bad as never, basis: { kind: 'analyst_confirmed', note: 'Підтверджено аналітикинею', acknowledgedFactual: true } }),
       (e: { code?: string }) => e.code === 'VALIDATION',
       `походження «${String(bad)}» мало бути відхилене`);
   }
@@ -104,13 +104,13 @@ test('1. Походження НЕ визначається за типом ке
   const c1 = versionContent(h1);
   c1.questions = [{ id: 'Q1', text: 'Питання?', critical: false, impact: '', addressee: '', status: 'open', answer: '', closed_by_source_id: null, origin: 'analyst', criticality_note: '' }];
   const v1 = putHead(db1, demo.id, c1);
-  answerQuestion(db1, human, demo.id, { baseVersionId: v1.id, questionId: 'Q1', answer: ANSWER, origin: 'real' });
+  answerQuestion(db1, human, demo.id, { baseVersionId: v1.id, questionId: 'Q1', answer: ANSWER, origin: 'real', basis: { kind: 'analyst_confirmed', note: 'Підтверджено аналітикинею', acknowledgedFactual: true } });
   assert.equal(srcOf(db1, demo.id, /Уточнення до Q1/).origin, 'real', 'тип кейсу не має перебивати явний вибір');
 
   // звичайний (не демо) кейс + явно «синтетичні» → synthetic
   const db2 = freshDb();
   const { caseId, versionId } = scenarioCaseWithQuestion(db2);
-  answerQuestion(db2, human, caseId, { baseVersionId: versionId, questionId: 'Q1', answer: ANSWER, origin: 'synthetic' });
+  answerQuestion(db2, human, caseId, { baseVersionId: versionId, questionId: 'Q1', answer: ANSWER, origin: 'synthetic', basis: { kind: 'analyst_confirmed', note: 'Підтверджено аналітикинею', acknowledgedFactual: true } });
   assert.equal(srcOf(db2, caseId, /Уточнення до Q1/).origin, 'synthetic');
 });
 
@@ -119,15 +119,14 @@ test('1. Походження НЕ визначається за текстом 
   const { caseId, versionId } = scenarioCaseWithQuestion(db);
   answerQuestion(db, human, caseId, {
     baseVersionId: versionId, questionId: 'Q1',
-    answer: 'Це синтетичне навчальне уточнення, вигадане для сценарію.', origin: 'real',
-  });
+    answer: 'Це синтетичне навчальне уточнення, вигадане для сценарію.', origin: 'real', basis: { kind: 'analyst_confirmed', note: 'Підтверджено аналітикинею', acknowledgedFactual: true } });
   assert.equal(srcOf(db, caseId, /Уточнення до Q1/).origin, 'real', 'слова «синтетичне» в тексті нічого не вирішують');
 });
 
 test('1. Уточнення — дія людини: агент його не створює', () => {
   const db = freshDb();
   const { caseId, versionId } = scenarioCaseWithQuestion(db);
-  assert.throws(() => answerQuestion(db, agent, caseId, { baseVersionId: versionId, questionId: 'Q1', answer: ANSWER, origin: 'synthetic' }),
+  assert.throws(() => answerQuestion(db, agent, caseId, { baseVersionId: versionId, questionId: 'Q1', answer: ANSWER, origin: 'synthetic', basis: { kind: 'analyst_confirmed', note: 'Підтверджено аналітикинею', acknowledgedFactual: true } }),
     (e: { code?: string; status?: number }) => e.code === 'FORBIDDEN_ACTOR' || e.status === 403);
   assert.equal(listSources(db, caseId).some((s) => /Уточнення/.test(s.title)), false);
 });
@@ -145,7 +144,7 @@ function caseWithMislabelled(db: DB) {
   }));
   let v = putHead(db, c.id, content);
   for (const id of ['Q1', 'Q2', 'Q3']) {
-    v = answerQuestion(db, human, c.id, { baseVersionId: v.id, questionId: id, answer: `Уточнення до ${id} (синтетичне).`, origin: 'real' });
+    v = answerQuestion(db, human, c.id, { baseVersionId: v.id, questionId: id, answer: `Уточнення до ${id} (синтетичне).`, origin: 'real', basis: { kind: 'analyst_confirmed', note: 'Підтверджено аналітикинею', acknowledgedFactual: true } });
   }
   // Справді реальне джерело — його чіпати не можна.
   const realSrc = addSource(db, human, c.id, { kind: 'transcript', title: 'Справжнє інтерв’ю', content: 'Реальні дані клієнта.', origin: 'real' });
@@ -222,7 +221,7 @@ test('2. Після виправлення всіх реальних джере�
   const content = versionContent(head);
   content.questions = [{ id: 'Q1', text: 'Питання?', critical: false, impact: '', addressee: '', status: 'open', answer: '', closed_by_source_id: null, origin: 'agent', criticality_note: '' }];
   const v = putHead(db, c.id, content);
-  answerQuestion(db, human, c.id, { baseVersionId: v.id, questionId: 'Q1', answer: ANSWER, origin: 'real' });
+  answerQuestion(db, human, c.id, { baseVersionId: v.id, questionId: 'Q1', answer: ANSWER, origin: 'real', basis: { kind: 'analyst_confirmed', note: 'Підтверджено аналітикинею', acknowledgedFactual: true } });
   assert.equal(await aiBlocked(db, c.id), true);
 
   const p = previewOriginCorrection(db, c.id, { questionIds: ['Q1'] });
@@ -295,14 +294,14 @@ test('3. HTTP: уточнення без походження не створю�
   try {
     for (const bad of [undefined, 'demo_script', '']) {
       const r = await s.call('POST', `/api/cases/${caseId}/questions/answer`,
-        { base_version_id: versionId, question_id: 'Q1', answer: ANSWER, ...(bad === undefined ? {} : { origin: bad }) });
+        { base_version_id: versionId, question_id: 'Q1', answer: ANSWER, basis: { kind: 'analyst_confirmed', note: 'Підтверджено аналітикинею', acknowledged_factual: true }, ...(bad === undefined ? {} : { origin: bad }) });
       assert.equal(r.status, 400, `походження «${String(bad)}» мало бути відхилене`);
       assert.equal(r.body.error.code, 'VALIDATION');
     }
     assert.equal(listSources(db, caseId).some((x: SourceRow) => /Уточнення/.test(x.title)), false);
 
     const ok = await s.call('POST', `/api/cases/${caseId}/questions/answer`,
-      { base_version_id: versionId, question_id: 'Q1', answer: ANSWER, origin: 'synthetic' });
+      { base_version_id: versionId, question_id: 'Q1', answer: ANSWER, origin: 'synthetic', basis: { kind: 'analyst_confirmed', note: 'Підтверджено аналітикинею', acknowledged_factual: true } });
     assert.equal(ok.status, 201);
     assert.equal(srcOf(db, caseId, /Уточнення до Q1/).origin, 'synthetic');
   } finally { await s.close(); }

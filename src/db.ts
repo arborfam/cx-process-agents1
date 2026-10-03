@@ -251,6 +251,15 @@ const ADDED_COLUMNS: [string, string, string][] = [
   // Контракт відповіді агента 1 (D80): 'full' — повна версія щоразу, 'delta' — лише нові й змінені елементи.
   // Старі записи читаються як 'full' — саме за цим контрактом вони й виконувались.
   ['run', 'output_contract', "TEXT NOT NULL DEFAULT 'full'"],
+  // Підстава відповіді на питання (D93). Три РІЗНІ ознаки, які не можна зводити одна до одної:
+  //  • `derived_from_source_id` + `derived_quote` — походження інформації: з якого джерела й який саме фрагмент;
+  //  • `edited_by` — авторство редакції: хто змінив текст джерела (null = взято дослівно);
+  //  • `content_type` — тип змісту: що це за твердження за своєю природою.
+  // Редагування цитати НЕ перетворює відповідь на власний висновок: зв'язок із джерелом зберігається.
+  ['source', 'derived_from_source_id', 'TEXT'],
+  ['source', 'derived_quote', 'TEXT'],
+  ['source', 'edited_by', 'TEXT'],
+  ['source', 'content_type', 'TEXT'],
 ];
 
 export function migrate(db: DB): void {

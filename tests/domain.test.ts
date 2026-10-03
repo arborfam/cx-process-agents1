@@ -115,7 +115,7 @@ test('Наскрізний сценарій: кейс → джерело → в�
   assert.equal(card.critical_open_questions.length, 1);
   assert.equal(card.next_action.key, 'resolve_blockers');
 
-  const v4 = answerQuestion(db, human, c.id, { baseVersionId: v3.id, questionId: 'Q1', answer: 'Про відмову повідомляє менеджер електронною поштою.' , origin: 'synthetic' });
+  const v4 = answerQuestion(db, human, c.id, { baseVersionId: v3.id, questionId: 'Q1', answer: 'Про відмову повідомляє менеджер електронною поштою.' , origin: 'synthetic', basis: { kind: 'analyst_confirmed', note: 'Підтверджено аналітикинею', acknowledgedFactual: true } });
   assert.equal(v4.number, v3.number + 1, 'уточнення створило нову версію');
   const q = versionContent(v4).questions[0]!;
   assert.equal(q.status, 'closed');
@@ -241,7 +241,7 @@ test('Демо-кейс: позначено сценарієм, питання Q
 
   // пройти сценарій, як це зробить користувачка
   const q = card.critical_open_questions[0]!;
-  const v3 = answerQuestion(db, human, id, { baseVersionId: card.head.id, questionId: q.id, answer: 'Керівник повідомляє клієнта листом про відхилення винятку, після чого заявку закривають.' , origin: 'synthetic' });
+  const v3 = answerQuestion(db, human, id, { baseVersionId: card.head.id, questionId: q.id, answer: 'Керівник повідомляє клієнта листом про відхилення винятку, після чого заявку закривають.' , origin: 'synthetic', basis: { kind: 'analyst_confirmed', note: 'Підтверджено аналітикинею', acknowledgedFactual: true } });
   // після уточнення перехід S5 (відхилено) ще «невідомо» — система це помічає, а не вважає питання вичерпаним
   assert.ok(submissionBlockers(db, id).some((b) => b.code === 'UNKNOWN_QUESTION_CLOSED' && b.ref === 'S5'));
   const v4 = saveAnalystVersion(db, human, id, {
