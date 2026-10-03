@@ -6,8 +6,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { generateBpmn } from '../src/bpmn/generate.ts';
+// Побудова йде продуктовим шляхом (D87): сценарна таблиця → перевірка → скрипти пайплайна → звірка файлів.
+import { generateViaPipeline as generateBpmn } from './bpmn-helpers.ts';
 import { verifyBpmn } from '../src/bpmn/verify.ts';
+import type { ApprovedPackage } from '../src/bpmn/types.ts';
 import { makeProcess } from './bpmn-gen.ts';
 
 const PAIRS = 24;
@@ -36,8 +38,10 @@ test(`≥20 паралельних пар різних процесів в од�
     if (a.status !== 'ok' || b.status !== 'ok') continue;
     const pa = makeProcess(2 * pair), pb = makeProcess(2 * pair + 1);
     // 1) кожен файл повністю збігається зі СВОЇМ пакетом
-    assert.deepEqual(verifyBpmn(a.bpmn, pa).report.errors, [], `пара ${pair}: A не відповідає своєму пакету`);
-    assert.deepEqual(verifyBpmn(b.bpmn, pb).report.errors, [], `пара ${pair}: B не відповідає своєму пакету`);
+    // Доріжки — лише для ролей із діями (D87); решта перевірки не змінилась.
+    const lanesOf = (p: ApprovedPackage): string[] => p.content.roles.filter((r) => p.content.steps.some((s) => s.role === r));
+    assert.deepEqual(verifyBpmn(a.bpmn, pa, { lanes: lanesOf(pa) }).report.errors, [], `пара ${pair}: A не відповідає своєму пакету`);
+    assert.deepEqual(verifyBpmn(b.bpmn, pb, { lanes: lanesOf(pb) }).report.errors, [], `пара ${pair}: B не відповідає своєму пакету`);
     // 2) і не збігається з чужим
     assert.equal(verifyBpmn(a.bpmn, pb).report.ok, false);
     assert.equal(verifyBpmn(b.bpmn, pa).report.ok, false);

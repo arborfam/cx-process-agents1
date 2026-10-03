@@ -1,6 +1,6 @@
 /** Допоміжний запуск в окремому процесі ОС: node --import tsx tests/bpmn-child.ts <номер процесу>. Друкує JSON. */
 import { createHash } from 'node:crypto';
-import { generateBpmn } from '../src/bpmn/generate.ts';
+import { generateViaPipeline as generateBpmn } from './bpmn-helpers.ts';
 import { makeProcess } from './bpmn-gen.ts';
 
 const i = Number(process.argv[2]);

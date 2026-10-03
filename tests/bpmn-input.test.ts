@@ -6,7 +6,8 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateBpmn } from '../src/bpmn/generate.ts';
+// Побудова йде продуктовим шляхом (D87): сценарна таблиця → перевірка → скрипти пайплайна → звірка файлів.
+import { generateViaPipeline as generateBpmn } from './bpmn-helpers.ts';
 import { UNKNOWN } from '../src/schema.ts';
 import type { ApprovedPackage } from '../src/bpmn/types.ts';
 import type { NotationKindT, NotationRequirementT } from '../src/schema.ts';
@@ -185,12 +186,20 @@ test('якщо є і K1, і непідтримувана нотація — по
 });
 
 test('чому табуляція відхиляється на вході: лейаутер записує її «сирою», а XML-розбір перетворює на пробіл (тихо змінює текст)', async () => {
-  const { buildSemantic } = await import('../src/bpmn/build.ts');
   const { layoutProcess } = await import('bpmn-auto-layout');
   const { parseXml, walk, attr } = await import('../src/bpmn/xml.ts');
   const p = base();
   step(p, 'S1').action = 'Перший\tдругий';
-  const laid = await layoutProcess(buildSemantic(p).xml); // повз перевірку входу — лише щоб показати поведінку бібліотеки
+  // Мінімальна схема з табуляцією в підписі — лише щоб показати поведінку бібліотеки (повз перевірку входу).
+  const semantic = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D1" targetNamespace="urn:t">
+  <bpmn:process id="Process_1" isExecutable="false">
+    <bpmn:startEvent id="StartEvent_1"><bpmn:outgoing>F1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:task id="Task_S1" name="Перший\tдругий"><bpmn:incoming>F1</bpmn:incoming></bpmn:task>
+    <bpmn:sequenceFlow id="F1" sourceRef="StartEvent_1" targetRef="Task_S1" />
+  </bpmn:process>
+</bpmn:definitions>`;
+  const laid = await layoutProcess(semantic);
   assert.ok(laid.xml.includes('Перший\tдругий'), 'лейаутер записав сиру табуляцію в значення атрибута');
   let name = '';
   walk(parseXml(laid.xml), (e) => { if (attr(e, 'id') === 'Task_S1') name = attr(e, 'name')!; });

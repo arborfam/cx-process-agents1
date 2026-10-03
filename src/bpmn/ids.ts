@@ -31,4 +31,8 @@ export const NS = {
   cx: 'urn:cx-process-agents:as-is-binding',
 } as const;
 
-export const GENERATOR_NAME = 'cx-bpmn-generator-3a';
+/**
+ * Назва ланцюга побудови (D87): схему будують скрипти `pipeline/`, запущені програмою. До назви додається
+ * версія скриптів (`@<хеш>`), тому зворотна перевірка звіряє ПОЧАТОК рядка.
+ */
+export const GENERATOR_NAME = 'cx-bpmn-pipeline-1';

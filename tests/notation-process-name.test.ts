@@ -16,7 +16,8 @@ import { runAnalyst, ScriptedDemoClient } from '../src/runs.ts';
 import { verifyAgentOutput } from '../src/ai/verify.ts';
 import { loadInstruction } from '../src/ai/prompt.ts';
 import { packageFromApproval } from '../src/bpmn/approved.ts';
-import { generateBpmn } from '../src/bpmn/generate.ts';
+// Побудова йде продуктовим шляхом (D87): сценарна таблиця → перевірка → скрипти пайплайна → звірка файлів.
+import { generateViaPipeline as generateBpmn } from './bpmn-helpers.ts';
 import { approvedCase, COMPLETE_FIELDS, draftReadyCase, freshDb, human, startTestServer, newCase } from './helpers.ts';
 import type { AnalystInput } from '../src/ai/types.ts';
 

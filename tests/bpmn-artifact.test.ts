@@ -269,7 +269,7 @@ test('G. Пошкоджений .bpmn: файл не видається, ста�
   const db = freshDb();
   const { caseId } = await readyToBuild(db);
   const before = snapshot(db, caseId);
-  const out = await buildArtifact(db, human, caseId, undefined, { tamperBpmn: (xml) => xml.replace(/<bpmn:task /, '<bpmn:task name="ЗІПСОВАНО" ') });
+  const out = await buildArtifact(db, human, caseId, undefined, { tamperBpmn: (xml) => xml.replace(/<bpmn:(userTask|task) /, "<bpmn:$1 name=\"ЗІПСОВАНО\" ") });
   assert.equal(out.artifact.status, 'verification_failed');
   assert.equal(out.artifact.row.bpmn_xml, null);
   assert.deepEqual(out.artifact.downloads, { bpmn: false, drawio: false });

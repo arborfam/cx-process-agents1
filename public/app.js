@@ -438,7 +438,7 @@ function rejectDialog(card, reviewId, view) {
  * Технічні обмеження генератора, видимі ДО платної перевірки (D86): їх знаходить програма без моделі.
  * Нічого не вирішує за людину — лише показує, що зупинить побудову, якщо лишити опис як є.
  */
-function technicalLimitsBox(tl) {
+function technicalLimitsBox(tl, card) {
   if (!tl) return null;
   if (!tl.available) return el('p', { class: 'small muted', 'data-block': 'tech-limits' }, 'Технічну перевірку опису поки не виконано: ' + (tl.reason || 'немає чинного погодження.'));
   const hard = [...(tl.blocking || []), ...(tl.unsupported || [])];
@@ -447,12 +447,49 @@ function technicalLimitsBox(tl) {
     return el('p', { class: 'small muted', 'data-block': 'tech-limits' }, 'Технічних обмежень генератора в цьому описі не знайдено (перевірено без моделі, до запуску перевірки).');
   }
   const list = (items) => el('ul', { class: 'small' }, items.map((i) => el('li', {}, el('code', {}, i.code), ' ', i.message)));
+  const label = tl.start_label && tl.start_label.needs_decision && card ? startLabelBox(card, tl.start_label) : null;
   return el('div', { class: hard.length ? 'warnbox' : 'infobox', 'data-block': 'tech-limits' },
     el('strong', {}, hard.length ? 'Технічні обмеження генератора (побудову зупинять)' : 'Відомі обмеження генератора (побудову не зупиняють)'),
     el('p', { class: 'small' }, 'Це перевірено ПРОГРАМОЮ без моделі — до платної смислової перевірки. Модель їх не виправить: ' +
       'або змініть опис (нова версія й нове погодження), або прийміть, що схему для цього місця не буде побудовано.'),
     hard.length ? list(hard) : null,
+    label,
     soft.length ? el('details', {}, el('summary', { class: 'small' }, 'Обмеження, які побудову не зупиняють (' + soft.length + ')'), list(soft)) : null);
+}
+
+/**
+ * Погодження короткого підпису початкової події (D88). Повний текст тригера НЕ змінюється: він лишається
+ * в описі, у деталях події обох файлів і поряд зі схемою. Текст підпису пише людина — програма його не вигадує.
+ */
+function startLabelBox(card, info) {
+  return el('div', { 'data-block': 'start-label' },
+    el('p', { class: 'small' }, el('strong', {}, 'Підпис початкової події. '),
+      'Тригер процесу має ' + info.trigger_chars + ' симв. — на схемі такий підпис нечитабельний. ' +
+      'Скорочувати погоджений текст програма не буде. Ви можете погодити КОРОТКИЙ підпис саме для схеми: ' +
+      'повний текст лишиться в описі, збережеться в деталях події у .bpmn і .drawio і буде видимий поруч зі схемою.'),
+    el('button', { onclick: () => startLabelDialog(card) }, 'Погодити короткий підпис початкової події'));
+}
+
+async function startLabelDialog(card) {
+  const r = await api('POST', `/api/cases/${card.case.id}/start-label/preview`, { label: '' });
+  const label = el('input', { type: 'text', maxlength: '240', placeholder: 'Короткий підпис для схеми (пишете ви)', style: 'width:100%' });
+  const reason = el('textarea', { rows: '3', placeholder: 'Чому саме такий підпис і що лишається в повному тексті (обов’язково)', style: 'width:100%' });
+  openDialog(
+    el('h3', {}, 'Короткий підпис початкової події'),
+    el('p', { class: 'small' }, el('strong', {}, 'Повний текст тригера (не змінюється, ' + r.preview.trigger.length + ' симв.):')),
+    el('blockquote', {}, r.preview.trigger),
+    el('ul', { class: 'small' }, r.preview.consequences.map((x) => el('li', {}, x))),
+    el('p', {}, el('strong', {}, 'Короткий підпис: ')), label,
+    el('p', {}, el('strong', {}, 'Пояснення: ')), reason,
+    el('div', { class: 'row' },
+      el('button', { class: 'primary', onclick: async () => {
+        if (!label.value.trim() || !reason.value.trim()) { toast('Потрібні підпис і пояснення.'); return; }
+        dlg.close();
+        await act(() => api('POST', `/api/cases/${card.case.id}/start-label/confirm`, { label: label.value, reason: reason.value }),
+          'Підпис погоджено. Повний текст тригера не змінено.');
+        await loadDiagram();
+      } }, 'Погодити підпис'),
+      el('button', { onclick: () => dlg.close() }, 'Скасувати')));
 }
 
 function findingBox(card, reviewId, view, canDecide) {
@@ -529,7 +566,13 @@ function artifactBlock(card, a, isHistory) {
         el('button', { onclick: () => { if (state.viewer) { const c = state.viewer.get('canvas'); c.zoom(c.zoom() * 1.2); } } }, 'Збільшити'),
         el('button', { onclick: () => { if (state.viewer) { const c = state.viewer.get('canvas'); c.zoom(c.zoom() / 1.2); } } }, 'Зменшити'),
         a.downloads.bpmn ? dl('bpmn', 'Завантажити .bpmn') : el('span', { class: 'small muted' }, 'Файл .bpmn недоступний'),
-        a.downloads.drawio ? dl('drawio', 'Завантажити .drawio') : el('span', { class: 'small muted' }, 'Перевірений .drawio недоступний')),
+        a.downloads.drawio ? dl('drawio', 'Завантажити .drawio') : el('span', { class: 'small muted' }, 'Перевірений .drawio недоступний'),
+        a.has_csv ? dl('csv', 'Завантажити таблицю (.csv)') : null),
+    // Повний текст тригера, коли на схемі стоїть погоджений короткий підпис (D88): людина бачить його поруч
+    // зі схемою, а не лише у файлі.
+    a.detail.start_full_trigger ? el('details', { 'data-block': 'full-trigger' },
+      el('summary', { class: 'small' }, 'Повний текст тригера початкової події (на схемі — погоджений короткий підпис «' + (a.detail.start_label || '') + '»)'),
+      el('blockquote', {}, a.detail.start_full_trigger)) : null,
       a.drawio_status === 'failed' ? el('div', { class: 'warnbox' },
         el('strong', {}, 'Експорт .drawio не пройшов власної звірки, тому не видається. '),
         'Файл .bpmn це не скасовує: він перевірений і чинний.',
@@ -977,7 +1020,7 @@ PANELS.diagram = (card) => {
     if (review.state === 'none' || review.state === 'stale' || review.state === 'failed' || review.state === 'untrusted') {
       if ((review.reasons || []).length) out.push(el('div', { class: 'warnbox' }, review.reasons.join(' ')));
       if (review.error) out.push(el('div', { class: 'warnbox' }, String(review.error)));
-      out.push(technicalLimitsBox(review.technical_limits));
+      out.push(technicalLimitsBox(review.technical_limits, card));
       out.push(el('p', { class: 'small' }, ai.available
         ? 'Наступна дія: запустити смислову перевірку опису моделлю. Схему вона не будує — лише шукає неоднозначності.'
         : 'Наступна дія недоступна: смислову перевірку виконує модель, а вона не підключена. Демо-відповіді для цієї перевірки не вигадуються.'));

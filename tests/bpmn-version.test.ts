@@ -8,7 +8,8 @@ import { all } from '../src/db.ts';
 import { acceptDraft, addNotationRequirement, addQuestion, addSource, approve, bpmnGuard, currentApproval, getCase, headVersion, saveAnalystVersion, submitForApproval, versionContent, verifyVersionIntegrity, getVersion } from '../src/domain.ts';
 import { DomainError } from '../src/errors.ts';
 import { packageFromApproval } from '../src/bpmn/approved.ts';
-import { generateBpmn } from '../src/bpmn/generate.ts';
+// Побудова йде продуктовим шляхом (D87): сценарна таблиця → перевірка → скрипти пайплайна → звірка файлів.
+import { generateViaPipeline as generateBpmn } from './bpmn-helpers.ts';
 import { verifyBpmn } from '../src/bpmn/verify.ts';
 import type { ApprovedPackage } from '../src/bpmn/types.ts';
 import { approvedCase, COMPLETE_FIELDS, draftReadyCase, freshDb, human, pendingCase } from './helpers.ts';

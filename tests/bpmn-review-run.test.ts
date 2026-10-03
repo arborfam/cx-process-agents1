@@ -52,14 +52,17 @@ test('успішна перевірка: незмінний запис із ID �
   const run = runRow(db, r.runId);
   const ins = loadBpmnInstruction();
   assert.deepEqual([run.agent, run.technical_state, run.mode, run.model, run.input_approval_id, run.instruction_version, run.instruction_hash, run.attempts],
-    ['bpmn', 'done', 'real', FAKE_MODEL, a.id, 'bpmn-v0.5', ins.hash, 1]);
+    ['bpmn', 'done', 'real', FAKE_MODEL, a.id, 'bpmn-v0.6', ins.hash, 1]);
   assert.ok(Math.abs(run.cost_usd - actualCostUsd(policyOf(), USAGE)) < 1e-12 && run.reserved_usd === 0 && run.cost_known === 1);
   const rec = recRow(db, r.runId)!;
   assert.equal(rec.id, r.reviewId);
   assert.deepEqual([rec.outcome, rec.version_id, rec.approval_id, rec.client_mode, rec.instruction_hash], ['clear', a.version_id, a.id, 'real', ins.hash]);
   assert.equal(rec.content_hash, a.content_hash);
   assert.match(rec.content_fingerprint, /^[0-9a-f]{64}$/);
-  assert.deepEqual(JSON.parse(rec.response_json), { findings: [] });
+  // Відповідь зберігається дослівно; крім знахідок у ній тепер є таблиця процесу (D87).
+  const response = JSON.parse(rec.response_json) as { findings: unknown[]; csv?: string };
+  assert.deepEqual(response.findings, []);
+  assert.match(response.csv ?? '', /^id,label,type,role,next,yes,no,assoc\n/);
   const att = JSON.parse(rec.attempts_json);
   assert.equal(att.attempts, 1);
   assert.deepEqual(att.usage, [USAGE]);
@@ -146,7 +149,7 @@ test('пакет для моделі береться з бази за пого�
   assert.equal(input.pkg.versionId, a.version_id);
   assert.equal(input.pkg.contentHash, a.content_hash);
   assert.ok(input.pkg.content.steps.some((s) => s.action === 'Вносить зміну'));
-  assert.equal(input.instruction.version, 'bpmn-v0.5');
+  assert.equal(input.instruction.version, 'bpmn-v0.6');
 });
 
 // ───────── unsupported без моделі ─────────
@@ -366,7 +369,8 @@ for (const [what, mutate] of staleCases()) {
   test(`застарілий результат (${what} під час роботи моделі): зберігається як застарілий, генерацію не дозволяє, вартість облікована`, async () => {
     const db = freshDb();
     const { c } = approvedCase(db);
-    const side: Step = () => { mutate(db, c.id); return { output: { findings: [] }, usage: USAGE }; };
+    // Таблиця — сценарна, як і в решті тестів: без неї відповідь не пройшла б перевірки (D87).
+    const side: Step = (input, signal) => { mutate(db, c.id); return okStep([])(input, signal); };
     const r = await runBpmnReviewForCase(db, human, c.id, reviewer(new FakeReviewClient([side])));
     assert.ok(r.ok && r.outcome === 'stale', JSON.stringify(r));
     const rec = recRow(db, r.runId)!;
@@ -504,8 +508,8 @@ test('запис, вставлений напряму в обхід запуск
   const { c, a } = approvedCase(db);
   const ins = loadBpmnInstruction();
   db.prepare(`INSERT INTO run (id, case_id, agent, instruction_version, instruction_hash, mode, model, base_version_id, input_approval_id, technical_state, started_at, finished_at)
-    VALUES ('run_fake','${c.id}','bpmn','bpmn-v0.5','${ins.hash}','real','${FAKE_MODEL}','${a.version_id}','${a.id}','done','2099-01-01T00:00:00.000Z','2099-01-01T00:00:00.000Z')`).run();
-  db.prepare(`INSERT INTO bpmn_review VALUES ('rev_fake','run_fake','${c.id}','clear','${a.version_id}','${a.id}','${a.content_hash}','${'0'.repeat(64)}','bpmn-v0.5','${ins.hash}','real','${FAKE_MODEL}','{"findings":[]}','[]','[]','{"attempts":1,"usage":[],"failedAttempts":[],"attemptCosts":[]}','{}','2099-01-01T00:00:00.000Z','${'1'.repeat(64)}')`).run();
+    VALUES ('run_fake','${c.id}','bpmn','bpmn-v0.6','${ins.hash}','real','${FAKE_MODEL}','${a.version_id}','${a.id}','done','2099-01-01T00:00:00.000Z','2099-01-01T00:00:00.000Z')`).run();
+  db.prepare(`INSERT INTO bpmn_review VALUES ('rev_fake','run_fake','${c.id}','clear','${a.version_id}','${a.id}','${a.content_hash}','${'0'.repeat(64)}','bpmn-v0.6','${ins.hash}','real','${FAKE_MODEL}','{"findings":[]}','[]','[]','{"attempts":1,"usage":[],"failedAttempts":[],"attemptCosts":[]}','{}','2099-01-01T00:00:00.000Z','${'1'.repeat(64)}')`).run();
   const st = getCaseReview(db, c.id);
   assert.equal(st.state, 'untrusted');
   assert.equal(st.gate, undefined);

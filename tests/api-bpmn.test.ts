@@ -309,7 +309,7 @@ test('HTTP: невдалу побудову можна повторити тіє
     await waitReview(s, caseId, ['clear']);
 
     // Невдалу спробу моделюємо на доменному рівні (у продукту немає входу для пошкодження) — далі працюємо через HTTP.
-    const bad = await buildArtifact(db, human, caseId, undefined, { tamperBpmn: (x) => x.replace(/<bpmn:task /, '<bpmn:task name="ЗІПСОВАНО" ') });
+    const bad = await buildArtifact(db, human, caseId, undefined, { tamperBpmn: (x) => x.replace(/<bpmn:(userTask|task) /, "<bpmn:$1 name=\"ЗІПСОВАНО\" ") });
     assert.equal(bad.artifact.status, 'verification_failed');
     assert.equal((await raw(s, `/api/cases/${caseId}/bpmn/file/bpmn`)).status, 409);
 

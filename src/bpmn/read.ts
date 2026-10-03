@@ -12,6 +12,8 @@ export interface Rect { x: number; y: number; w: number; h: number }
 export interface Pt { x: number; y: number }
 
 export interface FlowNode {
+  /** Повний текст у деталях елемента (bpmn:documentation): наприклад повний тригер при короткому підписі (D88). */
+  documentation?: string;
   id: string;
   tag: 'startEvent' | 'endEvent' | 'task' | 'exclusiveGateway';
   name: string | undefined;
@@ -169,12 +171,19 @@ export function readBpmn(xml: string): ReadResult {
     const tag = ch.ns === NS.bpmn ? ch.local : '';
     if (tag === 'startEvent' || tag === 'endEvent' || tag === 'task' || tag === 'exclusiveGateway') {
       checkAttrs(ch);
+      // `documentation` — це опис елемента, а не нотація: там зберігається ПОВНИЙ текст (наприклад тригер),
+      // коли на схемі стоїть погоджений короткий підпис (D88). На вигляд схеми він не впливає.
+      let documentation: string | undefined;
       for (const x of elementChildren(ch)) {
+        // Деталі дозволені лише на ПОЧАТКОВІЙ події: там лежить повний текст тригера, коли на схемі
+        // стоїть погоджений короткий підпис (D88). На інших елементах це текст, якого на схемі не видно,
+        // — отже, зміст, що не потрапив у погоджений опис.
+        if (x.ns === NS.bpmn && x.local === 'documentation' && tag === 'startEvent') { documentation = textOf(x); continue; }
         if (!(x.ns === NS.bpmn && (x.local === 'incoming' || x.local === 'outgoing'))) unsupported(x, `усередині ${describe(ch)}`);
       }
       const id = attr(ch, 'id') ?? '';
       if (model.nodes.has(id)) return; // повтор ID відзначить перевірка унікальності
-      model.nodes.set(id, { id, tag, name: attr(ch, 'name'), incoming: flowRefList(ch, 'incoming'), outgoing: flowRefList(ch, 'outgoing') });
+      model.nodes.set(id, { id, tag, name: attr(ch, 'name'), documentation, incoming: flowRefList(ch, 'incoming'), outgoing: flowRefList(ch, 'outgoing') });
       return;
     }
     if (tag === 'sequenceFlow') {

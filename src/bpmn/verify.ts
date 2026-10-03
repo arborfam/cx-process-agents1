@@ -33,7 +33,18 @@ export interface VerifyOutcome {
   map: StepMapRow[];
 }
 
-export function verifyBpmn(xml: string, pkg: ApprovedPackage): VerifyOutcome {
+export interface VerifyOptions {
+  /** Підпис початкової події, який МАЄ бути у файлі: погоджений короткий підпис (D88) або сам тригер. */
+  startLabel?: string;
+  /**
+   * Ролі, для яких у файлі МАЮТЬ бути доріжки. Типово — усі ролі погодженого опису; у продукті (D87)
+   * доріжка створюється лише для ролі, яка має дії, тому сюди передається саме цей перелік.
+   * Склад ролей у погодженому описі це не змінює: роль без дій лишається в описі й показується як обмеження (K2).
+   */
+  lanes?: readonly string[];
+}
+
+export function verifyBpmn(xml: string, pkg: ApprovedPackage, opts: VerifyOptions = {}): VerifyOutcome {
   const read = readBpmn(xml);
   const errors: Issue[] = [...read.issues];
   const warnings: Issue[] = [];
@@ -59,7 +70,7 @@ export function verifyBpmn(xml: string, pkg: ApprovedPackage): VerifyOutcome {
     if (m.binding.versionId !== pkg.versionId) errors.push(err('BINDING_MISMATCH', `Схему побудовано на іншій версії: у файлі ${q(m.binding.versionId)}, погоджена — ${q(pkg.versionId)}.`));
     if (m.binding.contentHash !== pkg.contentHash) errors.push(err('BINDING_MISMATCH', 'Хеш версії у файлі не збігається з хешем погодженої версії: схему побудовано на іншому змісті.'));
     if (m.binding.origin !== pkg.origin) errors.push(err('BINDING_MISMATCH', `Позначка походження у файлі ${q(m.binding.origin)} не збігається з пакетом ${q(pkg.origin)}.`));
-    if (m.binding.generator !== GENERATOR_NAME) errors.push(err('BINDING_MISMATCH', `Невідомий генератор у прив’язці: ${q(m.binding.generator)}.`));
+    if (!m.binding.generator.startsWith(GENERATOR_NAME)) errors.push(err('BINDING_MISMATCH', `Невідомий генератор у прив’язці: ${q(m.binding.generator)}.`));
   }
 
   // ── структура: один пул, один процес, унікальні ID ──
@@ -101,13 +112,14 @@ export function verifyBpmn(xml: string, pkg: ApprovedPackage): VerifyOutcome {
   // ── доріжки ↔ ролі ──
   const laneByName = new Map<string, string[]>();
   for (const l of m.lanes) laneByName.set(l.name ?? '', [...(laneByName.get(l.name ?? '') ?? []), l.id]);
-  for (const role of c.roles) {
+  const expectedLanes = opts.lanes ?? c.roles;
+  for (const role of expectedLanes) {
     const ids = laneByName.get(role) ?? [];
     if (ids.length === 0) errors.push(err('LANE_MISSING', `Для погодженої ролі «${clip(role)}» немає доріжки.`));
     if (ids.length > 1) errors.push(err('LANE_DUPLICATE', `Для ролі «${clip(role)}» є ${ids.length} доріжки замість однієї.`, ids));
   }
   for (const l of m.lanes) {
-    if (!c.roles.includes(l.name ?? '')) errors.push(err('LANE_EXTRA', `У схемі є доріжка ${q(l.name)}, якої немає серед погоджених ролей.`, [l.id]));
+    if (!expectedLanes.includes(l.name ?? '')) errors.push(err('LANE_EXTRA', `У схемі є доріжка ${q(l.name)}, якої немає серед очікуваних ролей.`, [l.id]));
   }
   const nodeLane = new Map<string, string[]>();
   for (const l of m.lanes) {
@@ -153,7 +165,10 @@ export function verifyBpmn(xml: string, pkg: ApprovedPackage): VerifyOutcome {
   const entryId = c.entry_step_id ?? '';
   const start = starts[0];
   if (start) {
-    if ((start.name ?? '') !== c.boundaries.trigger) errors.push(err('START_NAME_MISMATCH', `Назва початкової події ${q(start.name)} не збігається з тригером ${q(c.boundaries.trigger)}.`, [start.id]));
+    const wantStart = opts.startLabel ?? c.boundaries.trigger;
+    if ((start.name ?? '') !== wantStart) {
+      errors.push(err('START_NAME_MISMATCH', `Назва початкової події ${q(start.name)} не збігається з ${opts.startLabel === undefined ? `тригером ${q(c.boundaries.trigger)}` : `погодженим підписом ${q(wantStart)}`}.`, [start.id]));
+    }
     const so = flowsBySource.get(start.id) ?? [];
     if ((flowsByTarget.get(start.id) ?? []).length) errors.push(err('START_HAS_INCOMING', 'У початкову подію входить перехід.', [start.id]));
     if (so.length !== 1) errors.push(err('START_FLOW', `З початкової події виходить ${so.length} переходів, а має бути один — у початковий крок ${entryId}.`, [start.id]));

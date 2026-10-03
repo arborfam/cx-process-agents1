@@ -15,6 +15,8 @@ import { ModelFailure, type ModelCallResult } from '../src/ai/types.ts';
 import { clonePkg, allFixtures, pkgOf } from './bpmn-helpers.ts';
 import { fixtureToPackage } from '../src/bpmn/fixture.ts';
 import { canonical, sha256 } from '../src/hash.ts';
+import { scriptedCsv } from './csv-fixture.ts';
+import { analyzePackage } from '../src/bpmn/validate.ts';
 
 const ROOT = join(import.meta.dirname, '..');
 const BPMN_PROMPT = join(ROOT, 'prompts', 'bpmn.md');
@@ -40,7 +42,29 @@ class FakeClient implements BpmnReviewClient {
     return s(input, signal);
   }
 }
-const ok = (findings: unknown[]): Step => () => ({ output: { findings }, usage: { input_tokens: 10, output_tokens: 5 } });
+/** Успішна відповідь: знахідки + сценарна таблиця (таблиці немає лише там, де знахідка блокує потік). */
+/**
+ * Перевірка відповіді з ДОДАНОЮ сценарною таблицею: ці тести про знахідки, цитати й схему, а таблиця
+ * за контрактом v0.6 обов'язкова, коли потік не заблоковано. Саму таблицю перевіряє csv-contract.test.ts,
+ * а відмову через її відсутність — окремий тест нижче.
+ */
+const vro = (resp: Record<string, unknown>, p: ReviewPackage = pkg()) =>
+  verifyReviewOutput('csv' in resp ? resp : { ...resp, ...csvFor(p) }, p);
+
+/**
+ * Сценарна таблиця для пакета. Для пакетів із навмисними структурними дефектами (b*) таблиці немає:
+ * справжній агент у такому разі теж повертає знахідки, а не вигадану таблицю, і продукт до нього з таким
+ * пакетом узагалі не доходить (його зупиняє серверний дозвіл).
+ */
+const csvFor = (p: ReviewPackage): { csv?: string } =>
+  analyzePackage({ versionId: p.versionId, contentHash: p.contentHash, content: p.content, origin: 'product' }).blocking.length === 0
+    ? { csv: scriptedCsv(p.content, p.startLabel) }
+    : {};
+
+const ok = (findings: unknown[]): Step => (input) => ({
+  output: { findings, ...csvFor(input.pkg) },
+  usage: { input_tokens: 10, output_tokens: 5 },
+});
 const fail = (kind: ConstructorParameters<typeof ModelFailure>[0]): Step => () => { throw new ModelFailure(kind, `збій ${kind}`); };
 
 const gate = (r: ReviewResult | null | undefined, p: ReviewPackage, i = INSTR): GateResult => generationGate(r, p, i);
@@ -48,8 +72,8 @@ const run = (c: BpmnReviewClient, p: ReviewPackage = pkg(), o = {}) => runBpmnRe
 
 // ───────── Інструкція й схема ─────────
 
-test('інструкція v0.3 завантажується з маркерів; усі шість кодів із таблиці збігаються зі схемою; приклад відповіді в ній чинний', () => {
-  assert.equal(INSTR.version, 'bpmn-v0.5');
+test('інструкція v0.6 завантажується з маркерів; усі шість кодів із таблиці збігаються зі схемою; приклад відповіді в ній чинний', () => {
+  assert.equal(INSTR.version, 'bpmn-v0.6');
   assert.match(INSTR.hash, /^[0-9a-f]{64}$/);
   const inTable = [...INSTR.text.matchAll(/^\| `([A-Z_]+)` \|/gm)].map((m) => m[1]);
   assert.deepEqual([...inTable].sort(), [...FINDING_CODES].sort());
@@ -100,19 +124,19 @@ test('JSON-схема для API: та сама форма без обмежен
 // ───────── Перевірка відповіді ─────────
 
 test('коректна відповідь: цитата з дії кроку й з умови переходу приймаються без попереджень; порожній список — теж', () => {
-  const r1 = verifyReviewOutput({ findings: [finding(), finding({ quote: 'сума перевищує ліміт спеціаліста', code: 'GATEWAY_SEMANTICS', class: 'informational' })] }, pkg());
+  const r1 = vro({ findings: [finding(), finding({ quote: 'сума перевищує ліміт спеціаліста', code: 'GATEWAY_SEMANTICS', class: 'informational' })] }, pkg());
   assert.ok(r1.ok);
   assert.deepEqual(r1.ok && r1.warnings, []);
   assert.equal(r1.ok && r1.findings.length, 2);
-  assert.deepEqual(verifyReviewOutput({ findings: [] }, pkg()), { ok: true, findings: [], warnings: [] });
+  assert.deepEqual({ ...vro({ findings: [] }, pkg()), csv: undefined }, { ok: true, findings: [], warnings: [], csv: undefined });
 });
 
 test('крок, якого немає в пакеті, відхиляється (і разом з існуючим); повтор кроку у знахідці — теж', () => {
-  const a = verifyReviewOutput({ findings: [finding({ step_ids: ['S99'] })] }, pkg());
+  const a = vro({ findings: [finding({ step_ids: ['S99'] })] }, pkg());
   assert.ok(!a.ok && a.violations.some((v) => v.code === 'UNKNOWN_STEP' && /S99/.test(v.message)));
-  const b = verifyReviewOutput({ findings: [finding({ step_ids: ['S2', 'S99'] })] }, pkg());
+  const b = vro({ findings: [finding({ step_ids: ['S2', 'S99'] })] }, pkg());
   assert.ok(!b.ok && b.violations.some((v) => v.code === 'UNKNOWN_STEP'));
-  const c = verifyReviewOutput({ findings: [finding({ step_ids: ['S2', 'S2'] })] }, pkg());
+  const c = vro({ findings: [finding({ step_ids: ['S2', 'S2'] })] }, pkg());
   assert.ok(!c.ok && c.violations.some((v) => v.code === 'DUPLICATE_STEP_ID'));
 });
 
@@ -122,14 +146,14 @@ test('вигадана цитата відхиляється: зовсім чу�
     'Оцінює підстави … і виплачує бонус клієнтові', 'Вигадано щось … повернення коштів',
   ];
   for (const quote of quotes) {
-    const r = verifyReviewOutput({ findings: [finding({ quote })] }, pkg());
+    const r = vro({ findings: [finding({ quote })] }, pkg());
     assert.ok(!r.ok && r.violations.some((v) => v.code === 'QUOTE_NOT_FOUND'), quote);
   }
 });
 
 test('надто коротка цитата не доводить нічого й відхиляється; «…» не рахується за зміст', () => {
   for (const quote of ['S2', 'підстави', 'а', '… …', 'x'.repeat(MIN_QUOTE_CHARS - 1)]) {
-    const r = verifyReviewOutput({ findings: [finding({ quote })] }, pkg());
+    const r = vro({ findings: [finding({ quote })] }, pkg());
     assert.ok(!r.ok && r.violations.some((v) => v.code === 'QUOTE_TOO_SHORT'), quote);
   }
 });
@@ -138,30 +162,30 @@ test('цитата зі службових значень (ID, переліче�
   const p = pkgOf('u01-unsupported-parallel-timer') as ReviewPackage;
   assert.ok((p.content.notation_requirements ?? []).some((r) => r.kind === 'parallel_branches' && r.status === 'confirmed'), 'контроль: у пакеті є вимога parallel_branches');
   assert.ok(!packageText(p.content).includes('parallel_branches'), 'службове значення потрапило в текст для цитат');
-  const r = verifyReviewOutput({ findings: [finding({ quote: 'parallel_branches', step_ids: [p.content.steps[0]!.id] })] }, p);
+  const r = vro({ findings: [finding({ quote: 'parallel_branches', step_ids: [p.content.steps[0]!.id] })] }, p);
   assert.ok(!r.ok && r.violations.some((v) => v.code === 'QUOTE_NOT_FOUND'));
 });
 
 test('нормалізовані лапки/пробіли → попередження; цитата зі «…» → попередження людині; цитата поза вказаними кроками → попередження', () => {
   const p = clonePkg(pkg() as never) as ReviewPackage;
   p.content.steps[0]!.action = 'Приймає заявку на "повернення"   та перевіряє комплектність';
-  const n = verifyReviewOutput({ findings: [finding({ step_ids: ['S1'], quote: 'Приймає заявку на «повернення» та перевіряє комплектність' })] }, p);
+  const n = vro({ findings: [finding({ step_ids: ['S1'], quote: 'Приймає заявку на «повернення» та перевіряє комплектність' })] }, p);
   assert.ok(n.ok && n.warnings.some((w) => /нормалізації/.test(w)), JSON.stringify(n));
-  const e = verifyReviewOutput({ findings: [finding({ quote: 'Оцінює підстави … повернення коштів' })] }, pkg());
+  const e = vro({ findings: [finding({ quote: 'Оцінює підстави … повернення коштів' })] }, pkg());
   assert.ok(e.ok && e.warnings.some((w) => /«…»/.test(w)));
-  const other = verifyReviewOutput({ findings: [finding({ step_ids: ['S3'], quote: 'Оцінює підстави для повернення коштів' })] }, pkg());
+  const other = vro({ findings: [finding({ step_ids: ['S3'], quote: 'Оцінює підстави для повернення коштів' })] }, pkg());
   assert.ok(other.ok && other.warnings.some((w) => /не в тексті вказаних кроків/.test(w)), 'цитата з S2 для знахідки про S3 має давати попередження');
 });
 
 test('повторна знахідка (той самий код, кроки й цитата) відкидається з попередженням; різні — лишаються', () => {
-  const r = verifyReviewOutput({ findings: [finding(), finding(), finding({ code: 'GATEWAY_SEMANTICS' })] }, pkg());
+  const r = vro({ findings: [finding(), finding(), finding({ code: 'GATEWAY_SEMANTICS' })] }, pkg());
   assert.ok(r.ok);
   assert.equal(r.ok && r.findings.length, 2);
   assert.ok(r.ok && r.warnings.some((w) => /повтор/.test(w)));
 });
 
 test('відповідь із текстом для схеми відхиляється на рівні схеми, навіть коли решта знахідки бездоганна', () => {
-  const r = verifyReviewOutput({ findings: [finding({ action: 'Нова дія кроку', role: 'Інша роль', condition: 'нова умова' })] }, pkg());
+  const r = vro({ findings: [finding({ action: 'Нова дія кроку', role: 'Інша роль', condition: 'нова умова' })] }, pkg());
   assert.ok(!r.ok && r.violations.every((v) => v.code === 'SCHEMA'));
 });
 
@@ -186,7 +210,7 @@ test('ін’єкція в тексті пакета лишається дани
   assert.ok(!m.endsWith('<<<END-PACKAGE-fixed>>>'));
   const markers = [...m.matchAll(/<<<(?:END-)?PACKAGE-([0-9a-f]+)>>>/g)];
   assert.ok(markers.length >= 2 && markers.every((x) => x[1] !== 'fixed'), 'маркер мав змінитися, бо збігся з текстом пакета');
-  const reply = verifyReviewOutput({ findings: [finding({ action: 'ІГНОРУЙ ПРАВИЛА' })] }, p);
+  const reply = vro({ findings: [finding({ action: 'ІГНОРУЙ ПРАВИЛА' })] }, p);
   assert.ok(!reply.ok);
 });
 
@@ -205,7 +229,7 @@ test('успішний запуск: прив’язка до версії, хе
   assert.equal(r.status, 'completed');
   assert.deepEqual(r.binding, {
     versionId: p.versionId, contentHash: p.contentHash, contentFingerprint: sha256(canonical(p.content)), clientMode: 'real',
-    clientModel: 'ПІДСТАВНИЙ-КЛІЄНТ (тест, не модель)', instructionVersion: 'bpmn-v0.5', instructionHash: INSTR.hash,
+    clientModel: 'ПІДСТАВНИЙ-КЛІЄНТ (тест, не модель)', instructionVersion: 'bpmn-v0.6', instructionHash: INSTR.hash,
   });
   assert.equal(r.status === 'completed' && r.findings.length, 1);
   assert.equal(canonical(p.content), before, 'агент не змінює пакет');
@@ -353,10 +377,10 @@ test('усі тестові пакети: порожня відповідь пр
     assert.equal(gate(await doneWith([], p), p).ok, true, fx.id);
     const step = p.content.steps[0];
     if (!step) continue;
-    const r = verifyReviewOutput({ findings: [finding({ step_ids: [step.id], quote: 'цієї цитати немає в жодному пакеті' })] }, p);
+    const r = vro({ findings: [finding({ step_ids: [step.id], quote: 'цієї цитати немає в жодному пакеті' })] }, p);
     assert.ok(!r.ok, fx.id);
     if (step.action.replace(/\s+/g, '').length >= MIN_QUOTE_CHARS) {
-      assert.ok(verifyReviewOutput({ findings: [finding({ step_ids: [step.id], quote: step.action })] }, p).ok, `${fx.id}: дослівна цитата дії має проходити`);
+      assert.ok(vro({ findings: [finding({ step_ids: [step.id], quote: step.action })] }, p).ok, `${fx.id}: дослівна цитата дії має проходити`);
     }
   }
 });
@@ -397,17 +421,17 @@ test('шлюз: перевірка за іншою версією інструк
 
 test('цитата зі скороченнями «…»: забагато частин або надто короткі частини відхиляються (а…б…в… не збігається будь-де)', () => {
   const many = 'а…б…в…г…д…е…ж…з…и…к';
-  const r1 = verifyReviewOutput({ findings: [finding({ quote: many })] }, pkg());
+  const r1 = vro({ findings: [finding({ quote: many })] }, pkg());
   assert.ok(!r1.ok && r1.violations.some((v) => v.code === 'QUOTE_FRAGMENTED' || v.code === 'QUOTE_TOO_SHORT'), many);
   const longEnoughTotal = 'Оцінює підстави … ' + 'для повернення коштів'.slice(0, 5) + '…кошт';
-  const r2 = verifyReviewOutput({ findings: [finding({ quote: 'Оцінює підстави … ко … ти' })] }, pkg());
+  const r2 = vro({ findings: [finding({ quote: 'Оцінює підстави … ко … ти' })] }, pkg());
   assert.ok(!r2.ok && r2.violations.some((v) => v.code === 'QUOTE_FRAGMENTED'), longEnoughTotal);
   const parts = Array.from({ length: MAX_QUOTE_PARTS + 1 }, () => 'Оцінює').join(' … ');
-  const r3 = verifyReviewOutput({ findings: [finding({ quote: parts })] }, pkg());
+  const r3 = vro({ findings: [finding({ quote: parts })] }, pkg());
   assert.ok(!r3.ok && r3.violations.some((v) => v.code === 'QUOTE_FRAGMENTED'));
   assert.ok(MIN_QUOTE_PART_CHARS >= 4);
   // допустимий варіант (дві змістовні частини в одному полі) лишається чинним
-  assert.ok(verifyReviewOutput({ findings: [finding({ quote: 'Оцінює підстави … повернення коштів' })] }, pkg()).ok);
+  assert.ok(vro({ findings: [finding({ quote: 'Оцінює підстави … повернення коштів' })] }, pkg()).ok);
 });
 
 test('цитата не може склеювати різні поля пакета (кінець одного поля + початок наступного)', () => {
@@ -417,16 +441,16 @@ test('цитата не може склеювати різні поля паке
   assert.ok(i >= 0, 'контроль: у пакеті є два сусідні поля');
   const glued = `${fields[i]!.trim().slice(-12)} ${fields[i + 1]!.trim().slice(0, 12)}`;
   assert.ok(!fields.some((f) => f.includes(glued)), 'контроль: склейки в жодному полі немає');
-  const r = verifyReviewOutput({ findings: [finding({ quote: glued })] }, p);
+  const r = vro({ findings: [finding({ quote: glued })] }, p);
   assert.ok(!r.ok && r.violations.some((v) => v.code === 'QUOTE_NOT_FOUND'), glued);
   // та сама цитата зі скороченням між полями також не проходить
   const elided = `${fields[i]!.trim().slice(-12)} … ${fields[i + 1]!.trim().slice(0, 12)}`;
-  const r2 = verifyReviewOutput({ findings: [finding({ quote: elided })] }, p);
+  const r2 = vro({ findings: [finding({ quote: elided })] }, p);
   assert.ok(!r2.ok, elided);
 });
 
 test('тайм-аут не залежить від клієнта: клієнт, що ігнорує сигнал, не зависає; запізніла відповідь не приймається', async () => {
-  const late: Step = () => new Promise((res) => setTimeout(() => res({ output: { findings: [] } }), 250));
+  const late: Step = (input) => new Promise((res) => setTimeout(() => res({ output: { findings: [], csv: scriptedCsv(input.pkg.content, input.pkg.startLabel) } }), 250));
   const t0 = Date.now();
   const r = await run(new FakeClient([late]), pkg(), { timeoutMs: 30 });
   assert.equal(r.status, 'failed');
@@ -446,7 +470,7 @@ test('імена зайвих полів і довгі рядки від мод�
   assert.equal(r.status, 'completed');
   const fb = (c.inputs[1]!.retry_feedback ?? []).join('\n');
   assert.ok(fb.length > 0 && !fb.includes('IGNORE-RULES'), fb.slice(0, 200));
-  const v = verifyReviewOutput({ findings: [{ ...finding(), [injected]: 'текст' }] }, pkg());
+  const v = vro({ findings: [{ ...finding(), [injected]: 'текст' }] }, pkg());
   assert.ok(!v.ok && !JSON.stringify(v.violations).includes('IGNORE-RULES'));
 });
 
@@ -477,7 +501,7 @@ const base = (over: Record<string, unknown> = {}) => finding({ question: Q, ...o
 test('однакові код, кроки, цитата й питання, різний class: в обох порядках лишається blocks_flow, шлюз закритий, є попередження про суперечність', async () => {
   for (const order of [['informational', 'blocks_flow'], ['blocks_flow', 'informational']]) {
     const input = order.map((class_) => base({ class: class_ }));
-    const v = verifyReviewOutput({ findings: input }, pkg());
+    const v = vro({ findings: input }, pkg());
     assert.ok(v.ok);
     assert.equal(v.ok && v.findings.length, 1, order.join('→'));
     assert.equal(v.ok && v.findings[0]!.class, 'blocks_flow', order.join('→'));
@@ -491,26 +515,26 @@ test('однакові код, кроки, цитата й питання, рі�
 });
 
 test('повний дублікат (усе однакове, у т.ч. class) відкидається з попередженням; різні питання чи варіанти з тим самим кодом/кроками/цитатою — НЕ губляться', () => {
-  const dup = verifyReviewOutput({ findings: [base(), base()] }, pkg());
+  const dup = vro({ findings: [base(), base()] }, pkg());
   assert.ok(dup.ok && dup.findings.length === 1 && dup.warnings.some((w) => /повтор/.test(w)));
   // порядок і регістр варіантів, пробіли й регістр питання не роблять знахідку «іншою»
-  const same = verifyReviewOutput({ findings: [base({ options: ['А', 'Б'] }), base({ question: '  що відбувається в інших випадках?  ', options: ['б', 'а'] })] }, pkg());
+  const same = vro({ findings: [base({ options: ['А', 'Б'] }), base({ question: '  що відбувається в інших випадках?  ', options: ['б', 'а'] })] }, pkg());
   assert.ok(same.ok && same.findings.length === 1);
   // інше питання → окрема знахідка
-  const q2 = verifyReviewOutput({ findings: [base(), base({ question: 'А якщо сума дорівнює ліміту?' })] }, pkg());
+  const q2 = vro({ findings: [base(), base({ question: 'А якщо сума дорівнює ліміту?' })] }, pkg());
   assert.ok(q2.ok && q2.findings.length === 2 && q2.findings.map((f) => f.question).includes('А якщо сума дорівнює ліміту?'));
   // інші варіанти відповіді → окрема знахідка
-  const o2 = verifyReviewOutput({ findings: [base({ options: ['так'] }), base({ options: ['ні'] })] }, pkg());
+  const o2 = vro({ findings: [base({ options: ['так'] }), base({ options: ['ні'] })] }, pkg());
   assert.ok(o2.ok && o2.findings.length === 2);
   // немає варіантів проти порожнього списку варіантів — це одне й те саме
-  const empty = verifyReviewOutput({ findings: [base(), base({ options: [] })] }, pkg());
+  const empty = vro({ findings: [base(), base({ options: [] })] }, pkg());
   assert.ok(empty.ok && empty.findings.length === 1);
 });
 
 test('різні питання з різним class не зливаються: обидві лишаються зі своїм class, є попередження про суперечність; шлюз закритий в обох порядках', async () => {
   for (const order of [['informational', 'blocks_flow'], ['blocks_flow', 'informational']]) {
     const input = [base({ class: order[0], question: 'Питання перше?' }), base({ class: order[1], question: 'Питання друге?' })];
-    const v = verifyReviewOutput({ findings: input }, pkg());
+    const v = vro({ findings: input }, pkg());
     assert.ok(v.ok && v.findings.length === 2 && v.findings.some((f) => f.class === 'blocks_flow'));
     assert.ok(v.ok && v.warnings.some((w) => /суперечн/i.test(w)));
     assert.ok(!gate(await run(new FakeClient([ok(input)])), pkg()).ok);
@@ -520,13 +544,13 @@ test('різні питання з різним class не зливаються:
 test('знахідки про РІЗНІ кроки (той самий код, цитата й питання) не зливаються, навіть коли один із класів — informational: blocks_flow для другого кроку не губиться', async () => {
   for (const order of [['informational', 'blocks_flow'], ['blocks_flow', 'informational']]) {
     const input = [base({ step_ids: ['S2'], class: order[0] }), base({ step_ids: ['S3'], class: order[1] })];
-    const v = verifyReviewOutput({ findings: input }, pkg());
+    const v = vro({ findings: input }, pkg());
     assert.ok(v.ok && v.findings.length === 2, order.join('→'));
     assert.deepEqual(v.ok && v.findings.map((f) => [f.step_ids[0], f.class]).sort(), [['S2', order[0]], ['S3', order[1]]].sort());
     assert.ok(!gate(await run(new FakeClient([ok(input)])), pkg()).ok);
   }
   // порядок кроків усередині знахідки не робить її «іншою»
-  const same = verifyReviewOutput({ findings: [base({ step_ids: ['S2', 'S3'] }), base({ step_ids: ['S3', 'S2'] })] }, pkg());
+  const same = vro({ findings: [base({ step_ids: ['S2', 'S3'] }), base({ step_ids: ['S3', 'S2'] })] }, pkg());
   assert.ok(same.ok && same.findings.length === 1);
 });
 
@@ -538,7 +562,7 @@ test('UNSUPPORTED_CANDIDATE ніколи не губиться через усу
     [mk('CONDITIONS_NOT_EXHAUSTIVE', 'blocks_flow'), mk('UNSUPPORTED_CANDIDATE', 'informational'), mk('UNSUPPORTED_CANDIDATE', 'informational')],
   ];
   for (const set of sets) for (const input of [set, [...set].reverse()]) {
-    const v = verifyReviewOutput({ findings: input }, pkg());
+    const v = vro({ findings: input }, pkg());
     assert.ok(v.ok && v.findings.some((f) => f.code === 'UNSUPPORTED_CANDIDATE'), JSON.stringify(input.map((f) => [f.code, f.class])));
     const g = gate(await run(new FakeClient([ok(input)])), pkg());
     assert.ok(!g.ok && ['UNSUPPORTED_CANDIDATE', 'BLOCKING_FINDINGS'].includes(g.code));
@@ -557,7 +581,7 @@ test('вирішальна властивість: за ВСІМА перест�
   assert.equal(all.length, 24);
   const decisions = new Set<string>();
   for (const input of all) {
-    const v = verifyReviewOutput({ findings: input }, pkg());
+    const v = vro({ findings: input }, pkg());
     assert.ok(v.ok && v.findings.some((f) => f.class === 'blocks_flow') && v.findings.some((f) => f.code === 'UNSUPPORTED_CANDIDATE'));
     const g = gate(await run(new FakeClient([ok(input)])), pkg());
     decisions.add(JSON.stringify(g));
@@ -593,7 +617,14 @@ test('reissueReview: збережену відповідь видає лише �
 test('модуль агента 2 не має доступу до бази, генератора, мережі, файлів і змінних середовища; імпортувати його можуть лише дозволені файли', () => {
   const code = readFileSync(join(ROOT, 'src', 'ai', 'bpmn-review.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   const imports = [...code.matchAll(/from\s+['"]([^'"]+)['"]/g)].map((m) => m[1]!);
-  for (const i of imports) assert.ok(!/db|domain|bpmn\/|anthropic|server|runs/.test(i), `заборонений імпорт ${i}`);
+  // Після D87 модуль перевіряє ще й таблицю процесу, тому імпортує ДВІ чисті перевірки:
+  // `src/csv/check.ts` (звірка таблиці з погодженим описом) і `src/bpmn/validate.ts` (чи пакет узагалі
+  // можна перенести в таблицю). Обидві — без бази, мережі, файлів і моделі; решта заборон лишається.
+  const allowedImports = new Set(['../csv/check.ts', '../bpmn/validate.ts']);
+  for (const i of imports) {
+    if (allowedImports.has(i)) continue;
+    assert.ok(!/db|domain|bpmn\/|anthropic|server|runs/.test(i), `заборонений імпорт ${i}`);
+  }
   for (const re of [/\bfetch\s*\(/, /process\.env/, /node:(fs|http|https|net|child_process)/, /\.run\(|\.exec\(|INSERT|UPDATE/]) assert.ok(!re.test(code), String(re));
   const walk = (d: string): string[] => readdirSync(d).flatMap((f) => (statSync(join(d, f)).isDirectory() ? walk(join(d, f)) : [join(d, f)]));
   // Від 3b-2 модуль підключено, але лише через явний перелік: клієнт Anthropic і серверне керування запуском (`src/review-runs.ts`).

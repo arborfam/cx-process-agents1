@@ -34,7 +34,16 @@ export interface Analysis {
   knownLimits: Finding[];
 }
 
-export function analyzePackage(pkg: ApprovedPackage): Analysis {
+export interface AnalyzeOptions {
+  /**
+   * Підпис початкової події, який реально піде на схему: погоджений короткий підпис (D88) або сам тригер.
+   * Перевіряється саме він — довгий тригер із погодженим коротким підписом побудову не зупиняє,
+   * а повний текст при цьому зберігається в деталях події (це перевіряє зворотна звірка файлів).
+   */
+  startLabel?: string;
+}
+
+export function analyzePackage(pkg: ApprovedPackage, opts: AnalyzeOptions = {}): Analysis {
   const blocking: Finding[] = [];
   const unsupported: Finding[] = [];
   const knownLimits: Finding[] = [];
@@ -55,7 +64,7 @@ export function analyzePackage(pkg: ApprovedPackage): Analysis {
   const steps = c.steps;
 
   // ── тексти ──
-  const checkLabel = (value: string, where: string, refs: string[], allowEmpty = true, max = MAX_LABEL_CHARS): void => {
+  const checkLabel = (value: string, where: string, refs: string[], allowEmpty = true, max = MAX_LABEL_CHARS, hint = ''): void => {
     const p = textProblem(value);
     if (p) bad('INVALID_TEXT', `${where} ${p}. Виправте текст у погодженому описі — схема переносить текст дослівно.`, refs);
     if (!allowEmpty && value.trim() === '') bad('EMPTY_TEXT', `${where} порожній.`, refs);
@@ -65,7 +74,7 @@ export function analyzePackage(pkg: ApprovedPackage): Analysis {
     if (value.length > max) {
       unsupported.push({
         code: 'LABEL_TOO_LONG', class: 'UNSUPPORTED', refs,
-        message: `${where} має ${value.length} символів (межа розбірливого підпису тут — ${max}). Підпис не буде скорочено: це обмеження генератора, а не помилка опису.`,
+        message: `${where} має ${value.length} символів (межа розбірливого підпису тут — ${max}). Підпис не буде скорочено: це обмеження подання, а не помилка опису.${hint}`,
       });
     }
   };
@@ -78,7 +87,14 @@ export function analyzePackage(pkg: ApprovedPackage): Analysis {
   }
   // Тригер — ЗОВНІШНІЙ підпис початкової події: генератор робить для нього окрему рамку з переносами (D86),
   // тому межа тут вища, ніж для підписів усередині фігур і заголовків.
-  checkLabel(c.boundaries.trigger, 'Тригер процесу (назва початкової події)', [], true, MAX_EVENT_LABEL_CHARS);
+  const startLabel = opts.startLabel ?? c.boundaries.trigger;
+  checkLabel(
+    startLabel,
+    startLabel === c.boundaries.trigger ? 'Тригер процесу (назва початкової події)' : 'Погоджений короткий підпис початкової події',
+    [], true, MAX_EVENT_LABEL_CHARS,
+    startLabel === c.boundaries.trigger
+      ? ' Вихід: погодити короткий підпис початкової події — повний текст лишиться в описі, у деталях події обох файлів і поряд зі схемою (D88).'
+      : '');
   if (c.boundaries.trigger.trim() === '') {
     knownLimits.push({ code: 'START_UNNAMED', class: 'K2', refs: [], message: 'Тригер процесу порожній: початкова подія на схемі буде без назви.' });
   }

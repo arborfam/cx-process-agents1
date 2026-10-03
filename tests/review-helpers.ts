@@ -9,6 +9,7 @@ import { loadBpmnInstruction } from '../src/ai/prompt.ts';
 import { ModelFailure, type ModelCallResult } from '../src/ai/types.ts';
 import type { BpmnReviewClient, BpmnReviewInput } from '../src/ai/bpmn-review.ts';
 import type { Reviewer } from '../src/review-runs.ts';
+import { scriptedCsv } from './csv-fixture.ts';
 
 export const FAKE_MODEL = 'ПІДСТАВНИЙ-КЛІЄНТ (тест, не модель)';
 
@@ -32,7 +33,15 @@ export class FakeReviewClient implements BpmnReviewClient {
 
 export const USAGE = { input_tokens: 3000, output_tokens: 800 };
 /** `usage = null` — відповідь без usage (вартість невідома). */
-export const okStep = (findings: unknown[] = [], usage: typeof USAGE | null = USAGE): Step => () => ({ output: { findings }, ...(usage ? { usage } : {}) });
+/**
+ * Успішна відповідь агента 2: знахідки + СЦЕНАРНА таблиця процесу (D87). Таблиця є завжди — вона лише
+ * переносить погоджений опис і знахідок не скасовує (побудову блокує шлюз, а не брак таблиці).
+ * `csv: null` — свідомо без таблиці (для перевірки відмови продукту).
+ */
+export const okStep = (findings: unknown[] = [], usage: typeof USAGE | null = USAGE, csv: string | null | undefined = undefined): Step => (input) => {
+  const table = csv === null ? undefined : csv ?? scriptedCsv(input.pkg.content, input.pkg.startLabel);
+  return { output: { findings, ...(table === undefined ? {} : { csv: table }) }, ...(usage ? { usage } : {}) };
+};
 export const failStep = (kind: ConstructorParameters<typeof ModelFailure>[0], usage?: typeof USAGE, billing: 'none' | 'unknown' = 'unknown'): Step => () => { throw new ModelFailure(kind, `збій ${kind}`, usage, billing); };
 
 /** `policy = null` — свідомо без політики (undefined дав би типову, бо це параметр за замовчуванням). */

@@ -10,9 +10,11 @@ import { copyFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync, exis
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { chromium } from 'playwright-core';
-import { generateBpmn } from '../src/bpmn/generate.ts';
+// Зразки будуються ПРОДУКТОВИМ шляхом (D87). Таблицю для них складає сценарна функція з tests/ —
+// у продукті її складає агент 2, і своєї таблиці програма не має (tests/no-csv-generator.test.ts).
+import { generateViaPipeline as generateBpmn } from '../tests/bpmn-helpers.ts';
 import { fixtureToPackage, type Fixture } from '../src/bpmn/fixture.ts';
-import type { GenerationResult } from '../src/bpmn/types.ts';
+import type { ApprovedPackage } from '../src/bpmn/types.ts';
 import { buildViewerHtml } from './lib/viewer.ts';
 
 const args = process.argv.slice(2);
@@ -23,7 +25,7 @@ const CHROMIUM = process.env.CHROMIUM_PATH ?? '/opt/pw-browsers/chromium-1194/ch
 
 const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-interface Row { fx: Fixture; result: GenerationResult; bpmnPng?: string; drawioPng?: string }
+interface Row { fx: Fixture; result: Awaited<ReturnType<typeof generateBpmn>>; bpmnPng?: string; drawioPng?: string }
 
 async function main(): Promise<void> {
   for (const sub of ['packages', 'schemes', 'results']) {

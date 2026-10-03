@@ -14,6 +14,7 @@
  */
 import { all, one, run, tx, type DB } from './db.ts';
 import { DomainError } from './errors.ts';
+import { startLabelState } from './start-label.ts';
 import {
   audit, bpmnGuard, currentApproval, getVersion, headVersion, listSources, requireHuman, verifyVersionIntegrity, versionContent,
   type Actor,
@@ -148,7 +149,9 @@ export function beginBpmnReview(db: DB, actor: Actor, caseId: string, reviewer?:
       const approval = currentApproval(db, caseId)!;
       const version = getVersion(db, approval.version_id);
       const content = versionContent(version);
-      const pkg: ReviewPackage = { versionId: version.id, contentHash: version.content_hash, content };
+      // Підпис початкової події бере програма з погодженого рішення (D88), а не агент.
+      const sl = startLabelState(db, caseId, version.id, version.content_hash, content.boundaries.trigger);
+      const pkg: ReviewPackage = { versionId: version.id, contentHash: version.content_hash, content, startLabel: sl.label, startDocumentation: sl.documentation };
       const instruction = reviewer?.instruction ?? loadBpmnInstruction();
       const startedAt = new Date().toISOString();
       const fp = contentFingerprint(content);
@@ -379,7 +382,12 @@ export function getCaseReview(db: DB, caseId: string, instruction: InstructionIn
   if (stale.length > 0) return { state: 'stale', ...base, reasons: stale };
 
   const version = getVersion(db, row.version_id);
-  const pkg: ReviewPackage = { versionId: version.id, contentHash: version.content_hash, content: versionContent(version) };
+  const contentNow = versionContent(version);
+  const slNow = startLabelState(db, caseId, version.id, version.content_hash, contentNow.boundaries.trigger);
+  const pkg: ReviewPackage = {
+    versionId: version.id, contentHash: version.content_hash, content: contentNow,
+    startLabel: slNow.label, startDocumentation: slNow.documentation,
+  };
 
   if (row.outcome === 'unsupported') {
     const reqs = confirmedRequirements(pkg.content);

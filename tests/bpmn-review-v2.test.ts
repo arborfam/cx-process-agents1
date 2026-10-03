@@ -34,7 +34,7 @@ async function reviewed(db: DB, steps: Step[] = [okStep([])]) {
 
 // ═════════ Дефект 1: повторна побудова після технічної помилки ═════════
 
-const BREAK_BPMN = { tamperBpmn: (xml: string) => xml.replace(/<bpmn:task /, '<bpmn:task name="ЗІПСОВАНО" ') };
+const BREAK_BPMN = { tamperBpmn: (xml: string) => xml.replace(/<bpmn:(userTask|task) /, "<bpmn:$1 name=\"ЗІПСОВАНО\" ") };
 const BREAK_DRAWIO = { tamperDrawio: (xml: string) => xml.replace(/endArrow=block/g, 'endArrow=none') };
 
 test('1. Після verification_failed повторна побудова виконується заново й дає чинну схему — без нового виклику моделі', async () => {

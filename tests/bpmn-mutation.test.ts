@@ -7,7 +7,8 @@ import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { verifyBpmn } from '../src/bpmn/verify.ts';
 import { readBpmn } from '../src/bpmn/read.ts';
-import { verifyDrawio } from '../src/bpmn/drawio.ts';
+import { verifyDrawioAgainstBpmn } from '../src/pipeline/verify-drawio.ts';
+import { readPipelineBpmn } from '../src/pipeline/verify.ts';
 import type { ApprovedPackage } from '../src/bpmn/types.ts';
 import { generateOk, mutate, pkgOf, replaceOnce } from './bpmn-helpers.ts';
 
@@ -18,7 +19,21 @@ const codesOf = (xml: string, pkg: ApprovedPackage): string[] => {
 
 /** Блок елемента (від відкриваючого тега до закриваючого або самозакритого) за тегом і ID. */
 const block = (tag: string, attrs: string): RegExp => new RegExp(`[ \\t]*<${tag} ${attrs}[^>]*?(?:/>|>[\\s\\S]*?</${tag}>)\\n?`);
+/** Текст першої лінії переходу у файлі — місце, куди тести вставляють зайві елементи. */
+const START_FLOW = (xml: string): string => `<bpmn:sequenceFlow id="${flowId(xml, 'StartEvent_1', 'Task_S1')}"`;
 const removeTask = (x: string, id: string): string => replaceOnce(x, block('bpmn:task', `id="${id}"`), '', `видалити ${id}`);
+/**
+ * ID лінії переходу в готовому файлі. Схему будує ланцюг скриптів (D87), і він дає лініям свої ID
+ * (`f<N>_<джерело>_<ціль>`), тому в тестах лінію шукаємо за джерелом і ціллю, а не за сталим ім'ям.
+ * `nth` — котра з кількох ліній між тією самою парою (для двох умов в одну ціль).
+ */
+const flowId = (xml: string, from: string, to: string, nth = 0): string => {
+  const all = [...xml.matchAll(new RegExp(`<bpmn:sequenceFlow id="([^"]+)"[^>]*sourceRef="${from}" targetRef="${to}"`, 'g'))].map((m) => m[1]!);
+  assert.ok(all.length > nth, `лінії ${from} → ${to} (№${nth + 1}) у файлі немає — тест некоректний`);
+  return all[nth]!;
+};
+/** ID лінії в .drawio збігається з ID у .bpmn (ту саму клітинку шукаємо за ним). */
+const drawioFlowCell = (xml: string, id: string): RegExp => new RegExp(`[ \\t]*<mxCell id="${id}"[^>]*>[\\s\\S]*?</mxCell>\\n?`);
 const removeFlow = (x: string, id: string): string => {
   let out = replaceOnce(x, new RegExp(`[ \\t]*<bpmn:sequenceFlow id="${id}"[^>]*/>\\n?`), '', `видалити ${id}`);
   out = out.replace(new RegExp(`[ \\t]*<bpmn:(incoming|outgoing)>${id}</bpmn:\\1>\\n?`, 'g'), '');
@@ -53,7 +68,7 @@ test('контроль: непошкоджені файли проходять �
 type Case = { name: string; expect: string[]; run: () => string };
 const CASES: Case[] = [
   // ── склад кроків ──
-  { name: 'доданий крок (зайва задача)', expect: ['TASK_EXTRA'], run: () => mutate(loop.xml, (x) => x.replace('<bpmn:sequenceFlow id="Flow_start"', '<bpmn:task id="Task_X" name="Повідомити керівника" />\n    <bpmn:sequenceFlow id="Flow_start"'), 'додати задачу') },
+  { name: 'доданий крок (зайва задача)', expect: ['TASK_EXTRA'], run: () => mutate(loop.xml, (x) => x.replace(START_FLOW(loop.xml), '<bpmn:task id="Task_X" name="Повідомити керівника" />\n    <bpmn:sequenceFlow id="Flow_start"'), 'додати задачу') },
   { name: 'втрачений крок', expect: ['TASK_MISSING'], run: () => removeTask(loop.xml, 'Task_S3') },
   { name: 'змінена дія', expect: ['TASK_NAME_MISMATCH'], run: () => mutate(loop.xml, (x) => x.replace('name="Готує проєкт повідомлення"', 'name="Готує проєкт листа"'), 'змінити дію') },
   { name: 'дія втратила частину тексту (як при мовчазній втраті лапок)', expect: ['TASK_NAME_MISMATCH'], run: () => mutate(loop.xml, (x) => x.replace('name="Готує проєкт повідомлення"', 'name=""'), 'порожня назва') },
@@ -68,20 +83,20 @@ const CASES: Case[] = [
     return replaceOnce(x, /(<bpmn:lane id="Lane_0"[^>]*>\n)/, '$1        <bpmn:flowNodeRef>Gateway_S2</bpmn:flowNodeRef>\n', 'шлюз у чужу');
   } },
   // ── переходи й цикли ──
-  { name: 'втрачений перехід', expect: ['TRANSITION_MISSING'], run: () => removeFlow(loop.xml, 'Flow_S3_1') },
-  { name: 'втрачене повернення (цикл S2 → S1)', expect: ['LOOP_LOST'], run: () => removeFlow(loop.xml, 'Flow_S2_2') },
+  { name: 'втрачений перехід', expect: ['TRANSITION_MISSING'], run: () => removeFlow(loop.xml, flowId(loop.xml, 'Gateway_S3', 'Task_S4')) },
+  { name: 'втрачене повернення (цикл S2 → S1)', expect: ['LOOP_LOST'], run: () => removeFlow(loop.xml, flowId(loop.xml, 'Gateway_S2', 'Task_S1')) },
   { name: 'зайвий перехід', expect: ['TRANSITION_EXTRA'], run: () => mutate(loop.xml, (x) => x
-    .replace('<bpmn:sequenceFlow id="Flow_start"', '<bpmn:sequenceFlow id="Flow_extra" sourceRef="Task_S4" targetRef="Task_S1" />\n    <bpmn:sequenceFlow id="Flow_start"')
+    .replace(START_FLOW(loop.xml), '<bpmn:sequenceFlow id="Flow_extra" sourceRef="Task_S4" targetRef="Task_S1" />\n    <bpmn:sequenceFlow id="Flow_start"')
     .replace(/(<bpmn:task id="Task_S4"[^>]*>\n)/, '$1      <bpmn:outgoing>Flow_extra</bpmn:outgoing>\n')
     .replace(/(<bpmn:task id="Task_S1"[^>]*>\n)/, '$1      <bpmn:incoming>Flow_extra</bpmn:incoming>\n'), 'додати перехід') },
   { name: 'неявне паралельне розгалуження (дві лінії з задачі без шлюзу)', expect: ['IMPLICIT_SPLIT'], run: () => mutate(loop.xml, (x) => x
-    .replace('<bpmn:sequenceFlow id="Flow_start"', '<bpmn:sequenceFlow id="Flow_par" sourceRef="Task_S1" targetRef="Task_S4" />\n    <bpmn:sequenceFlow id="Flow_start"')
+    .replace(START_FLOW(loop.xml), '<bpmn:sequenceFlow id="Flow_par" sourceRef="Task_S1" targetRef="Task_S4" />\n    <bpmn:sequenceFlow id="Flow_start"')
     .replace(/(<bpmn:task id="Task_S1"[^>]*>\n)/, '$1      <bpmn:outgoing>Flow_par</bpmn:outgoing>\n')
     .replace(/(<bpmn:task id="Task_S4"[^>]*>\n)/, '$1      <bpmn:incoming>Flow_par</bpmn:incoming>\n'), 'додати другу лінію') },
-  { name: 'глухий кут (втрачено вихід у кінець)', expect: ['NO_PATH_TO_END', 'TRANSITION_MISSING'], run: () => removeFlow(loop.xml, 'Flow_S4_1') },
-  { name: 'початок веде не в початковий крок', expect: ['START_WRONG_ENTRY'], run: () => mutate(loop.xml, (x) => x.replace('id="Flow_start" sourceRef="StartEvent_1" targetRef="Task_S1"', 'id="Flow_start" sourceRef="StartEvent_1" targetRef="Task_S2"'), 'змінити початок') },
+  { name: 'глухий кут (втрачено вихід у кінець)', expect: ['NO_PATH_TO_END', 'TRANSITION_MISSING'], run: () => removeFlow(loop.xml, flowId(loop.xml, 'Task_S4', 'End_S4_1')) },
+  { name: 'початок веде не в початковий крок', expect: ['START_WRONG_ENTRY'], run: () => mutate(loop.xml, (x) => x.replace(`sourceRef="StartEvent_1" targetRef="Task_S1"`, `sourceRef="StartEvent_1" targetRef="Task_S2"`), 'змінити початок') },
   { name: 'назва початкової події змінена', expect: ['START_NAME_MISMATCH'], run: () => mutate(loop.xml, (x) => x.replace('name="Потрібно повідомити клієнтів про зміну тарифів"', 'name="Інший тригер"'), 'змінити тригер') },
-  { name: 'друга початкова подія', expect: ['START_COUNT'], run: () => mutate(loop.xml, (x) => x.replace('<bpmn:sequenceFlow id="Flow_start"', '<bpmn:startEvent id="Start_2" />\n    <bpmn:sequenceFlow id="Flow_start"'), 'друга початкова') },
+  { name: 'друга початкова подія', expect: ['START_COUNT'], run: () => mutate(loop.xml, (x) => x.replace(START_FLOW(loop.xml), '<bpmn:startEvent id="Start_2" />\n    <bpmn:sequenceFlow id="Flow_start"'), 'друга початкова') },
   // ── ролі ──
   { name: 'зайва доріжка (нова роль «Система»)', expect: ['LANE_EXTRA'], run: () => mutate(loop.xml, (x) => x.replace('</bpmn:laneSet>', '  <bpmn:lane id="Lane_9" name="Система" />\n    </bpmn:laneSet>'), 'додати доріжку') },
   { name: 'доріжку перейменовано', expect: ['LANE_MISSING', 'LANE_EXTRA'], run: () => mutate(loop.xml, (x) => x.replace('name="Юрист"', 'name="Юрисконсульт"'), 'перейменувати роль') },
@@ -89,11 +104,11 @@ const CASES: Case[] = [
   { name: 'назву пулу змінено', expect: ['POOL_NAME_MISMATCH'], run: () => mutate(loop.xml, (x) => x.replace('name="Підготовка повідомлення про зміну тарифів"', 'name="Інший процес"'), 'змінити пул') },
   // ── зайва нотація ──
   { name: 'зайвий таймер усередині кінцевої події', expect: ['UNSUPPORTED_ELEMENT'], run: () => mutate(loop.xml, (x) => x.replace(/(<bpmn:endEvent id="End_S4_1"[^>]*>\n)/, '$1      <bpmn:timerEventDefinition id="T1" />\n'), 'таймер') },
-  { name: 'зайвий проміжний таймер як окрема подія', expect: ['UNSUPPORTED_ELEMENT'], run: () => mutate(loop.xml, (x) => x.replace('<bpmn:sequenceFlow id="Flow_start"', '<bpmn:intermediateCatchEvent id="Timer_1" name="1 день"><bpmn:timerEventDefinition id="T2" /></bpmn:intermediateCatchEvent>\n    <bpmn:sequenceFlow id="Flow_start"'), 'проміжний таймер') },
+  { name: 'зайвий проміжний таймер як окрема подія', expect: ['UNSUPPORTED_ELEMENT'], run: () => mutate(loop.xml, (x) => x.replace(START_FLOW(loop.xml), '<bpmn:intermediateCatchEvent id="Timer_1" name="1 день"><bpmn:timerEventDefinition id="T2" /></bpmn:intermediateCatchEvent>\n    <bpmn:sequenceFlow id="Flow_start"'), 'проміжний таймер') },
   { name: 'ексклюзивний шлюз замінено на паралельний', expect: ['UNSUPPORTED_ELEMENT'], run: () => mutate(loop.xml, (x) => x.replace('<bpmn:exclusiveGateway id="Gateway_S2"', '<bpmn:parallelGateway id="Gateway_S2"').replace(/(<bpmn:parallelGateway id="Gateway_S2"[\s\S]*?)<\/bpmn:exclusiveGateway>/, '$1</bpmn:parallelGateway>'), 'паралельний') },
   { name: 'задачу замінено на userTask (іконка «людина», якої немає в описі)', expect: ['UNSUPPORTED_ELEMENT', 'TASK_MISSING'], run: () => mutate(loop.xml, (x) => x.replace('<bpmn:task id="Task_S1"', '<bpmn:userTask id="Task_S1"').replace(/(<bpmn:userTask id="Task_S1"[\s\S]*?)<\/bpmn:task>/, '$1</bpmn:userTask>'), 'userTask') },
-  { name: 'додано текстову примітку', expect: ['UNSUPPORTED_ELEMENT'], run: () => mutate(loop.xml, (x) => x.replace('<bpmn:sequenceFlow id="Flow_start"', '<bpmn:textAnnotation id="Ann_1"><bpmn:text>примітка</bpmn:text></bpmn:textAnnotation>\n    <bpmn:sequenceFlow id="Flow_start"'), 'примітка') },
-  { name: 'додано підпроцес', expect: ['UNSUPPORTED_ELEMENT'], run: () => mutate(loop.xml, (x) => x.replace('<bpmn:sequenceFlow id="Flow_start"', '<bpmn:subProcess id="Sub_1" name="Підпроцес" />\n    <bpmn:sequenceFlow id="Flow_start"'), 'підпроцес') },
+  { name: 'додано текстову примітку', expect: ['UNSUPPORTED_ELEMENT'], run: () => mutate(loop.xml, (x) => x.replace(START_FLOW(loop.xml), '<bpmn:textAnnotation id="Ann_1"><bpmn:text>примітка</bpmn:text></bpmn:textAnnotation>\n    <bpmn:sequenceFlow id="Flow_start"'), 'примітка') },
+  { name: 'додано підпроцес', expect: ['UNSUPPORTED_ELEMENT'], run: () => mutate(loop.xml, (x) => x.replace(START_FLOW(loop.xml), '<bpmn:subProcess id="Sub_1" name="Підпроцес" />\n    <bpmn:sequenceFlow id="Flow_start"'), 'підпроцес') },
   { name: 'додано другий учасник (пул)', expect: ['STRUCTURE'], run: () => mutate(loop.xml, (x) => x.replace('</bpmn:collaboration>', '  <bpmn:participant id="Participant_2" name="Інший" processRef="Process_1" />\n  </bpmn:collaboration>'), 'другий пул') },
   { name: 'документація з текстом на технічному елементі', expect: ['UNSUPPORTED_ELEMENT'], run: () => mutate(loop.xml, (x) => x.replace(/(<bpmn:exclusiveGateway id="Gateway_S2"[^>]*>\n)/, '$1      <bpmn:documentation>вважається завершеним через 5 днів</bpmn:documentation>\n'), 'документація') },
   { name: 'назва на шлюзі (технічний елемент із власним текстом)', expect: ['GATEWAY_NAMED'], run: () => mutate(loop.xml, (x) => x.replace('<bpmn:exclusiveGateway id="Gateway_S2"', '<bpmn:exclusiveGateway id="Gateway_S2" name="Перевірка"'), 'назва шлюзу') },
@@ -118,7 +133,7 @@ const CASES: Case[] = [
   // ── геометрія ──
   { name: 'відсутня геометрія задачі', expect: ['GEOMETRY_MISSING'], run: () => removeShape(loop.xml, 'Task_S2') },
   { name: 'відсутня геометрія кінцевої події', expect: ['GEOMETRY_MISSING'], run: () => removeShape(loop.xml, 'End_S4_1') },
-  { name: 'відсутня лінія переходу', expect: ['GEOMETRY_MISSING'], run: () => removeEdge(loop.xml, 'Flow_S2_1') },
+  { name: 'відсутня лінія переходу', expect: ['GEOMETRY_MISSING'], run: () => removeEdge(loop.xml, flowId(loop.xml, 'Gateway_S2', 'Task_S3')) },
   { name: 'відсутня геометрія доріжки', expect: ['GEOMETRY_MISSING'], run: () => removeShape(loop.xml, 'Lane_1') },
   { name: 'відсутня геометрія пулу', expect: ['GEOMETRY_MISSING'], run: () => removeShape(loop.xml, 'Participant_1') },
   { name: 'нульовий розмір блока', expect: ['GEOMETRY_INVALID'], run: () => mutate(loop.xml, (x) => x.replace(/(bpmnElement="Task_S1">\s*<dc:Bounds x="[\d.]+" y="[\d.]+" width=")[\d.]+(")/, '$10$2'), 'нульова ширина') },
@@ -130,9 +145,9 @@ const CASES: Case[] = [
   { name: 'блок поза своєю доріжкою', expect: ['SHAPE_OUTSIDE_LANE'], run: () => mutate(loop.xml, (x) => x.replace(/(bpmnElement="Task_S1">\s*<dc:Bounds x="[\d.]+" y=")[\d.]+(")/, '$19000$2'), 'винести') },
   { name: 'доріжка поза пулом', expect: ['LANE_OUTSIDE_POOL'], run: () => mutate(loop.xml, (x) => x.replace(/(bpmnElement="Lane_1"[^>]*>\s*<dc:Bounds x=")[\d.]+(")/, '$1-500$2'), 'винести доріжку') },
   { name: 'назва не вміщується в блок (обрізана)', expect: ['LABEL_TRUNCATED'], run: () => mutate(loop.xml, (x) => x.replace(/(bpmnElement="Task_S3">\s*<dc:Bounds x="[\d.]+" y="[\d.]+" width=")[\d.]+(" height=")[\d.]+(")/, '$130$220$3'), 'стиснути') },
-  { name: 'стрілка відірвана від блока', expect: ['EDGE_DETACHED'], run: () => mutate(loop.xml, (x) => x.replace(/(bpmnElement="Flow_start">\s*<di:waypoint x=")[\d.]+(")/, '$1999$2'), 'відірвати') },
-  { name: 'стрілка вироджена (нульова довжина)', expect: ['EDGE_TOO_SHORT'], run: () => mutate(loop.xml, (x) => x.replace(/(bpmnElement="Flow_start">\s*<di:waypoint x="([\d.]+)" y="([\d.]+)" \/>\s*<di:waypoint x=")[\d.]+(" y=")[\d.]+(")/, '$1$2$4$3$5'), 'нульова довжина') },
-  { name: 'лінія з однією точкою', expect: ['GEOMETRY_INVALID'], run: () => mutate(loop.xml, (x) => x.replace(/(bpmnElement="Flow_start">\s*<di:waypoint [^>]*\/>)\s*<di:waypoint [^>]*\/>/, '$1'), 'одна точка') },
+  { name: 'стрілка відірвана від блока', expect: ['EDGE_DETACHED'], run: () => mutate(loop.xml, (x) => x.replace(new RegExp(`(bpmnElement="${flowId(loop.xml, 'StartEvent_1', 'Task_S1')}">\\s*<di:waypoint x=")[\\d.]+(")`), '$1999$2'), 'відірвати') },
+  { name: 'стрілка вироджена (нульова довжина)', expect: ['EDGE_TOO_SHORT'], run: () => mutate(loop.xml, (x) => x.replace(new RegExp(`(bpmnElement="${flowId(loop.xml, 'StartEvent_1', 'Task_S1')}">\\s*<di:waypoint x="([\\d.]+)" y="([\\d.]+)" />\\s*<di:waypoint x=")[\\d.]+(" y=")[\\d.]+(")`), '$1$2$4$3$5'), 'нульова довжина') },
+  { name: 'лінія з однією точкою', expect: ['GEOMETRY_INVALID'], run: () => mutate(loop.xml, (x) => x.replace(new RegExp(`(bpmnElement="${flowId(loop.xml, 'StartEvent_1', 'Task_S1')}">\\s*<di:waypoint [^>]*/>)\\s*<di:waypoint [^>]*/>`), '$1'), 'одна точка') },
   { name: 'геометрія посилається на неіснуючий елемент', expect: ['DI_DANGLING'], run: () => mutate(loop.xml, (x) => x.replace('bpmnElement="Task_S4"', 'bpmnElement="Task_S44"'), 'висяча') },
   { name: 'дві фігури для одного елемента', expect: ['DI_DUPLICATE'], run: () => mutate(loop.xml, (x) => x.replace(/(<bpmndi:BPMNShape id="BPMNShape_Task_S4" bpmnElement="Task_S4">\s*<dc:Bounds [^>]*\/>)/, '$1\n<dc:Bounds x="1" y="1" width="100" height="80" />'), 'дубль фігури') },
   { name: 'нерозпізнана нотація в геометрії', expect: ['UNSUPPORTED_ELEMENT'], run: () => mutate(loop.xml, (x) => x.replace('</bpmndi:BPMNPlane>', '<bpmndi:BPMNShape id="Extra" bpmnElement="Ann_1"><dc:Bounds x="0" y="0" width="10" height="10" /><foo:bar xmlns:foo="urn:foo" /></bpmndi:BPMNShape></bpmndi:BPMNPlane>'), 'сторонній елемент у DI') },
@@ -153,7 +168,7 @@ test('пошкодження виявляється: лінії, що повні
   void edge;
   // у пакеті p06 дві лінії S2→S3 розведено; зробимо їх однаковими
   const get = (id: string): string => new RegExp(`bpmnElement="${id}">((?:\\s*<di:waypoint [^>]*/>)+)`).exec(same.xml)![1]!;
-  const a = get('Flow_S2_1'), b = get('Flow_S2_2');
+  const a = get(flowId(same.xml, 'Gateway_S2', 'Task_S3', 0)), b = get(flowId(same.xml, 'Gateway_S2', 'Task_S3', 1));
   assert.notEqual(a, b, 'контроль: у справжньому файлі лінії розведено');
   const xml = mutate(same.xml, (x) => x.replace(b, a), 'зробити лінії однаковими');
   assert.ok(codesOf(xml, same.pkg).includes('EDGE_HIDDEN'));
@@ -201,7 +216,7 @@ test('читач не залежить від генератора: розбир
 
 const dioCases: { name: string; expect: string[]; base: 'branch' | 'same'; run: (x: string) => string }[] = [
   { name: 'втрачена задача (крок)', expect: ['DRAWIO_CELL_MISSING', 'DRAWIO_STEP_MISSING'], base: 'branch', run: (x) => replaceOnce(x, /[ \t]*<mxCell id="Task_S3"[^>]*>[\s\S]*?<\/mxCell>\n?/, '', 'видалити задачу') },
-  { name: 'втрачена стрілка', expect: ['DRAWIO_CELL_MISSING', 'DRAWIO_EDGE_COUNT', 'DRAWIO_TRANSITION_MISSING'], base: 'branch', run: (x) => replaceOnce(x, /[ \t]*<mxCell id="Flow_S1_1"[^>]*>[\s\S]*?<\/mxCell>\n?/, '', 'видалити стрілку') },
+  { name: 'втрачена стрілка', expect: ['DRAWIO_CELL_MISSING', 'DRAWIO_EDGE_COUNT', 'DRAWIO_TRANSITION_MISSING'], base: 'branch', run: (x) => replaceOnce(x, drawioFlowCell(x, flowId(branch.xml, 'Task_S1', 'Task_S2')), '', 'видалити стрілку') },
   { name: 'змінена дія', expect: ['DRAWIO_LABEL_MISMATCH'], base: 'branch', run: (x) => x.replace('value="Повідомляє клієнта про відмову та її причини"', 'value="Інша дія"') },
   { name: 'змінена умова на стрілці', expect: ['DRAWIO_LABEL_MISMATCH', 'DRAWIO_TRANSITION_MISSING', 'DRAWIO_TRANSITION_EXTRA'], base: 'branch', run: (x) => x.replace('value="підстав недостатньо"', 'value="ні"') },
   { name: 'неправильна доріжка', expect: ['DRAWIO_WRONG_LANE'], base: 'branch', run: (x) => x.replace(/(<mxCell id="Task_S3"[^>]*parent=")Lane_1(")/, '$1Lane_0$2') },
@@ -212,13 +227,13 @@ const dioCases: { name: string; expect: string[]; base: 'branch' | 'same'; run: 
   { name: 'зайва нотація: маркер «людина» на задачі', expect: ['DRAWIO_UNSUPPORTED_STYLE'], base: 'branch', run: (x) => x.replace(/(<mxCell id="Task_S3"[^>]*style="[^"]*)taskMarker=abstract/, '$1taskMarker=user') },
   { name: 'зайва нотація: паралельний шлюз', expect: ['DRAWIO_UNSUPPORTED_STYLE'], base: 'branch', run: (x) => x.replace(/(<mxCell id="Gateway_S2"[^>]*style="[^"]*)gwType=exclusive/, '$1gwType=parallel') },
   { name: 'зайва нотація: таймер у початковій події', expect: ['DRAWIO_UNSUPPORTED_STYLE'], base: 'branch', run: (x) => x.replace(/(<mxCell id="StartEvent_1"[^>]*style="[^"]*)symbol=general/, '$1symbol=timer') },
-  { name: 'стрілку перенаправлено на іншу ціль', expect: ['DRAWIO_EDGE_MISMATCH', 'DRAWIO_TRANSITION_MISSING', 'DRAWIO_TRANSITION_EXTRA'], base: 'branch', run: (x) => x.replace(/(<mxCell id="Flow_S1_1"[^>]*target=")Task_S2(")/, '$1Task_S4$2') },
-  { name: 'стрілка без джерела', expect: ['DRAWIO_EDGE_DETACHED'], base: 'branch', run: (x) => x.replace(/(<mxCell id="Flow_S1_1"[^>]*) source="[^"]*"/, '$1') },
+  { name: 'стрілку перенаправлено на іншу ціль', expect: ['DRAWIO_EDGE_MISMATCH', 'DRAWIO_TRANSITION_MISSING', 'DRAWIO_TRANSITION_EXTRA'], base: 'branch', run: (x) => x.replace(new RegExp(`(<mxCell id="${flowId(branch.xml, 'Task_S1', 'Task_S2')}"[^>]*target=")Task_S2(")`), '$1Task_S4$2') },
+  { name: 'стрілка без джерела', expect: ['DRAWIO_EDGE_DETACHED'], base: 'branch', run: (x) => x.replace(new RegExp(`(<mxCell id="${flowId(branch.xml, 'Task_S1', 'Task_S2')}"[^>]*) source="[^"]*"`), '$1') },
   { name: 'прив’язку до версії видалено', expect: ['DRAWIO_BINDING_MISMATCH'], base: 'branch', run: (x) => x.replace(/ cx_version_id="[^"]*"/, '') },
   { name: 'інший хеш версії', expect: ['DRAWIO_BINDING_MISMATCH'], base: 'branch', run: (x) => x.replace(/cx_content_hash="[0-9a-f]{64}"/, `cx_content_hash="${'1'.repeat(64)}"`) },
   { name: 'зіпсований XML', expect: ['DRAWIO_XML_MALFORMED'], base: 'branch', run: (x) => x.replace('value="Оператор"', 'value="Оператор" value="Інший"') },
   { name: 'стиснена діаграма (вміст перевірити не можна)', expect: ['DRAWIO_STRUCTURE'], base: 'branch', run: (x) => x.replace(/<mxGraphModel[\s\S]*<\/mxGraphModel>/, 'eJzLSM3JyQcABiwCFQ==') },
-  { name: 'оригінальний дефект: на одну стрілку менше при двох умовах в одну ціль', expect: ['DRAWIO_CELL_MISSING', 'DRAWIO_EDGE_COUNT', 'DRAWIO_TRANSITION_MISSING'], base: 'same', run: (x) => replaceOnce(x, /[ \t]*<mxCell id="Flow_S2_2"[^>]*>[\s\S]*?<\/mxCell>\n?/, '', 'видалити одну з двох стрілок') },
+  { name: 'оригінальний дефект: на одну стрілку менше при двох умовах в одну ціль', expect: ['DRAWIO_CELL_MISSING', 'DRAWIO_EDGE_COUNT', 'DRAWIO_TRANSITION_MISSING'], base: 'same', run: (x) => replaceOnce(x, drawioFlowCell(x, flowId(same.xml, 'Gateway_S2', 'Task_S3', 1)), '', 'видалити одну з двох стрілок') },
   { name: 'підпис однієї з двох умов в одну ціль втрачено', expect: ['DRAWIO_LABEL_MISMATCH', 'DRAWIO_TRANSITION_MISSING'], base: 'same', run: (x) => x.replace('value="погоджено умовно"', 'value=""') },
 ];
 
@@ -226,8 +241,8 @@ for (const c of dioCases) {
   test(`.drawio: пошкодження виявляється: ${c.name}`, () => {
     const b = c.base === 'branch' ? branch : same;
     const xml = mutate(b.drawio, c.run, c.name);
-    const model = readBpmn(b.xml).model!;
-    const issues = verifyDrawio(xml, b.pkg, model);
+    const model = readPipelineBpmn(b.xml).model!;
+    const issues = verifyDrawioAgainstBpmn(xml, model, null, { versionId: b.pkg.versionId, contentHash: b.pkg.contentHash });
     const codes = issues.map((i) => i.code);
     for (const e of c.expect) assert.ok(codes.includes(e), `очікувався ${e}; отримано: ${codes.join(', ') || '(чисто!)'}`);
     assert.ok(issues.some((i) => i.severity === 'error'));
@@ -235,13 +250,15 @@ for (const c of dioCases) {
 }
 
 test('.drawio: контроль — непошкоджений експорт проходить власну звірку без жодного зауваження', () => {
-  for (const b of [branch, same]) assert.deepEqual(verifyDrawio(b.drawio, b.pkg, readBpmn(b.xml).model!), []);
+  for (const b of [branch, same]) {
+    assert.deepEqual(verifyDrawioAgainstBpmn(b.drawio, readPipelineBpmn(b.xml).model!, null, { versionId: b.pkg.versionId, contentHash: b.pkg.contentHash }), []);
+  }
 });
 
 // ───────────────────────── гарантія: пошкоджений результат не видається ─────────────────────────
 
 test('якщо готовий .bpmn пошкоджено до видачі — статус verification_failed, файлу немає', async () => {
-  const { generateBpmn } = await import('../src/bpmn/generate.ts');
+  const { generateViaPipeline: generateBpmn } = await import('./bpmn-helpers.ts');
   for (const [name, tamper] of [
     ['втрачено крок', (x: string) => removeTask(x, 'Task_S3')],
     ['змінено умову', (x: string) => x.replace('name="текст затверджено"', 'name="так"')],
@@ -259,8 +276,8 @@ test('якщо готовий .bpmn пошкоджено до видачі — �
 });
 
 test('якщо пошкоджено лише експорт .drawio — .bpmn лишається чинним, а експорт позначено невдалим і не видається', async () => {
-  const { generateBpmn } = await import('../src/bpmn/generate.ts');
-  const r = await generateBpmn(loop.pkg, { tamperDrawio: (x) => mutate(x, (s) => s.replace(/[ \t]*<mxCell id="Flow_S1_1"[^>]*>[\s\S]*?<\/mxCell>\n?/, ''), 'видалити стрілку') });
+  const { generateViaPipeline: generateBpmn } = await import('./bpmn-helpers.ts');
+  const r = await generateBpmn(loop.pkg, { tamperDrawio: (x) => mutate(x, (s) => s.replace(drawioFlowCell(s, flowId(loop.xml, 'Task_S1', 'Task_S2')), ''), 'видалити стрілку') });
   assert.equal(r.status, 'ok');
   if (r.status !== 'ok') return;
   assert.equal(r.verification.ok, true);

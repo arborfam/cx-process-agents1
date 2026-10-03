@@ -1,9 +1,15 @@
 /**
- * Побудова, збереження й видача схеми — підкроки 3b-4, 3b-6, 3b-7.
+ * Побудова, збереження й видача схеми — підкроки 3b-4, 3b-6, 3b-7; архітектура CSV-пайплайна з D87.
  *
- * ЦЕ ЄДИНИЙ МОДУЛЬ ПОЗА `src/bpmn/`, ЯКОМУ ДОЗВОЛЕНО ІМПОРТУВАТИ ГЕНЕРАТОР.
- * Інваріант охороняє `tests/bpmn-isolation.test.ts`: сервер, доменний шар і запуски генератор не імпортують, а цей
- * модуль обов'язково викликає `generationGate` перед `generateBpmn`. Іншої гілки до генератора в продукті немає.
+ * ШЛЯХ ПОБУДОВИ ОДИН: погоджений AS-IS → таблиця CSV від агента 2 → програмна перевірка таблиці проти
+ * погодженого опису → скрипти пайплайна (`pipeline/`) → зворотна перевірка обох файлів → збереження.
+ * Свого генератора схем тут немає й бути не може: програма таблицю лише перевіряє (тест `no-csv-generator`).
+ * Якщо збереженої таблиці немає (перевірка виконана за старим контрактом), побудова чесно зупиняється —
+ * «запасного» шляху, який намалював би схему без агента, не існує.
+ *
+ * ЦЕ ЄДИНИЙ МОДУЛЬ ПОЗА `src/bpmn/` І `src/pipeline/`, ЯКОМУ ДОЗВОЛЕНО ЗАПУСКАТИ ПОБУДОВУ.
+ * Інваріант охороняє `tests/bpmn-isolation.test.ts`: сервер, доменний шар і запуски побудову не імпортують, а цей
+ * модуль обов'язково викликає `generationGate` перед запуском скриптів.
  *
  * Що перевіряється ПЕРЕД побудовою (і ще раз у транзакції перед збереженням):
  *  1. серверний дозвіл `bpmnGuard` (стан кейсу, чинне погодження, найновіша версія, хеш, джерела, критичні питання,
@@ -21,10 +27,21 @@ import { findingKey } from './ai/bpmn-review.ts';
 import { getCaseReview, staleReasons, type CaseReview } from './review-runs.ts';
 import type { InstructionInfo } from './ai/types.ts';
 import { packageFromApproval } from './bpmn/approved.ts';
-import { generateBpmn, type GenerateFaultInjection } from './bpmn/generate.ts';
-import { analyzePackage } from './bpmn/validate.ts';
-import { GENERATOR_NAME } from './bpmn/ids.ts';
+import { analyzePackage, unsupportedExplanation } from './bpmn/validate.ts';
 import type { ApprovedPackage, Finding, Issue, StepMapRow } from './bpmn/types.ts';
+import { START_ID, checkCsv, type CsvPlan } from './csv/check.ts';
+import { runPipeline, type PipelineLogStep } from './pipeline/run.ts';
+import { GENERATOR_NAME, pipelineVersion } from './pipeline/scripts.ts';
+import { verifyBpmnAgainstPackage } from './pipeline/verify.ts';
+import { verifyBpmn } from './bpmn/verify.ts';
+import { verifyDrawioAgainstBpmn } from './pipeline/verify-drawio.ts';
+import { startLabelState, type StartLabelState } from './start-label.ts';
+
+/** Шов для тестів: пошкодження готового файлу перед його зворотною перевіркою (доводить, що пошкоджений файл не видається). */
+export interface GenerateFaultInjection {
+  tamperBpmn?: (xml: string) => string;
+  tamperDrawio?: (xml: string) => string;
+}
 
 const newId = (prefix: string): string => `${prefix}_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
 
@@ -48,6 +65,16 @@ export interface ArtifactDetail {
   drawioIssues?: Issue[];
   layoutWarnings?: string[];
   verificationWarnings?: Issue[];
+  /** Прийнята таблиця агента 2, якою побудовано ці файли (D87): повторна технічна побудова бере саме її. */
+  csv?: string;
+  csv_sha256?: string;
+  /** Версія скриптів пайплайна й хеші кожного кроку — видно, чим саме побудовано файл. */
+  pipeline_version?: string;
+  pipeline_scripts?: Record<string, string>;
+  pipeline_log?: PipelineLogStep[];
+  /** Повний текст тригера, якщо на схемі стоїть погоджений короткий підпис (D88). */
+  start_label?: string;
+  start_full_trigger?: string;
 }
 
 const FIELDS = ['id', 'case_id', 'review_id', 'run_id', 'approval_id', 'version_id', 'content_hash', 'process_name', 'status',
@@ -170,15 +197,40 @@ export function readArtifactFile(db: DB, caseId: string, kind: 'bpmn' | 'drawio'
   return { xml, filename: `${v.row.case_id}-v${(() => { try { return getVersion(db, v.row.version_id).number; } catch { return 0; } })()}.${kind === 'bpmn' ? 'bpmn' : 'drawio'}`, sha256: hash };
 }
 
+/**
+ * Віддача ТАБЛИЦІ, якою побудовано схему. Та сама межа, що й для файлів: запис має бути цілим і чинним.
+ * Таблиця віддається й тоді, коли побудова не завершилась успішно: вона потрібна, щоб зрозуміти чому.
+ */
+export function readArtifactCsv(db: DB, caseId: string, artifactId?: string): { csv: string; filename: string; sha256: string } {
+  const v = artifactId ? getArtifactById(db, caseId, artifactId) : getCaseArtifact(db, caseId);
+  if (!v) throw new DomainError('NOT_FOUND', 'Для цього кейсу схему ще не будували.', 404);
+  if (!v.trusted) throw new DomainError('ARTIFACT_UNTRUSTED', `Запис схеми не цілий, таблиця не видається: ${v.untrustedReasons.join(' ')}`, 409);
+  const csv = v.detail.csv;
+  if (!csv) throw new DomainError('FILE_NOT_AVAILABLE', 'У цьому записі таблиці немає (його створено до переходу на побудову з таблиці).', 409);
+  const n = (() => { try { return getVersion(db, v.row.version_id).number; } catch { return 0; } })();
+  return { csv, filename: `${caseId}-v${n}.csv`, sha256: sha256(csv) };
+}
+
 // ───────────────────────── побудова ─────────────────────────
 
-export interface BuildReady {
+/** Усе, що потрібно для побудови: пакет, погоджений підпис події, прийнята таблиця та її розбір. */
+export interface PipelineBuildInput {
+  pkg: ApprovedPackage;
+  /** Підпис початкової події, погоджений людиною (D88), або сам тригер. */
+  startLabel: Pick<StartLabelState, 'label'>;
+  /** Прийнята таблиця агента 2 дослівно. */
+  csv: string;
+  /** Розбір таблиці після звірки з погодженим описом. */
+  plan: CsvPlan;
+}
+
+export interface BuildReady extends PipelineBuildInput {
   ok: true;
   review: CaseReview;
-  pkg: ApprovedPackage;
   reviewId: string;
   runId: string;
   approvalId: string;
+  startLabel: StartLabelState;
 }
 export type BuildBlocked = { ok: false; code: string; message: string; reasons?: string[] };
 
@@ -214,7 +266,31 @@ export function buildPreflight(db: DB, caseId: string, instruction?: Instruction
   if (pkg.versionId !== version.id || pkg.contentHash !== version.content_hash) {
     return { ok: false, code: 'STALE', message: 'Пакет не збігається з погодженою версією: побудова скасована.' };
   }
-  return { ok: true, review, pkg, reviewId: review.reviewId!, runId: review.runId!, approvalId: approval.id };
+
+  // Підпис початкової події: або сам тригер, або ПОГОДЖЕНИЙ людиною короткий підпис (D88). Мовчки не скорочуємо.
+  const startLabel = startLabelState(db, caseId, version.id, version.content_hash, pkg.content.boundaries.trigger);
+  if (startLabel.needsDecision) {
+    return { ok: false, code: 'START_LABEL_REQUIRED', message: startLabel.message! };
+  }
+
+  // Таблиця CSV — із прийнятої відповіді агента 2. Своєї таблиці програма не складає (D87).
+  const response = (review.review?.response ?? null) as { csv?: unknown } | null;
+  const csv = typeof response?.csv === 'string' ? response.csv : null;
+  if (csv === null) {
+    return {
+      ok: false, code: 'CSV_MISSING',
+      message: 'У збереженій смисловій перевірці немає таблиці процесу (CSV). Схему будують лише з таблиці агента 2 за чинним контрактом; старий результат, отриманий до цього контракту, як таблицю не використовується й не добудовується програмою. Потрібна нова смислова перевірка за чинною інструкцією.',
+    };
+  }
+  const check = checkCsv(csv, pkg, { startLabel: startLabel.label, startDocumentation: startLabel.documentation });
+  if (!check.ok) {
+    return {
+      ok: false, code: 'CSV_INVALID',
+      message: 'Таблиця агента 2 не описує погоджений процес: побудову зупинено, таблицю програма не виправляє.',
+      reasons: check.issues.map((i) => `${i.code}: ${i.message}`),
+    };
+  }
+  return { ok: true, review, pkg, reviewId: review.reviewId!, runId: review.runId!, approvalId: approval.id, startLabel, csv, plan: check.plan };
 }
 
 /**
@@ -234,11 +310,13 @@ export interface TechnicalLimits {
   blocking: Finding[];
   /** Відомі обмеження, які побудову не зупиняють (показуються як застереження). */
   known_limits: Finding[];
+  /** Стан підпису початкової події: чи потрібне окреме рішення про короткий підпис (D88). */
+  start_label: { label: string; needs_decision: boolean; message: string | null; trigger_chars: number } | null;
 }
 
 export function technicalLimits(db: DB, caseId: string): TechnicalLimits {
   getCase(db, caseId);
-  const none = (reason: string): TechnicalLimits => ({ available: false, reason, unsupported: [], blocking: [], known_limits: [] });
+  const none = (reason: string): TechnicalLimits => ({ available: false, reason, unsupported: [], blocking: [], known_limits: [], start_label: null });
   const g = bpmnGuard(db, caseId, { ignoreActiveRun: true });
   if (!g.ok) return none(`Серверний дозвіл на побудову ще не надано: ${g.reasons.map((r) => r.message).join(' ')}`);
   let pkg: ApprovedPackage;
@@ -247,8 +325,83 @@ export function technicalLimits(db: DB, caseId: string): TechnicalLimits {
   } catch (e) {
     return none(e instanceof Error ? e.message : 'Пакет не вдалося зібрати.');
   }
-  const a = analyzePackage(pkg);
-  return { available: true, reason: null, unsupported: a.unsupported, blocking: a.blocking, known_limits: a.knownLimits };
+  const sl = startLabelState(db, caseId, pkg.versionId, pkg.contentHash, pkg.content.boundaries.trigger);
+  const a = analyzePackage(pkg, { startLabel: sl.label });
+  return {
+    available: true, reason: null, unsupported: a.unsupported, blocking: a.blocking, known_limits: a.knownLimits,
+    start_label: { label: sl.label, needs_decision: sl.needsDecision, message: sl.message, trigger_chars: sl.trigger.length },
+  };
+}
+
+/**
+ * Результат побудови через пайплайн власниці. Формат той самий, що був у генератора: статус і пояснення,
+ * а не «файл або нічого». Файли з'являються лише після зворотної звірки обох форматів із погодженим описом.
+ */
+export type PipelineBuildResult =
+  | {
+    status: 'ok'; bpmn: string; drawio: { status: 'ok' | 'failed'; xml: string | null; issues: Issue[] };
+    map: StepMapRow[]; knownLimits: Finding[];
+    /** Результат зворотної звірки: файл видається лише коли `ok` і помилок немає. */
+    verification: { ok: boolean; errors: Issue[]; warnings: Issue[] };
+    layoutWarnings: string[];
+    /** Прив'язка результату до погодженої версії й до версії скриптів. */
+    binding: { versionId: string; contentHash: string; origin: string; generator: string };
+    pipelineVersion: string; scripts: Record<string, string>; log: PipelineLogStep[];
+  }
+  | { status: 'blocked'; findings: Finding[]; warnings: Finding[] }
+  | { status: 'unsupported'; findings: Finding[]; explanation: string; warnings: Finding[] }
+  | { status: 'verification_failed'; stage: string; issues: Issue[]; layoutWarnings: string[]; pipelineVersion: string; log: PipelineLogStep[] };
+
+/**
+ * Погоджений пакет + прийнята таблиця → файли. Тут немає жодного рядка, який «домальовує» схему:
+ * вся геометрія й розмітка походять зі скриптів `pipeline/`, а програма лише перевіряє результат.
+ */
+export async function buildThroughPipeline(pre: PipelineBuildInput, fault: GenerateFaultInjection = {}): Promise<PipelineBuildResult> {
+  const analysis = analyzePackage(pre.pkg, { startLabel: pre.startLabel.label });
+  if (analysis.blocking.length > 0) {
+    return { status: 'blocked', findings: [...analysis.blocking, ...analysis.unsupported], warnings: analysis.knownLimits };
+  }
+  if (analysis.unsupported.length > 0) {
+    return { status: 'unsupported', findings: analysis.unsupported, explanation: unsupportedExplanation(analysis.unsupported, pre.pkg), warnings: analysis.knownLimits };
+  }
+  const run = runPipeline({
+    csv: pre.csv,
+    poolName: pre.plan.poolName,
+    lanes: pre.plan.lanes,
+    documentation: pre.plan.startDocumentation ? { [START_ID]: pre.plan.startDocumentation } : {},
+    binding: { versionId: pre.pkg.versionId, contentHash: pre.pkg.contentHash, origin: pre.pkg.origin, generator: `${GENERATOR_NAME}@${pipelineVersion()}` },
+  });
+  if (!run.ok) {
+    return {
+      status: 'verification_failed', stage: run.stage, layoutWarnings: [], pipelineVersion: pipelineVersion(), log: run.log,
+      issues: [{ code: 'PIPELINE_FAILED', severity: 'error', message: run.message, refs: [] }],
+    };
+  }
+  const bpmn = fault.tamperBpmn ? fault.tamperBpmn(run.bpmn) : run.bpmn;
+  // ДВІ незалежні зворотні перевірки готового файлу:
+  //  1. `verifyBpmn` — строга перевірка зрізу 3a: структура, підписи, переходи, геометрія, карта;
+  //  2. `verifyBpmnAgainstPackage` — перевірка того, що з'явилось із цією архітектурою: доріжки лише для
+  //     ролей із діями, погоджений короткий підпис події й повний текст тригера в деталях.
+  // Файл видається, лише якщо пройшли ОБИДВІ.
+  const strict = verifyBpmn(bpmn, pre.pkg, { startLabel: pre.startLabel.label, lanes: pre.plan.lanes });
+  const v = verifyBpmnAgainstPackage(bpmn, pre.pkg, pre.plan);
+  const errors = [...strict.report.errors, ...v.issues];
+  if (errors.length > 0 || !v.model || !strict.model) {
+    return { status: 'verification_failed', stage: 'bpmn', issues: errors, layoutWarnings: run.warnings, pipelineVersion: run.pipelineVersion, log: run.log };
+  }
+  const drawioXml = fault.tamperDrawio ? fault.tamperDrawio(run.drawio) : run.drawio;
+  const drawioIssues = verifyDrawioAgainstBpmn(drawioXml, v.model, pre.plan.startDocumentation, { versionId: pre.pkg.versionId, contentHash: pre.pkg.contentHash });
+  const drawioOk = drawioIssues.length === 0;
+  for (const row of v.map) row.drawio_cell_id = drawioOk ? row.bpmn_task_id : null;
+  return {
+    status: 'ok', bpmn,
+    drawio: { status: drawioOk ? 'ok' : 'failed', xml: drawioOk ? drawioXml : null, issues: drawioIssues },
+    map: v.map, knownLimits: analysis.knownLimits,
+    verification: { ok: true, errors: [], warnings: [...strict.report.warnings, ...v.warnings] },
+    layoutWarnings: run.warnings,
+    binding: { versionId: pre.pkg.versionId, contentHash: pre.pkg.contentHash, origin: pre.pkg.origin, generator: `${GENERATOR_NAME}@${run.pipelineVersion}` },
+    pipelineVersion: run.pipelineVersion, scripts: run.scripts, log: run.log,
+  };
 }
 
 export interface BuildOutcome {
@@ -281,7 +434,7 @@ export async function buildArtifact(db: DB, actor: Actor, caseId: string, instru
     if (v.trusted && v.staleReasons.length === 0) return { artifact: v, reused: true };
   }
 
-  const result = await generateBpmn(pre.pkg, fault);
+  const result = await buildThroughPipeline(pre, fault);
 
   // Другий раз — усередині транзакції: усе, що могло змінитися під час генерації, закриває шлях до чинного результату.
   return tx(db, () => {
@@ -301,7 +454,7 @@ export async function buildArtifact(db: DB, actor: Actor, caseId: string, instru
     const base = {
       id: newId('art'), case_id: caseId, review_id: pre.reviewId, run_id: pre.runId, approval_id: pre.approvalId,
       version_id: pre.pkg.versionId, content_hash: pre.pkg.contentHash, process_name: pre.pkg.content.process_name ?? '',
-      generator: GENERATOR_NAME, created_by: actor.name, created_at: new Date().toISOString(),
+      generator: `${GENERATOR_NAME}@${pipelineVersion()}`, created_by: actor.name, created_at: new Date().toISOString(),
     };
     let row: Omit<ArtifactRow, 'record_hash'>;
     if (result.status === 'ok') {
@@ -316,6 +469,9 @@ export async function buildArtifact(db: DB, actor: Actor, caseId: string, instru
         detail_json: JSON.stringify({
           knownLimits: result.knownLimits, layoutWarnings: result.layoutWarnings,
           verificationWarnings: result.verification.warnings, drawioIssues: drawioOk ? [] : result.drawio.issues,
+          csv: pre.csv, csv_sha256: sha256(pre.csv),
+          pipeline_version: result.pipelineVersion, pipeline_scripts: result.scripts, pipeline_log: result.log,
+          start_label: pre.startLabel.label, start_full_trigger: pre.startLabel.documentation ?? undefined,
         } satisfies ArtifactDetail),
       };
     } else if (result.status === 'unsupported') {
@@ -326,7 +482,10 @@ export async function buildArtifact(db: DB, actor: Actor, caseId: string, instru
         map_json: '[]', detail_json: JSON.stringify({ findings: result.findings, knownLimits: result.warnings } satisfies ArtifactDetail) };
     } else {
       row = { ...base, status: 'verification_failed', bpmn_xml: null, bpmn_sha256: null, drawio_status: 'none', drawio_xml: null, drawio_sha256: null,
-        map_json: '[]', detail_json: JSON.stringify({ stage: result.stage, issues: result.issues, layoutWarnings: result.layoutWarnings } satisfies ArtifactDetail) };
+        map_json: '[]', detail_json: JSON.stringify({
+          stage: result.stage, issues: result.issues, layoutWarnings: result.layoutWarnings,
+          csv: pre.csv, csv_sha256: sha256(pre.csv), pipeline_version: result.pipelineVersion, pipeline_log: result.log,
+        } satisfies ArtifactDetail) };
     }
     // Повтор із тим самим наслідком (наприклад, та сама технічна помилка) нового запису в історії не створює.
     if (dup && dupUsable && outcomeKey(dup) === outcomeKey(row)) return { artifact: dupView!, reused: true };

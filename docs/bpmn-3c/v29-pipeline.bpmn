@@ -1,0 +1,321 @@
+<?xml version='1.0' encoding='utf-8'?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:ns1="urn:cx-process-agents:as-is-binding" id="Defs_1" targetNamespace="http://cx-process-agents/bpmn">
+  <bpmn:collaboration id="Collaboration_1">
+    <bpmn:participant id="Participant_1" name="Підготовка матеріалів CX до великої продуктової зміни" processRef="Process_1" />
+  </bpmn:collaboration>
+  <bpmn:process id="Process_1" isExecutable="false">
+    <bpmn:extensionElements>
+      <ns1:asIsBinding versionId="ver_54a137dffb8c-v29" contentHash="0000000000000000000000000000000000000000000000000000000000000000" origin="product" generator="cx-bpmn-pipeline-1" />
+    </bpmn:extensionElements>
+    <bpmn:laneSet id="LaneSet_1">
+      <bpmn:lane id="Lane_0" name="Відповідальна за підготовку агентів (CX)">
+        <bpmn:flowNodeRef>StartEvent_1</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S4</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S5</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Gateway_S5</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S6</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S7</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S8</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Gateway_S8</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S12</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S17</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Gateway_S17</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S13</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S19</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Gateway_S19</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S18</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S9</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>End_S9_1</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_S16</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>End_S16_1</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="StartEvent_1" name="CX дізналася про майбутню велику продуктову зміну">
+      <bpmn:documentation id="StartEvent_1_doc">Погоджено аналітикинею (src_04205950ef3d, src_9f90bc4f86d6): процес починається, коли відповідальна за підготовку агентів у CX дізнається про майбутню велику продуктову зміну будь-яким наявним шляхом.Шляхи, якими вона дізнається, аналітикиня вважає способами отримання вхідної інформації, а не кроками процесу:- лист;- особисте повідомлення овнера;- handover для великих ініціатив;- власний пошук у каналах і чатах (SRC-03);- календарний план і handover для великих ініціатив (SRC-06).Інші варіанти подій із джерел, які аналітикиня вивела за межі кейсу:- допис Growth про тест (SRC-04);- лист команди програм і момент підтвердження запуску програми (SRC-05);- рішення про увімкнення дрібного доопрацювання (SRC-06).</bpmn:documentation>
+      <bpmn:outgoing>fStartEvent_1_Task_S4</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:task id="Task_S4" name="Запитати в овнера handover, матеріали й доступи">
+      <bpmn:incoming>fStartEvent_1_Task_S4</bpmn:incoming>
+      <bpmn:outgoing>fTask_S4_Task_S5</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_S5" name="Переписати опис зміни простішою мовою">
+      <bpmn:incoming>fTask_S4_Task_S5</bpmn:incoming>
+      <bpmn:outgoing>fTask_S5_Gateway_S5</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_S5">
+      <bpmn:incoming>fTask_S5_Gateway_S5</bpmn:incoming>
+      <bpmn:outgoing>fGateway_S5_Task_S6</bpmn:outgoing>
+      <bpmn:outgoing>fGateway_S5_Task_S7</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_S6" name="Створити статтю в базі знань">
+      <bpmn:incoming>fGateway_S5_Task_S6</bpmn:incoming>
+      <bpmn:outgoing>fTask_S6_Task_S8</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_S7" name="Оновити статтю в базі знань">
+      <bpmn:incoming>fGateway_S5_Task_S7</bpmn:incoming>
+      <bpmn:outgoing>fTask_S7_Task_S8</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_S8" name="Підготувати повідомлення агентам">
+      <bpmn:incoming>fTask_S6_Task_S8</bpmn:incoming>
+      <bpmn:incoming>fTask_S7_Task_S8</bpmn:incoming>
+      <bpmn:outgoing>fTask_S8_Gateway_S8</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_S8">
+      <bpmn:incoming>fTask_S8_Gateway_S8</bpmn:incoming>
+      <bpmn:outgoing>fGateway_S8_Task_S12</bpmn:outgoing>
+      <bpmn:outgoing>fGateway_S8_Task_S17</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_S12" name="Повторно запитати овнера про відсутні матеріали">
+      <bpmn:incoming>fGateway_S8_Task_S12</bpmn:incoming>
+      <bpmn:outgoing>fTask_S12_Task_S13</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_S17" name="Перевірити, чи є пряме підтвердження дати запуску">
+      <bpmn:incoming>fGateway_S8_Task_S17</bpmn:incoming>
+      <bpmn:incoming>fTask_S13_Task_S17</bpmn:incoming>
+      <bpmn:outgoing>fTask_S17_Gateway_S17</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_S17">
+      <bpmn:incoming>fTask_S17_Gateway_S17</bpmn:incoming>
+      <bpmn:outgoing>fGateway_S17_Task_S19</bpmn:outgoing>
+      <bpmn:outgoing>fGateway_S17_Task_S18</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_S13" name="Доповнити статтю й повідомлення за відповіддю овнера">
+      <bpmn:incoming>fTask_S12_Task_S13</bpmn:incoming>
+      <bpmn:outgoing>fTask_S13_Task_S17</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_S19" name="Перевірити, чи зміну не перенесено й не скасовано">
+      <bpmn:incoming>fGateway_S17_Task_S19</bpmn:incoming>
+      <bpmn:incoming>fTask_S18_Task_S19</bpmn:incoming>
+      <bpmn:outgoing>fTask_S19_Gateway_S19</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_S19">
+      <bpmn:incoming>fTask_S19_Gateway_S19</bpmn:incoming>
+      <bpmn:outgoing>fGateway_S19_Task_S9</bpmn:outgoing>
+      <bpmn:outgoing>fGateway_S19_Task_S16</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_S18" name="Уточнити в овнера дату запуску й отримати підтвердження">
+      <bpmn:incoming>fGateway_S17_Task_S18</bpmn:incoming>
+      <bpmn:outgoing>fTask_S18_Task_S19</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_S9" name="Опублікувати повідомлення агентам">
+      <bpmn:incoming>fGateway_S19_Task_S9</bpmn:incoming>
+      <bpmn:outgoing>fTask_S9_End_S9_1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="End_S9_1">
+      <bpmn:incoming>fTask_S9_End_S9_1</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:task id="Task_S16" name="Припинити підготовку й зберегти напрацьовані матеріали">
+      <bpmn:incoming>fGateway_S19_Task_S16</bpmn:incoming>
+      <bpmn:outgoing>fTask_S16_End_S16_1</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="End_S16_1">
+      <bpmn:incoming>fTask_S16_End_S16_1</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="fStartEvent_1_Task_S4" sourceRef="StartEvent_1" targetRef="Task_S4" />
+    <bpmn:sequenceFlow id="fTask_S4_Task_S5" sourceRef="Task_S4" targetRef="Task_S5" />
+    <bpmn:sequenceFlow id="fTask_S5_Gateway_S5" sourceRef="Task_S5" targetRef="Gateway_S5" />
+    <bpmn:sequenceFlow id="fGateway_S5_Task_S6" name="Нова тема" sourceRef="Gateway_S5" targetRef="Task_S6" />
+    <bpmn:sequenceFlow id="fGateway_S5_Task_S7" name="Тема вже є в базі знань" sourceRef="Gateway_S5" targetRef="Task_S7" />
+    <bpmn:sequenceFlow id="fTask_S6_Task_S8" sourceRef="Task_S6" targetRef="Task_S8" />
+    <bpmn:sequenceFlow id="fTask_S7_Task_S8" sourceRef="Task_S7" targetRef="Task_S8" />
+    <bpmn:sequenceFlow id="fTask_S8_Gateway_S8" sourceRef="Task_S8" targetRef="Gateway_S8" />
+    <bpmn:sequenceFlow id="fGateway_S8_Task_S12" name="Матеріалів від овнера бракує" sourceRef="Gateway_S8" targetRef="Task_S12" />
+    <bpmn:sequenceFlow id="fGateway_S8_Task_S17" name="Матеріалів від овнера достатньо" sourceRef="Gateway_S8" targetRef="Task_S17" />
+    <bpmn:sequenceFlow id="fTask_S12_Task_S13" sourceRef="Task_S12" targetRef="Task_S13" />
+    <bpmn:sequenceFlow id="fTask_S17_Gateway_S17" sourceRef="Task_S17" targetRef="Gateway_S17" />
+    <bpmn:sequenceFlow id="fGateway_S17_Task_S19" name="Овнер або відповідальна команда прямо повідомили підтверджену дату запуску" sourceRef="Gateway_S17" targetRef="Task_S19" />
+    <bpmn:sequenceFlow id="fGateway_S17_Task_S18" name="Відома лише орієнтовна дата запуску" sourceRef="Gateway_S17" targetRef="Task_S18" />
+    <bpmn:sequenceFlow id="fTask_S13_Task_S17" sourceRef="Task_S13" targetRef="Task_S17" />
+    <bpmn:sequenceFlow id="fTask_S19_Gateway_S19" sourceRef="Task_S19" targetRef="Gateway_S19" />
+    <bpmn:sequenceFlow id="fGateway_S19_Task_S9" name="Зміну не перенесено й не скасовано" sourceRef="Gateway_S19" targetRef="Task_S9" />
+    <bpmn:sequenceFlow id="fGateway_S19_Task_S16" name="Зміну перенесено або скасовано" sourceRef="Gateway_S19" targetRef="Task_S16" />
+    <bpmn:sequenceFlow id="fTask_S18_Task_S19" sourceRef="Task_S18" targetRef="Task_S19" />
+    <bpmn:sequenceFlow id="fTask_S9_End_S9_1" sourceRef="Task_S9" targetRef="End_S9_1" />
+    <bpmn:sequenceFlow id="fTask_S16_End_S16_1" sourceRef="Task_S16" targetRef="End_S16_1" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_Collaboration_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_Collaboration_1" bpmnElement="Collaboration_1">
+      <bpmndi:BPMNShape id="BPMNShape_Participant_1" bpmnElement="Participant_1" isHorizontal="true">
+        <dc:Bounds x="80" y="80" width="2986" height="405" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Lane_0" bpmnElement="Lane_0" isHorizontal="true">
+        <dc:Bounds x="110" y="80" width="2956" height="405" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_StartEvent_1" bpmnElement="StartEvent_1">
+        <dc:Bounds x="222" y="131" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="130" y="173" width="220" height="37" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S4" bpmnElement="Task_S4">
+        <dc:Bounds x="390" y="100" width="140" height="98" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S5" bpmnElement="Task_S5">
+        <dc:Bounds x="610" y="100" width="100" height="98" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Gateway_S5" bpmnElement="Gateway_S5" isMarkerVisible="true">
+        <dc:Bounds x="810" y="124" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S6" bpmnElement="Task_S6">
+        <dc:Bounds x="960" y="107" width="100" height="84" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S7" bpmnElement="Task_S7">
+        <dc:Bounds x="960" y="374" width="100" height="84" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S8" bpmnElement="Task_S8">
+        <dc:Bounds x="1160" y="100" width="100" height="98" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Gateway_S8" bpmnElement="Gateway_S8" isMarkerVisible="true">
+        <dc:Bounds x="1360" y="124" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S12" bpmnElement="Task_S12">
+        <dc:Bounds x="1490" y="100" width="140" height="98" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S17" bpmnElement="Task_S17">
+        <dc:Bounds x="1900" y="100" width="120" height="98" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Gateway_S17" bpmnElement="Gateway_S17" isMarkerVisible="true">
+        <dc:Bounds x="2110" y="124" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S13" bpmnElement="Task_S13">
+        <dc:Bounds x="1690" y="100" width="140" height="98" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S19" bpmnElement="Task_S19">
+        <dc:Bounds x="2450" y="100" width="120" height="98" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Gateway_S19" bpmnElement="Gateway_S19" isMarkerVisible="true">
+        <dc:Bounds x="2660" y="124" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S18" bpmnElement="Task_S18">
+        <dc:Bounds x="2240" y="367" width="140" height="98" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S9" bpmnElement="Task_S9">
+        <dc:Bounds x="2810" y="100" width="100" height="98" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_End_S9_1" bpmnElement="End_S9_1">
+        <dc:Bounds x="3010" y="131" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_Task_S16" bpmnElement="Task_S16">
+        <dc:Bounds x="2770" y="374" width="180" height="84" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_End_S16_1" bpmnElement="End_S16_1">
+        <dc:Bounds x="3010" y="398" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="BPMNEdge_fStartEvent_1_Task_S4" bpmnElement="fStartEvent_1_Task_S4">
+        <di:waypoint x="258" y="149" />
+        <di:waypoint x="390" y="149" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fTask_S4_Task_S5" bpmnElement="fTask_S4_Task_S5">
+        <di:waypoint x="530" y="149" />
+        <di:waypoint x="610" y="149" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fTask_S5_Gateway_S5" bpmnElement="fTask_S5_Gateway_S5">
+        <di:waypoint x="710" y="149" />
+        <di:waypoint x="810" y="149" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fGateway_S5_Task_S6" bpmnElement="fGateway_S5_Task_S6">
+        <di:waypoint x="860" y="149" />
+        <di:waypoint x="960" y="149" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="870" y="124" width="80" height="19" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fTask_S6_Task_S8" bpmnElement="fTask_S6_Task_S8">
+        <di:waypoint x="1060" y="149" />
+        <di:waypoint x="1160" y="149" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fTask_S8_Gateway_S8" bpmnElement="fTask_S8_Gateway_S8">
+        <di:waypoint x="1260" y="149" />
+        <di:waypoint x="1360" y="149" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fGateway_S8_Task_S12" bpmnElement="fGateway_S8_Task_S12">
+        <di:waypoint x="1410" y="149" />
+        <di:waypoint x="1490" y="149" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1420" y="36" width="80" height="62" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fTask_S12_Task_S13" bpmnElement="fTask_S12_Task_S13">
+        <di:waypoint x="1630" y="149" />
+        <di:waypoint x="1690" y="149" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fTask_S17_Gateway_S17" bpmnElement="fTask_S17_Gateway_S17">
+        <di:waypoint x="2020" y="149" />
+        <di:waypoint x="2110" y="149" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fGateway_S17_Task_S19" bpmnElement="fGateway_S17_Task_S19">
+        <di:waypoint x="2160" y="149" />
+        <di:waypoint x="2450" y="149" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2210" y="71" width="200" height="48" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fTask_S13_Task_S17" bpmnElement="fTask_S13_Task_S17">
+        <di:waypoint x="1830" y="149" />
+        <di:waypoint x="1900" y="149" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fTask_S19_Gateway_S19" bpmnElement="fTask_S19_Gateway_S19">
+        <di:waypoint x="2570" y="149" />
+        <di:waypoint x="2660" y="149" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fGateway_S19_Task_S9" bpmnElement="fGateway_S19_Task_S9">
+        <di:waypoint x="2710" y="149" />
+        <di:waypoint x="2810" y="149" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2720" y="92" width="80" height="62" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fTask_S9_End_S9_1" bpmnElement="fTask_S9_End_S9_1">
+        <di:waypoint x="2910" y="149" />
+        <di:waypoint x="3010" y="149" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fGateway_S5_Task_S7" bpmnElement="fGateway_S5_Task_S7">
+        <di:waypoint x="835" y="174" />
+        <di:waypoint x="835" y="416" />
+        <di:waypoint x="960" y="416" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="840" y="325" width="80" height="48" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fGateway_S17_Task_S18" bpmnElement="fGateway_S17_Task_S18">
+        <di:waypoint x="2135" y="174" />
+        <di:waypoint x="2135" y="416" />
+        <di:waypoint x="2240" y="416" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2128" y="325" width="110" height="48" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fGateway_S19_Task_S16" bpmnElement="fGateway_S19_Task_S16">
+        <di:waypoint x="2685" y="174" />
+        <di:waypoint x="2685" y="416" />
+        <di:waypoint x="2770" y="416" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2687" y="318" width="80" height="62" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fTask_S7_Task_S8" bpmnElement="fTask_S7_Task_S8">
+        <di:waypoint x="1060" y="416" />
+        <di:waypoint x="1210" y="416" />
+        <di:waypoint x="1210" y="198" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fGateway_S8_Task_S17" bpmnElement="fGateway_S8_Task_S17">
+        <di:waypoint x="1385" y="174" />
+        <di:waypoint x="1385" y="316" />
+        <di:waypoint x="1960" y="316" />
+        <di:waypoint x="1960" y="198" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1633" y="311" width="80" height="62" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fTask_S18_Task_S19" bpmnElement="fTask_S18_Task_S19">
+        <di:waypoint x="2380" y="416" />
+        <di:waypoint x="2510" y="416" />
+        <di:waypoint x="2510" y="198" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="BPMNEdge_fTask_S16_End_S16_1" bpmnElement="fTask_S16_End_S16_1">
+        <di:waypoint x="2950" y="416" />
+        <di:waypoint x="3010" y="416" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

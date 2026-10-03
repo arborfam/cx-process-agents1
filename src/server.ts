@@ -18,7 +18,8 @@ import { beginAnalystRun, executeAnalystRun, type RunOptions } from './runs.ts';
 import { budgetLeftUsd, spentUsd, unknownCostRuns, type ModelPolicy } from './ai/budget.ts';
 import type { AnalystClient, InstructionInfo, OutputContract } from './ai/types.ts';
 import { beginBpmnReview, executeBpmnReview, getCaseReview, rejectFinding, type Reviewer } from './review-runs.ts';
-import { buildArtifact, buildPreflight, getCaseArtifact, listCaseArtifacts, readArtifactFile, technicalLimits, type ArtifactView } from './bpmn-artifacts.ts';
+import { buildArtifact, buildPreflight, getCaseArtifact, listCaseArtifacts, readArtifactCsv, readArtifactFile, technicalLimits, type ArtifactView } from './bpmn-artifacts.ts';
+import { confirmStartLabel, previewStartLabel } from './start-label.ts';
 import { addExplicitClarification, advanceScenario, createScenarioCase, scenarioInfo, TOTAL_STAGES } from './scenarios.ts';
 
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -131,7 +132,12 @@ function artifactJson(v: ArtifactView) {
     drawio_status: v.row.drawio_status, bpmn_sha256: v.row.bpmn_sha256, drawio_sha256: v.row.drawio_sha256,
     current: v.trusted && v.staleReasons.length === 0, label: v.label, trusted: v.trusted,
     untrusted_reasons: v.untrustedReasons, stale_reasons: v.staleReasons,
-    downloads: v.downloads, map: v.map, detail: v.detail,
+    downloads: v.downloads, map: v.map,
+    // Таблиця й журнал кроків у картку не вкладаються (вони великі): таблиця — окремим файлом,
+    // а тут лишається те, що потрібно людині для розуміння: хеш таблиці, версія скриптів, підпис події.
+    detail: { ...v.detail, csv: undefined, pipeline_log: undefined },
+    has_csv: typeof v.detail.csv === 'string',
+    pipeline_version: v.detail.pipeline_version ?? null,
   };
 }
 
@@ -266,6 +272,20 @@ export function createApp(opts: ServerOptions): Server {
         'x-content-sha256': f.sha256, 'cache-control': 'no-store',
       });
       res.end(f.xml);
+      return;
+    }
+
+    // Таблиця, якою побудовано схему: той самий серверний контроль, що й для файлів схеми.
+    if ((m = /^\/api\/cases\/([\w-]+)\/bpmn\/file\/csv$/.exec(path)) && method === 'GET') {
+      getCase(db, m[1]!);
+      const artifactId = url0(req).searchParams.get('artifact_id') ?? undefined;
+      const f = readArtifactCsv(db, m[1]!, artifactId);
+      res.writeHead(200, {
+        'content-type': 'text/csv; charset=utf-8',
+        'content-disposition': `attachment; filename="${f.filename}"`,
+        'x-content-sha256': f.sha256, 'cache-control': 'no-store',
+      });
+      res.end(f.csv);
       return;
     }
 
@@ -431,6 +451,18 @@ export function createApp(opts: ServerOptions): Server {
           const ctx = beginAnalystRun(db, caseId, opts.analyst.client, ro);
           void executeAnalystRun(db, ctx, opts.analyst.client, ro).catch((e) => console.error('Помилка фонового запуску:', e instanceof Error ? e.message : 'невідома'));
           return json(res, 202, { run_id: ctx.runId, note: 'Аналіз запущено. Поточну версію не буде змінено, доки результат не пройде перевірки.' });
+        }
+        case 'start-label/preview': {
+          // Що саме зміниться: показуємо повний тригер, запропонований підпис і наслідки — ДО рішення.
+          return json(res, 200, { preview: previewStartLabel(db, caseId, str(b.label, 'label', false)) });
+        }
+        case 'start-label/confirm': {
+          // Явне рішення людини про ПОДАННЯ (D88). Погоджений опис не змінюється: повний тригер лишається як є.
+          const row = confirmStartLabel(db, human, caseId, { label: str(b.label, 'label'), reason: str(b.reason, 'reason') });
+          return json(res, 201, {
+            start_label_id: row.id, label: row.label,
+            note: 'Підпис погоджено для цієї версії. Повний тригер не змінено: він лишається в описі й у деталях початкової події обох файлів.',
+          });
         }
         case 'bpmn/start': {
           // Тіло запиту свідомо ігнорується: вхід агента 2 сервер бере з бази за чинним погодженням.

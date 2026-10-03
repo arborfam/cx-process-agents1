@@ -3,10 +3,11 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateBpmn } from '../src/bpmn/generate.ts';
+// Побудова йде продуктовим шляхом (D87): сценарна таблиця → перевірка → скрипти пайплайна → звірка файлів.
+import { generateViaPipeline as generateBpmn } from './bpmn-helpers.ts';
 import { verifyBpmn } from '../src/bpmn/verify.ts';
 import { readBpmn } from '../src/bpmn/read.ts';
-import { readDrawio } from '../src/bpmn/drawio.ts';
+import { readDrawio, unhtml } from '../src/pipeline/verify-drawio.ts';
 import { fixtureToPackage } from '../src/bpmn/fixture.ts';
 import { allFixtures, clonePkg, generateOk, pkgOf } from './bpmn-helpers.ts';
 
@@ -67,21 +68,31 @@ test('початок визначається лише entry_step_id: почат
   const m = readBpmn(a.bpmn).model!;
   const start = [...m.nodes.values()].find((n) => n.tag === 'startEvent')!;
   assert.equal(m.flows.find((f) => f.source === start.id)!.target, 'Task_S2');
-  // усі 6 перестановок рядків дають побайтово однаковий файл
+  // Усі 6 перестановок рядків дають ОДНАКОВИЙ ЗМІСТ. Побайтово файл при цьому може відрізнятися:
+  // елементи записуються в порядку рядків таблиці, і цей порядок впливає лише на порядок записів у XML,
+  // а не на процес. ID елементів і ліній від порядку НЕ залежать (інакше карта «крок ↔ елемент» «пливла» б).
+  const content = (xml: string): string => {
+    const m = readBpmn(xml).model!;
+    return JSON.stringify({
+      nodes: [...m.nodes.values()].map((n) => [n.id, n.tag, n.name ?? '']).sort(),
+      flows: m.flows.map((f) => [f.id, f.source, f.target, f.name ?? '']).sort(),
+      lanes: m.lanes.map((l) => [l.name, [...l.refs].sort()]).sort(),
+    });
+  };
   const perms = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
   for (const perm of perms) {
     const q = clonePkg(p);
     q.content.steps = perm.map((i) => p.content.steps[i]!);
     const b = await generateOk(q);
-    assert.equal(b.bpmn, a.bpmn, `перестановка ${perm} змінила схему`);
-    assert.equal(b.drawio.xml, a.drawio.xml);
+    assert.equal(content(b.bpmn), content(a.bpmn), `перестановка ${perm} змінила зміст схеми`);
+    assert.equal(readBpmn(b.bpmn).model!.flows.find((f) => f.source === start.id)!.target, 'Task_S2');
   }
-  // великий процес: випадкова перестановка
+  // великий процес: повна перестановка
   const big = pkgOf('p07-large');
   const base = await generateOk(big);
   const q = clonePkg(big);
   q.content.steps = [...big.content.steps].reverse();
-  assert.equal((await generateOk(q)).bpmn, base.bpmn);
+  assert.equal(content((await generateOk(q)).bpmn), content(base.bpmn));
 });
 
 test('результат відтворюваний: однаковий вхід → однаковий файл', async () => {
@@ -100,12 +111,13 @@ test('спецсимволи, лапки, кирилиця, довгі підп�
     const m = readBpmn(r.bpmn).model!;
     for (const s of p.content.steps) assert.equal(m.nodes.get(`Task_${s.id}`)!.name, s.action, `${id}: дія ${s.id}`);
     assert.equal(m.participant!.name, p.content.process_name);
-    assert.deepEqual(m.lanes.map((l) => l.name), p.content.roles);
+    // Доріжки — лише для ролей, які мають дії (D87): склад ролей у погодженому описі це не змінює.
+    assert.deepEqual(m.lanes.map((l) => l.name), p.content.roles.filter((r) => p.content.steps.some((s) => s.role === r)));
     const d = readDrawio(r.drawio.xml!);
-    for (const s of p.content.steps) assert.equal(d.cells.find((c) => c.id === `Task_${s.id}`)!.value, s.action, `${id}: дія ${s.id} у .drawio`);
+    for (const s of p.content.steps) assert.equal(unhtml(d.cells.find((c) => c.id === `Task_${s.id}`)!.value), s.action, `${id}: дія ${s.id} у .drawio`);
     for (const f of m.flows) {
       const cell = d.cells.find((c) => c.id === f.id)!;
-      assert.equal(cell.value, f.name ?? '', `підпис лінії ${f.id} у .drawio`);
+      assert.equal(unhtml(cell.value), f.name ?? '', `підпис лінії ${f.id} у .drawio`);
     }
     assert.equal(d.cells.filter((c) => c.edge).length, m.flows.length, 'кількість стрілок у .drawio = кількість переходів');
   }
@@ -119,13 +131,14 @@ test('спецсимволи, лапки, кирилиця, довгі підп�
 
 test('довгий підпис: блок збільшується так, що текст вміщується (а не обрізається)', async () => {
   const r = await generateOk(pkgOf('p05-special-text'));
-  assert.ok(r.layoutScale.x > 1 && r.layoutScale.y > 1, 'схему збільшено під довгу дію');
   const m = readBpmn(r.bpmn).model!;
   const long = m.shapes.get('Task_S3')![0]!;
-  assert.ok(long.w > 100 && long.h > 80);
+  assert.ok(long.w > 100 && long.h >= 80, `блок під довгу дію: ${long.w}×${long.h}`);
   // той самий вхід без довгої дії лишається компактним
-  const short = await generateOk(pkgOf('p01-sequence'));
-  assert.deepEqual(short.layoutScale, { x: 1, y: 1 });
+  const short = readBpmn((await generateOk(pkgOf('p01-sequence'))).bpmn).model!;
+  const plain = short.shapes.get('Task_S1')![0]!;
+  assert.equal(plain.w, 100, 'коротка дія лишає блок вузьким');
+  assert.ok(plain.h < long.h, `коротка дія дає нижчий блок: ${plain.h} проти ${long.h}`);
 });
 
 test('карта «крок ↔ елемент» повна: кожен крок має задачу, доріжку й переходи з умовами', async () => {
@@ -155,7 +168,10 @@ test('відомі некритичні обмеження (K2) не блоку�
   for (const c of ['OPEN_QUESTION', 'OPEN_HYPOTHESIS', 'ESTIMATE', 'ROLE_WITHOUT_STEPS', 'FIELDS_NOT_ON_DIAGRAM']) assert.ok(codes.includes(c), `немає ${c}`);
   assert.equal(r.knownLimits.every((l) => l.class === 'K2'), true);
   // порожня доріжка існує (на кожну погоджену роль — одна доріжка)
-  assert.deepEqual(readBpmn(r.bpmn).model!.lanes.map((l) => l.name), ['Бухгалтер', 'Фінансовий директор', 'Архіваріус']);
+  // Доріжка створюється лише для ролі з діями (D87): «Архіваріус» лишається в погодженому описі
+  // й показується як відоме обмеження (K2), але порожньої доріжки для нього на схемі немає.
+  assert.deepEqual(readBpmn(r.bpmn).model!.lanes.map((l) => l.name), ['Бухгалтер', 'Фінансовий директор']);
+  assert.ok(r.knownLimits.some((f) => f.code === 'ROLE_WITHOUT_STEPS' && /Архіваріус/.test(f.message)), JSON.stringify(r.knownLimits));
 });
 
 test('результат позначено походженням: тестовий пакет → test-fixture у файлі, у .drawio і в перегляді', async () => {

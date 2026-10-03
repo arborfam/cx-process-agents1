@@ -180,6 +180,22 @@ CREATE TABLE IF NOT EXISTS bpmn_artifact (
   record_hash TEXT NOT NULL
 );
 
+-- Погоджений короткий підпис початкової події (D88). Повний тригер при цьому НЕ змінюється: він лишається
+-- у змісті версії, потрапляє в деталі події обох файлів і показується людині поруч зі схемою.
+-- Запис незмінний і прив'язаний до конкретної версії та її хеша: для іншої версії він не діє.
+CREATE TABLE IF NOT EXISTS start_label (
+  id TEXT PRIMARY KEY,
+  case_id TEXT NOT NULL REFERENCES "case"(id),
+  version_id TEXT NOT NULL REFERENCES as_is_version(id),
+  content_hash TEXT NOT NULL,
+  label TEXT NOT NULL,
+  full_trigger_sha256 TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  confirmed_by TEXT NOT NULL,
+  confirmed_at TEXT NOT NULL,
+  record_hash TEXT NOT NULL
+);
+
 -- Виправлення помилково позначеного походження джерела (D77). Сам рядок таблиці source НЕ переписується:
 -- виправлення — окремий незмінний запис, а чинне походження обчислюється як останнє виправлення (інакше — збережене).
 -- Дозволений напрям лише real -> synthetic і лише для уточнень: послабити захист D18 цим шляхом неможливо.
@@ -200,7 +216,7 @@ CREATE INDEX IF NOT EXISTS idx_source_case ON source(case_id, seq);
 CREATE INDEX IF NOT EXISTS idx_version_case ON as_is_version(case_id, number);
 `;
 
-const IMMUTABLE_TABLES = ['source', 'as_is_version', 'version_acceptance', 'approval', 'approval_revocation', 'audit_log', 'bpmn_review', 'finding_resolution', 'bpmn_artifact', 'source_origin_correction'];
+const IMMUTABLE_TABLES = ['source', 'as_is_version', 'version_acceptance', 'approval', 'approval_revocation', 'audit_log', 'bpmn_review', 'finding_resolution', 'bpmn_artifact', 'source_origin_correction', 'start_label'];
 
 function immutabilityTriggers(): string {
   return IMMUTABLE_TABLES.map(

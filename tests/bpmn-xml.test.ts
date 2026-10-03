@@ -3,9 +3,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseXml, XmlError, escapeAttr, serialize, attr, elementChildren } from '../src/bpmn/xml.ts';
 import { textProblem, wrapLines, neededTaskHeight } from '../src/bpmn/text.ts';
-import { chooseTaskSize, layoutAndScale } from '../src/bpmn/layout.ts';
-import { buildSemantic } from '../src/bpmn/build.ts';
-import { pkgOf } from './bpmn-helpers.ts';
 
 const bad = (xml: string, re: RegExp): void => assert.throws(() => parseXml(xml), (e: unknown) => e instanceof XmlError && re.test(e.message), xml);
 
@@ -63,18 +60,7 @@ test('оцінка розміру тексту: більше тексту — б
   assert.ok(wrapLines('слово '.repeat(30), 100).length > wrapLines('слово', 100).length);
   assert.equal(wrapLines('а'.repeat(500), 100).every((l) => l.length > 0), true, 'надто довге слово розбивається');
   assert.ok(neededTaskHeight('слово '.repeat(40), 140) > neededTaskHeight('слово', 140));
-  assert.deepEqual(chooseTaskSize(['Коротка дія']), { width: 100, height: 80 });
-  const big = chooseTaskSize(['слово '.repeat(60)]);
-  assert.ok(big.width > 100 && big.height >= 80);
 });
 
-test('збій лейаутера → verification_failed на етапі розкладки, файл не видається', async () => {
-  const pkg = pkgOf('p01-sequence');
-  const sem = buildSemantic(pkg).xml.replace('targetRef="Task_S2"', 'targetRef="Task_NOPE"');
-  const r = await layoutAndScale(sem, pkg);
-  assert.equal(r.ok, false);
-  assert.ok(r.issues[0]!.code.startsWith('LAYOUT_'));
-  // і наскрізно: генератор повертає verification_failed, а не частковий файл
-  const bad = await layoutAndScale('<not-bpmn/>', pkg);
-  assert.equal(bad.ok, false);
-});
+// Збій розкладки більше не перевіряється тут: розкладку виконує крок пайплайна власниці, і його помилка —
+// це `verification_failed` зі стадією `layout_step.mjs` (tests/pipeline-run.test.ts).
