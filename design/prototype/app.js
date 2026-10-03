@@ -12,7 +12,7 @@ const S = {
   newSources: [], batchOrigin: '', pendingBatch: [],
   pkgApplied: false, pkgAnswer: null,
   shortLabel: null,
-  decisionAction: {},
+  decisionAction: {}, reused: null,
   approved: false,
   run: { t: 0, lastSync: 0, stale: false, timer: null },
   view: { zoom: 1, x: 0, y: 0, sel: null, full: false, historical: false, fitted: false },
@@ -36,7 +36,24 @@ function resolve() {
   out.$case = c;
   // локальні дії користувача поверх сценарію
   if (S.pkgApplied && out.package) { out.packageApplied = out.package; out.package = null; }
-  if (S.approved && out.approval) { out.version.approved = true; out.approvedNow = true; }
+  if (S.approved && out.approval) {
+    out.version.approved = true;
+    out.version.label = out.version.label.replace('готова до погодження', 'погоджено');
+    out.version.approvedBy = 'Аналітикиня';
+    out.version.approvedAt = 'щойно';
+    out.state = 'approved';
+    out.approvedNow = true;
+    out.attention = [
+      { kind: 'paid', n: 1, title: 'Побудова доступна. Це окреме платне рішення', go: { tab: 'diagram' } },
+      ...(out.attention || []).filter(a => a.kind !== 'critical'),
+    ];
+    out.next = {
+      title: 'Побудувати схему',
+      why: 'AS-IS погоджено. Побудова — окреме рішення: вона звертається до моделі й коштує грошей. Саме погодження нічого не запускає.',
+      label: 'Перейти до побудови', go: { tab: 'diagram' }, paid: true,
+    };
+  }
+  if (S.reused) out.reusedNow = S.reused;
   if (S.shortLabel) out.shortLabelSet = S.shortLabel;
   return out;
 }
@@ -69,6 +86,7 @@ const ATT = {
   proposal: ['', 'Припущення агента'],
   tech:     ['warn', 'Технічне обмеження'],
   run:      ['acc', 'Виконується'],
+  paid:     ['warn', 'Платний запуск — окреме рішення'],
   reuse:    ['ok', 'Рішення чинне'],
   review:   ['warn', 'Рішення потребує перегляду'],
   void:     ['err', 'Рішення не застосовується'],
@@ -142,10 +160,37 @@ const tab = (id, label, extra = '') =>
   `<button role="tab" data-tab="${id}" aria-selected="${S.tab === id}">${h(label)}${extra}</button>`;
 
 /* ---------------- Огляд ---------------- */
+// Одна картка «Наступна дія» для всіх вкладок: позначка витрат не має зникати залежно від місця.
+function nextCard(d, opts) {
+  const dup = opts && opts.secondary;   // дія вже стоїть у картці змісту — не дублюємо її синьою
+  return `<section class="card card-tight next">
+    <h2>Наступна дія</h2>
+    <p class="why">${h(d.next.why)}</p>
+    ${d.next.blockedBy ? `<div class="blocked">${h(d.next.blockedBy)}</div>` : ''}
+    <button class="btn ${dup ? '' : 'btn-primary'}" data-go='${h(JSON.stringify(d.next.go))}'>${h(d.next.label)}</button>
+    ${d.next.paid ? `<div class="paid">Платний етап: звернення до моделі</div>` : ''}
+    ${d.next.free ? `<div class="free">Безкоштовно: побудова зі збереженої таблиці, модель не викликається</div>` : ''}
+    ${d.next.freeNote ? `<div class="free">${h(d.next.freeNote)}</div>` : ''}
+    ${!d.next.paid && !d.next.free && !d.next.freeNote ? `<div class="small muted" style="margin-top:var(--s2)">Ця дія нічого не коштує: модель не викликається.</div>` : ''}
+  </section>`;
+}
+
+// Критичне бізнес-невідоме має бути видно до будь-якого прокручування, зокрема на вузькому екрані.
+function critLine(d) {
+  const crit = (d.questions || []).filter(q => q.status === 'open' && q.critical);
+  if (!crit.length) return '';
+  const q = crit[0];
+  return `<div class="note err critline">
+    <strong>${crit.length === 1 ? 'Критичне питання блокує погодження й побудову' : `${crit.length} критичні питання блокують погодження й побудову`}:</strong>
+    ${h(q.id)} — ${h(trunc(q.text, 110))}
+    <button class="btn btn-ghost btn-sm" data-go='${h(JSON.stringify({ tab: 'asis', sub: 'questions', focus: q.id }))}'>Перейти до питання</button>
+  </div>`;
+}
+
 function viewOverview(d) {
   const ctx = d.context;
   const ns = '<span class="unknown">Ще не з’ясовано</span>';
-  return `<div class="page"><div class="cols">
+  return `<div class="page">${critLine(d)}<div class="cols">
     <div class="stack">
       <section class="card lead" id="ctx">
         <h2>Коротко</h2>
@@ -180,18 +225,10 @@ function viewOverview(d) {
     </div>
 
     <aside class="rail">
-      <section class="card card-tight next">
-        <h3>Наступна дія</h3>
-        <p class="why">${h(d.next.why)}</p>
-        ${d.next.blockedBy ? `<div class="blocked">${h(d.next.blockedBy)}</div>` : ''}
-        <button class="btn btn-primary" data-go='${h(JSON.stringify(d.next.go))}'>${h(d.next.label)}</button>
-        ${d.next.paid ? `<div class="paid">Платний етап: звернення до моделі</div>` : ''}
-        ${d.next.free ? `<div class="free">Безкоштовно: побудова зі збереженої таблиці, модель не викликається</div>` : ''}
-        ${d.next.freeNote ? `<div class="free">${h(d.next.freeNote)}</div>` : ''}
-      </section>
+      ${nextCard(d, { secondary: !!d.failure })}
 
       <section class="card card-tight">
-        <h3>Потребує уваги</h3>
+        <h2>Потребує уваги</h2>
         ${(d.attention || []).length ? `<div class="att">${d.attention.map(a => {
           const [tone, label] = ATT[a.kind] || ['', a.kind];
           return `<div class="att-item">
@@ -305,7 +342,7 @@ const SUBS = [['context', 'Бізнес-контекст і межі'], ['steps'
 function viewAsIs(d) {
   const open = (d.questions || []).filter(q => q.status === 'open');
   const crit = open.filter(q => q.critical).length;
-  return `<div class="page">
+  return `<div class="page">${S.sub === 'questions' ? '' : critLine(d)}
     <nav class="subtabs" role="tablist">${SUBS.map(([id, t]) => {
       let n = '';
       if (id === 'questions' && open.length) n = ` · ${open.length}`;
@@ -344,13 +381,7 @@ function asisContext(d) {
     </section>
   </div>${railShort(d)}</div>`;
 }
-function railShort(d) {
-  return `<aside class="rail"><section class="card card-tight next">
-    <h3>Наступна дія</h3><p class="why">${h(d.next.why)}</p>
-    ${d.next.blockedBy ? `<div class="blocked">${h(d.next.blockedBy)}</div>` : ''}
-    <button class="btn btn-primary" data-go='${h(JSON.stringify(d.next.go))}'>${h(d.next.label)}</button>
-  </section></aside>`;
-}
+function railShort(d) { return `<aside class="rail">${nextCard(d, { secondary: !!d.failure })}</aside>`; }
 
 function asisSteps(d) {
   if (!d.steps.length) return `<section class="card"><p class="muted">Кроків ще немає: аналіз не запускався.</p></section>`;
@@ -522,6 +553,10 @@ function viewHistory(d) {
     </section>
     <section class="card">
       <h2>Версії та погодження</h2>
+      ${d.reusedNow ? `<div class="note ${d.reusedNow.approved ? 'ok' : 'warn'}" style="margin-bottom:var(--s4)">
+        <strong>Рішення ${h(d.reusedNow.id)} застосовано повторно до версії «${h(d.reusedNow.version)}».</strong>
+        ${d.reusedNow.approved ? 'Версія вже погоджена.' : 'Версія <strong>не погоджена</strong>: перенесення окремого рішення погодження не замінює.'}
+      </div>` : ''}
       <div class="rows">
         <div class="row"><div class="row-head"><div><strong>${h(d.version.label)}</strong></div>
           <div class="row-tags"><span class="tag ${d.version.approved ? 'ok' : ''}">${d.version.approved ? 'Погоджено' : 'Не погоджено'}</span></div></div>
@@ -546,12 +581,22 @@ function viewDiagram(d) {
   if (d.run) return `<div class="page"><div class="stack">${runCard(d)}</div></div>`;
   if (d.failure) return `<div class="page"><div class="stack">${failureCard(d)}</div></div>`;
   if (!d.diagram) {
-    const blocked = d.next.blockedBy;
+    const bl = buildBlockers(d);
     return `<div class="page"><div class="cols"><div class="stack"><section class="card">
       <h2>Схеми ще немає</h2>
-      <p class="prose">${blocked ? h(blocked) : 'Побудова стане доступною після погодження версії AS-IS.'}</p>
-      <div class="btnrow"><button class="btn btn-primary" data-go='${h(JSON.stringify(d.next.go))}'>${h(d.next.label)}</button></div>
-      <p class="small muted" style="margin-top:var(--s4)">Неактивної кнопки без пояснення тут немає: показано, що саме блокується, чому і як просунутися далі.</p>
+      ${bl.length ? `<p class="prose">Побудову стримує ${bl.length} ${plural(bl.length, 'причина', 'причини', 'причин')}. Кожна має власну дію — неактивної кнопки без пояснення тут немає.</p>
+      <div class="rows">${bl.map(x => `<div class="row">
+        <div class="row-head"><div class="row-tags"><span class="tag ${x.tone}">${h(x.kind)}</span></div></div>
+        <div class="prose">${h(x.text)}</div>
+        <div class="small muted">Хто має діяти: ${h(x.who)}</div>
+        <div class="btnrow"><button class="btn btn-sm" data-go='${h(JSON.stringify(x.go))}'>${h(x.label)}</button></div>
+      </div>`).join('')}</div>
+      <div class="note info small" style="margin-top:var(--s4)">Цей перелік веде програмна перевірка на сервері, а не кнопка.
+        Відхилення припущення агента, повторне використання збереженого рішення чи редагування опису його не скорочують:
+        зникає лише та причина, яку справді усунуто.</div>`
+      : `<p class="prose">Усі перевірки пройдено: побудова доступна. Це окремий платний етап — звернення до моделі.</p>
+         <div class="btnrow"><button class="btn btn-primary" data-go='${h(JSON.stringify(d.next.go))}'>${h(d.next.label)}</button></div>
+         <div class="paid">Платний етап: звернення до моделі</div>`}
     </section></div>${railShort(d)}</div></div>`;
   }
   const g = d.diagram, hist = S.view.historical;
@@ -609,6 +654,31 @@ function viewDiagram(d) {
   </div></div>`;
 }
 
+// Перелік того, що насправді стримує побудову. Його веде «серверна» перевірка прототипу,
+// а не стан кнопки: жодне рішення людини й жодне відхилення припущення агента його не скорочує.
+function buildBlockers(d) {
+  const out = [];
+  (d.questions || []).filter(q => q.status === 'open' && q.critical).forEach(q => out.push({
+    tone: 'err', kind: 'Критичне бізнес-невідоме', text: `${q.id}: ${q.text}`,
+    who: 'Аналітикиня — отримати відповідь від людей, які знають процес',
+    go: { tab: 'asis', sub: 'questions', focus: q.id }, label: `Відкрити ${q.id}`,
+  }));
+  (d.problems || []).filter(x => x.severity === 'blocking-tech').forEach(x => {
+    if (x.kind === 'generator_limit' && S.shortLabel) return;   // причину справді усунуто
+    out.push({
+      tone: 'warn', kind: PROBLEM_KIND[x.kind] || x.kind, text: x.what,
+      who: x.who, go: { dialog: 'shortlabel' }, label: (x.action && x.action.label) || 'Відкрити',
+    });
+  });
+  if (!d.version.approved) out.push({
+    tone: '', kind: 'Погодження версії', text: `${d.version.label} — побудова запускається лише з погодженої версії AS-IS.`,
+    who: 'Аналітикиня — погодити конкретну версію',
+    go: d.approval ? { dialog: 'approve' } : { tab: 'asis', sub: 'questions' },
+    label: d.approval ? 'Погодити версію' : 'Опрацювати відкриті питання',
+  });
+  return out;
+}
+
 function svg(d, hist) {
   const geo = d.$case.diagramKind === 'real-v29' ? window.DIAGRAM_V29 : window.DIAGRAM_PROC;
   const nodes = geo.shapes.filter(s => !['lane', 'participant'].includes(s.tag));
@@ -647,7 +717,7 @@ function arrow(pts) {
 }
 function wrapText(t, x, y, w, cls, anchor, cx, boxH) {
   if (!t) return '';
-  const per = Math.max(8, Math.floor(w / 6.2));
+  const per = Math.max(8, Math.floor(w / 6.8));
   const words = String(t).split(/\s+/); const lines = []; let cur = '';
   for (const wd of words) { if ((cur + ' ' + wd).trim().length > per) { if (cur) lines.push(cur); cur = wd; } else cur = (cur ? cur + ' ' : '') + wd; }
   if (cur) lines.push(cur);
@@ -744,7 +814,8 @@ function dlgPackage(d) {
     <div><h3>Що втратить прив’язку</h3>${p.losingLinks.map(x => `<div class="note warn small"><strong>${h(x.q)}</strong> — ${h(x.t)}<br>${h(x.was)}. ${h(x.effect)}</div>`).join('')}</div>
     <div><h3>Що лишиться відкритим</h3><ul class="small">${p.stillOpen.map(x => `<li>${h(x)}</li>`).join('')}</ul></div>
     <div><h3>${h(p.answerNeeded.label)}</h3>
-      <p class="small muted">Питання не закривається автоматично. Відповідь збирається тут, у межах пакета — ID вручну редагувати не треба.</p>
+      <div class="quote small" style="margin-bottom:var(--s3)"><strong>${h(p.answerNeeded.q)}.</strong> ${h(p.answerNeeded.questionText || '')}</div>
+      <p class="small muted">Питання не закривається автоматично. Відповідь збирається тут, у межах пакета — ні відкривати іншу вкладку, ні редагувати ID вручну не треба.</p>
       <textarea id="pkgans" placeholder="${h(p.answerNeeded.placeholder)}">${h(S.texts.pkgans != null ? S.texts.pkgans : p.answerNeeded.prefill)}</textarea></div>
   </div>
   <div class="dlg-foot"><button class="btn" data-close>Скасувати</button>
@@ -764,6 +835,10 @@ function dlgDecision(d) {
       <p class="small muted">Докази: ${x.evidence.map(h).join('; ')}</p></div>
     ${x.status === 'valid' ? `<div class="note ok"><strong>Перевірено автоматично — пояснювати заново не потрібно.</strong>
       <ul style="margin:var(--s2) 0 0">${x.checked.map(c => `<li>${h(c)}</li>`).join('')}</ul></div>` : ''}
+    ${x.unrelated && x.unrelated.length ? `<div><h3>Що змінилося в кейсі, але рішення не стосується</h3>
+      <ul class="small">${x.unrelated.map(c => `<li>${h(c)}</li>`).join('')}</ul>
+      <p class="small muted">Жоден із цих елементів не входить до контексту застосування рішення, тому воно не скидається. Скидати чинне рішення через зміну в іншій частині опису — зайва робота без причини.</p></div>` : ''}
+    ${x.noBypass ? `<div class="note warn"><strong>Що це рішення не робить.</strong> ${h(x.noBypass)}</div>` : ''}
     ${x.status !== 'valid' ? `<div><h3>Що саме змінилося</h3>
       <ul class="small">${(x.changedSince || []).map(c => `<li>${h(c)}</li>`).join('')}</ul></div>` : ''}
     ${x.status === 'void' ? `<div class="note err"><strong>Попереднє рішення не застосовується.</strong> ${h(x.whatToDo)}
@@ -773,7 +848,9 @@ function dlgDecision(d) {
       <textarea id="decedit">${h(S.texts.decedit != null ? S.texts.decedit : x.explain)}</textarea></div>` : ''}
     ${x.status === 'void' ? `<div><label class="lbl" for="decedit">Нове рішення — для якого періоду описуємо AS-IS</label>
       <textarea id="decedit" placeholder="Напишіть нове рішення. Попереднє пояснення лишається в історії.">${h(S.texts.decedit || '')}</textarea></div>` : ''}
-    <div class="note info small">Повторне використання рішення не означає погодження нової версії. Застосування буде видно в історії.</div>
+    <div class="note info small"><strong>Повторне використання рішення не погоджує версію.</strong>
+      ${h(d.version.label)} ${d.version.approved ? 'уже погоджена — рішення нічого в погодженні не змінює.' : 'лишиться непогодженою: погодження — окрема дія з власним підтвердженням.'}
+      Застосування буде видно в історії.</div>
   </div>
   <div class="dlg-foot"><button class="btn" data-close>${x.status === 'valid' ? 'Закрити' : 'Скасувати'}</button>
     ${x.status === 'valid' ? `<button class="btn btn-primary" data-confirm>Застосувати повторно без змін</button>`
@@ -851,7 +928,13 @@ function applyDialog(d, dlg) {
   if (k === 'package') { S.pkgApplied = true; S.pkgAnswer = el('#pkgans', dlg).value.trim(); toast('Пакет застосовано повністю: кроки, переходи й відповідь на питання — однією операцією.'); }
   else if (k === 'approve') { S.approved = true; toast('Версію погоджено. Платний запуск побудови — окреме рішення.'); }
   else if (k === 'shortlabel') { S.shortLabel = el('#sl', dlg).value.trim(); toast('Короткий підпис збережено. Повний текст тригера лишився без змін.'); }
-  else if (k === 'decision') { toast('Рішення оновлено. Застосування видно в історії; погодження версії це не замінює.'); }
+  else if (k === 'decision') {
+    const x = (d.decisions || []).find(y => y.id === S.dialog.id) || {};
+    S.reused = { id: x.id, subject: x.subject, status: x.status, version: d.version.label, approved: !!d.version.approved };
+    toast(x.status === 'valid'
+      ? `Рішення ${x.id} застосовано повторно. Версію це не погоджує — погодження лишається окремою дією.`
+      : `Рішення ${x.id} оновлено. Версію це не погоджує — погодження лишається окремою дією.`);
+  }
   else if (k === 'proposal') { toast('Пропозицію відхилено з поясненням. Програмні перевірки лишаються чинними.'); }
   else toast('Правку збережено (у прототипі — без запису в дані).');
   S.texts = {};
@@ -904,7 +987,7 @@ function wire(d) {
     }));
   }
 }
-function reset() { S.panel = null; S.dialog = null; S.pkgApplied = false; S.approved = false; S.shortLabel = null; S.texts = {}; S.view = { zoom: 1, x: 0, y: 0, sel: null, full: false, historical: false, fitted: false }; stopRun(); }
+function reset() { S.panel = null; S.dialog = null; S.pkgApplied = false; S.approved = false; S.reused = null; S.shortLabel = null; S.texts = {}; S.view = { zoom: 1, x: 0, y: 0, sel: null, full: false, historical: false, fitted: false }; stopRun(); }
 
 function go(g) {
   if (g.dialog) { S.dialog = { kind: g.dialog, id: g.id }; render(); return; }
