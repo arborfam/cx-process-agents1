@@ -5,7 +5,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { findPython, runPipeline, STEP_TIMEOUT_MS } from '../src/pipeline/run.ts';
@@ -28,13 +28,21 @@ const simple = (): { csv: string; poolName: string; lanes: string[] } => {
 };
 
 test('1. Запуск не лишає по собі тимчасових файлів і не має спільного стану між запусками', { skip: hasPython ? false : 'python3 недоступний' }, () => {
-  const before = readdirSync(tmpdir()).filter((f) => f.startsWith('cx-pipeline-')).length;
-  const a = runPipeline(simple());
-  const b = runPipeline(simple());
-  const after = readdirSync(tmpdir()).filter((f) => f.startsWith('cx-pipeline-')).length;
-  assert.ok(a.ok && b.ok, a.ok ? '' : a.message);
-  assert.equal(after, before, 'тимчасова тека видаляється після запуску');
-  assert.equal(a.ok && b.ok && a.bpmn, b.ok ? b.bpmn : '', 'той самий вхід — той самий файл');
+  // Власна тека для тимчасових файлів саме цього тесту: інакше паралельні запуски інших тестів
+  // створювали б у спільному tmp свої теки й лічильник нічого не доводив би.
+  const own = mkdtempSync(join(tmpdir(), 'cx-tmproot-'));
+  const prev = process.env.TMPDIR;
+  process.env.TMPDIR = own;
+  try {
+    const a = runPipeline(simple());
+    const b = runPipeline(simple());
+    assert.ok(a.ok && b.ok, a.ok ? '' : a.message);
+    assert.deepEqual(readdirSync(own), [], 'тимчасова тека видаляється після запуску');
+    assert.equal(a.ok && b.ok && a.bpmn, b.ok ? b.bpmn : '', 'той самий вхід — той самий файл');
+  } finally {
+    if (prev === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = prev;
+    rmSync(own, { recursive: true, force: true });
+  }
 });
 
 test('2. Помилка кроку — чесна зупинка з текстом stderr, а не «мовчазний успіх»', { skip: hasPython ? false : 'python3 недоступний' }, () => {

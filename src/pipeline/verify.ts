@@ -26,6 +26,8 @@ export interface NodeInfo { id: string; tag: string; name: string; documentation
 export interface FlowInfo { id: string; name: string; source: string; target: string; points: { x: number; y: number }[]; label: Box | null }
 
 export interface BpmnModel {
+  /** ID учасника (пулу) у `.bpmn` — за ним шукається клітинка пулу в `.drawio`. */
+  poolId: string;
   poolName: string;
   poolBox: Box | null;
   lanes: { id: string; name: string; box: Box | null; refs: string[] }[];
@@ -103,7 +105,7 @@ export function readPipelineBpmn(xml: string): { model: BpmnModel | null; issues
       f.label = labelBoundsOf(e);
     }
   });
-  return { model: { poolName, poolBox, lanes, nodes, flows }, issues };
+  return { model: { poolId, poolName, poolBox, lanes, nodes, flows }, issues };
 }
 
 const overlap = (a: Box, b: Box, pad = 0): boolean =>

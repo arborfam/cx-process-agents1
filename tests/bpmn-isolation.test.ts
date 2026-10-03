@@ -39,6 +39,7 @@ const ALLOWED_CHECK_IMPORTERS = [
   'src/csv/check.ts',             // звірка таблиці з погодженим описом (ID, межі тексту, типи)
   'src/pipeline/verify.ts',       // зворотна звірка .bpmn
   'src/pipeline/verify-drawio.ts',// зворотна звірка .drawio
+  'src/pipeline/drawio-style.ts', // еталонний контракт вигляду .drawio
   'src/ai/bpmn-review.ts',        // перевірка відповіді агента 2 (та сама звірка таблиці)
   'src/start-label.ts',           // межа довжини підпису події (D88)
   'src/pipeline/scripts.ts',      // назва ланцюга побудови (GENERATOR_NAME) — спільний контракт ID
