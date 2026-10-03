@@ -92,3 +92,7 @@ details > summary { cursor: pointer; }
 .origin-pick { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; margin: 6px 0; }
 .origin-pick legend { padding: 0 4px; color: var(--muted); }
 .origin-pick label { display: block; margin: 3px 0; }
+
+/* Вибраний на схемі елемент (перехід до кроку). Лише підсвітка показу: файл не змінюється. */
+.djs-element.cx-selected .djs-visual > :first-child { stroke: var(--accent) !important; stroke-width: 3px !important; }
+.djs-element.cx-selected .djs-visual > rect { fill: #eef3ff !important; }

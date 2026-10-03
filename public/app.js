@@ -564,6 +564,46 @@ function findingBox(card, reviewId, view, canDecide) {
         : el('div', { class: 'small muted' }, view.reject_blocked_reason));
 }
 
+/**
+ * Перехід до елемента схеми: центрує його, лишає робочий масштаб і підсвічує.
+ * Нічого у файлі не змінює — це лише навігація.
+ */
+function goToElement(bpmnId) {
+  const v = state.viewer; if (!v || !bpmnId) return false;
+  try {
+    const reg = v.get('elementRegistry');
+    const shape = reg.get(bpmnId);
+    if (!shape) { toast('Елемента ' + bpmnId + ' на цій схемі немає.'); return false; }
+    const canvas = v.get('canvas');
+    (state.marked || []).forEach((id) => { try { canvas.removeMarker(id, 'cx-selected'); } catch (e) { /* елемента вже немає */ } });
+    state.marked = [bpmnId];
+    canvas.addMarker(bpmnId, 'cx-selected');
+    if (canvas.zoom() < 0.6) canvas.zoom(0.9);
+    canvas.scrollToElement(shape, { top: 120, bottom: 120, left: 120, right: 120 });
+    // Перехід до кроку має бути видимим: показуємо саме полотно, а не місце натискання.
+    const host = v.get('canvas').getContainer().closest('.diagram') || v.get('canvas').getContainer();
+    host.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    return true;
+  } catch (e) { toast('Не вдалося перейти до елемента: ' + e.message); return false; }
+}
+
+/** Деталі кроку поруч зі схемою: повний текст дії й деталей із опису, а не з підпису на полотні. */
+function stepDetails(card, row) {
+  const step = (((card.head && card.head.content && card.head.content.steps) || [])).find((x) => x.id === row.step_id);
+  openDialog(
+    el('h3', {}, 'Крок ' + row.step_id + ' на схемі'),
+    el('div', { class: 'kv' }, el('div', { class: 'k' }, 'Роль'), el('div', { class: 'v' }, row.role)),
+    el('div', { class: 'kv' }, el('div', { class: 'k' }, 'Дія'), el('div', { class: 'v' }, row.action)),
+    step && step.entry_condition ? el('div', { class: 'kv' }, el('div', { class: 'k' }, 'Умова входу'), el('div', { class: 'v' }, step.entry_condition)) : null,
+    step && step.result ? el('div', { class: 'kv' }, el('div', { class: 'k' }, 'Результат'), el('div', { class: 'v' }, step.result)) : null,
+    step && step.details ? el('div', { class: 'kv' }, el('div', { class: 'k' }, 'Деталі опису'), el('div', { class: 'v' }, step.details)) : null,
+    el('div', { class: 'kv' }, el('div', { class: 'k' }, 'Елемент схеми'), el('div', { class: 'v' }, row.bpmn_task_id + (row.gateway_id ? ' · шлюз ' + row.gateway_id : ''))),
+    el('div', { class: 'actions' },
+      el('button', { onclick: () => { dlg.close(); goToElement(row.bpmn_task_id); } }, 'Показати на схемі'),
+      row.gateway_id ? el('button', { onclick: () => { dlg.close(); goToElement(row.gateway_id); } }, 'Показати розгалуження') : null,
+      el('button', { onclick: () => dlg.close() }, 'Закрити')));
+}
+
 function mountViewer(host, caseId, artifactId) {
   if (!window.BpmnJS) { host.replaceChildren(el('p', { class: 'muted' }, 'Переглядач не завантажився. Файл усе одно можна завантажити кнопкою нижче.')); return null; }
   host.replaceChildren();
@@ -624,10 +664,13 @@ function artifactBlock(card, a, isHistory) {
       (a.detail.knownLimits || []).length ? el('details', {}, el('summary', { class: 'small' }, 'Відомі обмеження показу (' + a.detail.knownLimits.length + ')'),
         el('ul', { class: 'small' }, a.detail.knownLimits.map((f) => el('li', {}, `${f.code}: ${f.message}`)))) : null,
       rows.length ? el('details', { open: !isHistory }, el('summary', {}, 'Відповідність кроків опису елементам схеми (' + rows.length + ')'),
-        el('table', {}, el('thead', {}, el('tr', {}, ['Крок', 'Роль', 'Дія', 'Елемент схеми', 'Доріжка', 'Шлюз'].map((h) => el('th', {}, h)))),
-          el('tbody', {}, rows.map((r) => el('tr', {}, el('td', {}, r.step_id), el('td', {}, r.role), el('td', {}, r.action),
-            el('td', {}, r.bpmn_task_id), el('td', {}, r.lane_id), el('td', {}, r.gateway_id || '—')))))) : null,
-      (!isHistory ? el('div', { class: 'small muted' }, 'Переглядач bpmn.io; водяний знак bpmn.io є частиною ліцензії й не вилучається.') : null),
+        el('table', {}, el('thead', {}, el('tr', {}, ['Крок', 'Роль', 'Дія', 'Елемент схеми', 'Доріжка', 'Шлюз', ''].map((h) => el('th', {}, h)))),
+          el('tbody', {}, rows.map((r) => el('tr', { 'data-step-row': r.step_id },
+            el('td', {}, r.step_id), el('td', {}, r.role),
+            el('td', {}, el('button', { class: 'link', onclick: () => goToElement(r.bpmn_task_id) }, r.action)),
+            el('td', {}, r.bpmn_task_id), el('td', {}, r.lane_id), el('td', {}, r.gateway_id || '—'),
+            el('td', {}, el('button', { class: 'link', onclick: () => stepDetails(card, r) }, 'деталі'))))))) : null,
+      (!isHistory ? el('div', { class: 'small muted' }, 'Полотно можна перетягувати; колесо — масштаб. Перехід до кроку — у таблиці нижче. Водяний знак bpmn.io є частиною ліцензії й не вилучається.') : null),
     ) : null,
     a.status === 'ok' && !a.current
       ? el('p', { class: 'small muted' }, 'Схему не показуємо: вона побудована за іншою версією опису. Нижче — відповідність кроків тієї версії елементам тієї схеми.')
@@ -990,7 +1033,7 @@ function answerBasisBlock(card, q, ans) {
     const sel = el('select', { onchange: (e) => { st.sourceId = e.target.value; redraw(); } },
       el('option', { value: '' }, '— оберіть джерело —'),
       ...usable.map((x) => el('option', { value: x.id, selected: st.sourceId === x.id ? '' : undefined },
-        (x.ref ? x.ref + ' · ' : '') + x.title + ' (' + (x.origin === 'real' ? 'реальні дані' : 'синтетичне') + ')')));
+        (x.ref ? x.ref + ' · ' : '') + x.title + ' (' + (ORIGIN_LABEL[x.origin] || x.origin) + ')')));
     const quote = el('textarea', { placeholder: 'Вставте фрагмент із джерела дослівно' }, st.quote);
     quote.value = st.quote;
     quote.oninput = () => { st.quote = quote.value; markEdit(); };
@@ -1064,7 +1107,7 @@ function closedAnswerBlock(card, q) {
       el('span', { class: 'chip' }, src.content_type_label || 'Уточнення'),
       from ? el('span', { class: 'chip' }, 'з ' + (from.ref || from.title)) : null,
       src.edited_by ? el('span', { class: 'chip' }, 'редакція: ' + src.edited_by) : null,
-      el('span', { class: 'chip' }, src.origin === 'real' ? 'реальні дані' : 'синтетичне')) : null,
+      el('span', { class: 'chip' }, ORIGIN_LABEL[src.origin] || src.origin)) : null,
     from && src.derived_quote
       ? el('div', {}, 'Фрагмент джерела: «' + src.derived_quote + '» ',
           el('button', { class: 'link', onclick: () => showSource(from.id, src.derived_quote) }, 'показати в джерелі'))
