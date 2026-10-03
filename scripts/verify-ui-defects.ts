@@ -199,7 +199,6 @@ try {
     ck('поле лише з name пережило автооновлення',
       (await page.inputValue('[data-block="edit-inline"] textarea[name="summary"]')) === 'Недонабрана суть без data-draft',
       (await page.inputValue('[data-block="edit-inline"] textarea[name="summary"]')).slice(0, 60));
-    await page.evaluate('clearDrafts(state.caseId, ["summary"])');   // щоб чернетка не вплинула на подальші кроки
   }
   await page.getByRole('tab', { name: /^Джерела/ }).click();
   await page.waitForTimeout(400);
