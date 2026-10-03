@@ -260,9 +260,14 @@ export function parseContent(value: unknown): Content {
   return ContentSchema.parse(value);
 }
 
+/**
+ * Підписи типів тверджень для показу. Це ПОДАННЯ, а не зміст версії: у `content` зберігається
+ * лише код типу, тож зміна підпису не змінює збережений опис, хеш і погодження (D100).
+ * Формулювання нейтральні щодо статі й не називають конкретного автора.
+ */
 export const CLAIM_TYPE_LABEL: Record<ClaimTypeT, string> = {
-  source_fact: 'Твердження джерела',
-  analyst_confirmed: 'Підтверджено аналітиком',
+  source_fact: 'Факт із джерела',
+  analyst_confirmed: 'Рішення користувача',
   hypothesis: 'Гіпотеза',
   improvement_proposal: 'Пропозиція покращення (не факт AS-IS)',
   unknown: 'Невідоме',

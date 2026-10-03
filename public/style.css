@@ -153,9 +153,40 @@ fieldset.origin-pick label { display: block; margin: var(--s1) 0; color: var(--i
 .next > button, .next > .btn { width: 100%; }
 .paid { display: block; font-size: 14px; color: var(--warn-ink); background: var(--warn-bg); border-radius: 6px; padding: 6px var(--s2); margin-top: var(--s2); }
 .free { display: block; font-size: 14px; color: var(--ok-ink); background: var(--ok-bg); border-radius: 6px; padding: 6px var(--s2); margin-top: var(--s2); }
-.att { display: grid; gap: var(--s3); }
+/* «Потребує уваги»: записи розділені за типом, кожен — окремий блок, а не суцільний абзац (D100). */
+.att-group { margin-top: var(--s4); }
+.att-group:first-of-type { margin-top: var(--s2); }
+.att-group h3 { margin: 0 0 var(--s2); font-size: 14px; font-weight: 600; }
+ul.att { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s3); }
+ul.att > li { display: grid; gap: var(--s1); padding-bottom: var(--s3); border-bottom: 1px solid var(--line); }
+ul.att > li:last-child { border-bottom: 0; padding-bottom: 0; }
+ul.att > li > button.link { justify-self: start; }
 .att-item { display: grid; gap: var(--s1); padding-bottom: var(--s3); border-bottom: 1px solid var(--line); }
 .att-item:last-child { border-bottom: 0; padding-bottom: 0; }
+
+/* Довгі тексти: абзаци й справжні списки, поступове розкриття без зменшення шрифту (D100). */
+.prose > p { margin: 0 0 var(--s3); }
+.prose > p:last-child { margin-bottom: 0; }
+.prose > ul { margin: 0 0 var(--s3); padding-left: var(--s5); }
+.prose > ul > li { margin-bottom: var(--s1); }
+details.more > summary { color: var(--accent); cursor: pointer; margin-top: var(--s2); }
+ul.tight { margin: 0; padding-left: var(--s5); }
+ul.tight > li { margin-bottom: var(--s2); }
+
+/* Кроки процесу: дія, виконавець, результат і умова переходу читаються окремо (D100). */
+ol.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s4); }
+ol.steps > li { border: 1px solid var(--line); border-radius: var(--r-ctl); padding: var(--s3) var(--s4); }
+ol.steps > li.entry { border-color: var(--accent); background: var(--selected); }
+.step-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s2); margin-bottom: var(--s2); }
+.step-h .act { font-weight: 600; }
+.step-next { display: grid; gap: var(--s1); }
+.step-next > div { overflow-wrap: anywhere; }
+.cond { color: var(--ink-2); font-size: 14px; }
+
+/* Запис сутності (твердження, питання, джерело, подія історії). */
+.rec { border: 1px solid var(--line); border-radius: var(--r-ctl); padding: var(--s3) var(--s4); margin: var(--s3) 0; }
+.rec > .rec-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s2); margin-bottom: var(--s2); }
+.rec > .rec-h .t { font-weight: 600; overflow-wrap: anywhere; }
 .critline { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; margin-bottom: var(--s5); }
 .critline button.link { color: var(--err-ink); }
 

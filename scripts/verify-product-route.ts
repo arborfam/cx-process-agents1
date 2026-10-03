@@ -106,7 +106,10 @@ try {
       JSON.stringify(tabs) === JSON.stringify(['Огляд', 'AS-IS', 'Джерела', 'Схема', 'Історія']), JSON.stringify(tabs));
     ck(`${tag}: огляд починається з короткого контексту`, (await T('#main .lead h2')) === 'Коротко');
     ck(`${tag}: наступна дія у правій колонці`, (await page.locator('#main .rail .next').count()) === 1);
-    ck(`${tag}: головні зміни на огляді`, (await T('#main')).includes('Головні зміни'));
+    // Заголовок блоку змін спрощено до «Що змінилося» (D100); перевіряємо сам блок, а не формулювання.
+    ck(`${tag}: зміни від попередньої версії на огляді`,
+      (await page.locator('[data-block="changes"]').count()) === 1 && (await T('[data-block="changes"]')).includes('Що змінилося'),
+      await T('[data-block="changes"] h2'));
     ck(`${tag}: технічне не в основному полі`, (await page.locator('#main .rail details').count()) >= 1);
     const txt = await T('#app');
     ck(`${tag}: немає службових значень у розмітці`, !/\bnull\b|\bundefined\b|\[object Object\]/.test(txt),

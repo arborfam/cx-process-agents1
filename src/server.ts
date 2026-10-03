@@ -151,7 +151,9 @@ function buildPreflightState(db: DB, caseId: string, instruction?: InstructionIn
 export function createApp(opts: ServerOptions): Server {
   const { db, mode } = opts;
   const token = sessionToken(opts.accessCode);
-  const human: Actor = { kind: 'human', name: 'Аналітикиня' };
+  // Підпис людини-користувача за замовчуванням нейтральний щодо статі (D100). Це значення
+  // записується в НОВІ записи; уже збережені зберігають своє імʼя автора й не переписуються.
+  const human: Actor = { kind: 'human', name: 'Користувач' };
 
   /**
    * Доступність агента 2 (смислова перевірка) — окремо від агента 1: це різні агенти з різними клієнтами.

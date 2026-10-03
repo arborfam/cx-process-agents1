@@ -67,10 +67,15 @@ export interface SourceRow {
  */
 export type AnswerContentType = 'source_quote' | 'source_quote_edited' | 'analyst_confirmed';
 
+/**
+ * Підписи для показу. У базі зберігається лише код (`content_type`), тож зміна підпису не змінює
+ * збережені дані, хеші й погодження. Формулювання нейтральні щодо статі: конкретний автор
+ * зберігається окремо, у полі `edited_by`, і показується в метаданих (D100).
+ */
 export const ANSWER_CONTENT_TYPE_LABEL: Record<AnswerContentType, string> = {
   source_quote: 'З джерела, дослівно',
-  source_quote_edited: 'З джерела, відредаговано аналітикинею',
-  analyst_confirmed: 'Підтверджений висновок аналітикині',
+  source_quote_edited: 'З джерела, відредаговано користувачем',
+  analyst_confirmed: 'Підтверджений висновок користувача',
 };
 
 export interface VersionRow {
@@ -1468,7 +1473,7 @@ export function notationIssues(c: Content): Blocker[] {
   for (const r of c.notation_requirements ?? []) {
     if (r.status === 'proposed') {
       out.push({ code: 'PENDING_NOTATION_PROPOSAL', severity: 'critical', ref: r.id,
-        message: `Пропозиція агента ${r.id}: потрібна нотація «${NOTATION_KIND_LABEL[r.kind]}» (крок ${r.step_id}) — потрібне рішення аналітикині. Непідтверджена пропозиція не є встановленим фактом, але й не може лишатися без відповіді.` });
+        message: `Пропозиція агента ${r.id}: потрібна нотація «${NOTATION_KIND_LABEL[r.kind]}» (крок ${r.step_id}) — потрібне ваше рішення. Непідтверджена пропозиція не є встановленим фактом, але й не може лишатися без відповіді.` });
     }
     if (r.status !== 'rejected' && !c.steps.some((x) => x.id === r.step_id)) {
       out.push({ code: 'NOTATION_BAD_STEP', severity: 'critical', ref: r.id,
@@ -1487,7 +1492,7 @@ export function submissionBlockers(db: DB, caseId: string): Blocker[] {
   const covered = new Set(JSON.parse(head.covered_json) as string[]);
 
   if (!isAccepted(db, head.id)) {
-    out.push({ code: 'NOT_ACCEPTED', severity: 'critical', message: `Робочу версію ${head.number} ще не прийнято аналітиком.` });
+    out.push({ code: 'NOT_ACCEPTED', severity: 'critical', message: `Робочу версію ${head.number} ще не прийнято.` });
   }
   for (const s of listSources(db, caseId)) {
     if (s.read_status !== 'ok') {
@@ -1504,7 +1509,7 @@ export function submissionBlockers(db: DB, caseId: string): Blocker[] {
   for (const p of c.step_proposals ?? []) {
     if (p.status !== 'proposed') continue;
     out.push({ code: 'PENDING_STEP_PROPOSAL', severity: 'critical', ref: p.id,
-      message: `Пропозиція агента ${p.id}: ${p.action === 'remove' ? 'вилучити' : 'замінити'} крок ${p.step_id}${p.action === 'replace' ? ` кроком ${p.replacement_step_id}` : ''} — потрібне рішення аналітикині (причина: ${p.reason}).` });
+      message: `Пропозиція агента ${p.id}: ${p.action === 'remove' ? 'вилучити' : 'замінити'} крок ${p.step_id}${p.action === 'replace' ? ` кроком ${p.replacement_step_id}` : ''} — потрібне ваше рішення (причина: ${p.reason}).` });
   }
   out.push(...notationIssues(c));
   if (!(c.process_name ?? '').trim()) {
@@ -1552,7 +1557,7 @@ export function submissionBlockers(db: DB, caseId: string): Blocker[] {
   out.push(...flowIssues(c));
   out.push(...preparationIssues(c));
   if (c.conflicts.length > 0) {
-    out.push({ code: 'CONFLICTS_PRESENT', severity: 'warning', message: `Є конфлікти між правками аналітика й агента: ${c.conflicts.length}. Перегляньте обидва варіанти.` });
+    out.push({ code: 'CONFLICTS_PRESENT', severity: 'warning', message: `Є розбіжності між вашими правками й пропозиціями агента: ${c.conflicts.length}. Перегляньте обидва варіанти.` });
   }
   return out;
 }
@@ -2018,7 +2023,7 @@ export function diffVersions(
   for (const p of cur.step_proposals ?? []) {
     const o = pprop.get(p.id);
     const what = `${p.action === 'remove' ? 'вилучити' : 'замінити'} крок ${p.step_id}${p.action === 'replace' ? ` на ${p.replacement_step_id}` : ''}`;
-    if (!o) out.push({ label: 'Пропозиція', text: `Агент пропонує ${what}: «${clip(p.reason, 80)}» (потрібне рішення аналітикині)` });
+    if (!o) out.push({ label: 'Пропозиція', text: `Агент пропонує ${what}: «${clip(p.reason, 80)}» (потрібне ваше рішення)` });
     else if (o.status !== p.status) out.push({ label: 'Пропозиція', text: `Пропозицію ${p.id} (${what}) ${p.status === 'accepted' ? 'прийнято' : 'відхилено'}${p.decision_note ? `: «${clip(p.decision_note, 60)}»` : ''}` });
   }
 
@@ -2030,7 +2035,7 @@ export function diffVersions(
   for (const r of cur.notation_requirements ?? []) {
     const o = preq.get(r.id);
     const what = `${NOTATION_KIND_LABEL[r.kind]} (крок ${r.step_id})`;
-    if (!o) out.push({ label: 'Нотація', text: r.origin === 'agent' ? `Агент пропонує вимогу ${r.id}: ${what} — «${clip(r.detail, 80)}» (потрібне рішення аналітикині)` : `Додано вимогу ${r.id}: ${what} — «${clip(r.detail, 80)}»` });
+    if (!o) out.push({ label: 'Нотація', text: r.origin === 'agent' ? `Агент пропонує вимогу ${r.id}: ${what} — «${clip(r.detail, 80)}» (потрібне ваше рішення)` : `Додано вимогу ${r.id}: ${what} — «${clip(r.detail, 80)}»` });
     else if (o.status !== r.status) out.push({ label: 'Нотація', text: `Вимогу ${r.id} (${what}) ${r.status === 'confirmed' ? 'підтверджено' : 'відхилено'}${r.decision_note ? `: «${clip(r.decision_note, 60)}»` : ''}` });
   }
   for (const o of prev.notation_requirements ?? []) {
