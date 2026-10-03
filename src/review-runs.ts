@@ -30,7 +30,7 @@ import {
 import { loadBpmnInstruction } from './ai/prompt.ts';
 import type { InstructionInfo, Usage } from './ai/types.ts';
 import { redact } from './ai/redact.ts';
-import { ZERO, addUsage, failRun, writeMeta, type RunMeta } from './runs.ts';
+import { ZERO, addUsage, failRun, writeMeta, type AttemptJournalEntry, type RunMeta } from './runs.ts';
 import type { Violation } from './ai/verify.ts';
 
 const SYSTEM_ACTOR: Actor = { kind: 'agent', name: 'bpmn-review-agent' };
@@ -258,7 +258,12 @@ export async function executeBpmnReview(db: DB, ctx: ReviewCtx, reviewer: Review
 
   const meta = metaOf(result.usage, result.attempts, result.attemptCosts);
   if (result.status === 'failed') {
-    failRun(db, ctx.runId, result.message, meta, [...result.violations] as Violation[]);
+    // Журнал КОЖНОЇ спроби (вид збою, повідомлення, порушення) — без сирих відповідей моделі.
+    const journal = result.failedAttempts.map((a) => ({
+      attempt: a.attempt, kind: a.kind, message: a.message,
+      violations: a.violations.map((v) => ({ code: v.code, path: v.path, message: v.message })),
+    }));
+    failRun(db, ctx.runId, result.message, meta, [...result.violations] as Violation[], journal);
     audit(db, ctx.caseId, SYSTEM_ACTOR, 'bpmn_review_failed', { run_id: ctx.runId, kind: result.kind });
     return { ok: false, runId: ctx.runId, error: result.message };
   }
@@ -326,6 +331,10 @@ export interface CaseReview {
   /** Чому результат застарів або запису не довіряємо. */
   reasons?: string[];
   error?: string;
+  /** Для `failed`: порушення останньої спроби (що саме не так у відповіді агента). */
+  violations?: Violation[];
+  /** Для `failed`: журнал кожної спроби. Сирих відповідей моделі тут немає. */
+  failedAttempts?: AttemptJournalEntry[];
 }
 
 type Trusted = { ok: true; row: RecordRow } | { ok: false; reasons: string[] };
@@ -363,11 +372,21 @@ function checkRecord(db: DB, row: RecordRow): Trusted {
  * актуальність → повторну програмну перевірку збереженої відповіді (`reissueReview`) → шлюз `generationGate`.
  */
 export function getCaseReview(db: DB, caseId: string, instruction: InstructionInfo = loadBpmnInstruction()): CaseReview {
-  const last = one<{ id: string; technical_state: string; error: string | null }>(
-    db, `SELECT id, technical_state, error FROM run WHERE case_id = ? AND agent = 'bpmn' AND technical_state <> 'not_implemented' ORDER BY started_at DESC, rowid DESC LIMIT 1`, caseId);
+  const last = one<{ id: string; technical_state: string; error: string | null; violations_json: string | null; checks_json: string | null }>(
+    db, `SELECT id, technical_state, error, violations_json, checks_json FROM run WHERE case_id = ? AND agent = 'bpmn' AND technical_state <> 'not_implemented' ORDER BY started_at DESC, rowid DESC LIMIT 1`, caseId);
   if (!last) return { state: 'none' };
   if (last.technical_state === 'running' || last.technical_state === 'queued') return { state: 'running', runId: last.id };
-  if (last.technical_state === 'error') return { state: 'failed', runId: last.id, error: last.error ?? undefined };
+  if (last.technical_state === 'error') {
+    // Для невдалого запуску показуємо справжню причину: повідомлення, порушення останньої спроби
+    // й журнал кожної спроби (без сирих відповідей моделі).
+    const parse = <T>(raw: string | null, fallback: T): T => { try { return raw ? JSON.parse(raw) as T : fallback; } catch { return fallback; } };
+    const checks = parse<{ failed_attempts?: AttemptJournalEntry[] }>(last.checks_json ?? null, {});
+    return {
+      state: 'failed', runId: last.id, error: last.error ?? undefined,
+      violations: parse<Violation[]>(last.violations_json ?? null, []),
+      failedAttempts: checks.failed_attempts ?? [],
+    };
+  }
 
   const row = one<RecordRow>(db, 'SELECT * FROM bpmn_review WHERE run_id = ?', last.id);
   const untrusted = (reasons: string[]): CaseReview => ({ state: 'untrusted', runId: last.id, reviewId: row?.id, reasons });

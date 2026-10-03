@@ -5,7 +5,7 @@
   </bpmn:collaboration>
   <bpmn:process id="Process_1" isExecutable="false">
     <bpmn:extensionElements>
-      <ns1:asIsBinding versionId="ver_48ea8530e221" contentHash="06b48922aaa10b2674184929e502495b7690c5880c05031918b37a76acade048" origin="product" generator="cx-bpmn-pipeline-1@4501a188f1bd0d04" />
+      <ns1:asIsBinding versionId="ver_14ba83e84c5b" contentHash="14cdc1ae3b43343625d953ffc6bb6e4b66a21b167afe236e8c1dfcb46b007d18" origin="product" generator="cx-bpmn-pipeline-1@4501a188f1bd0d04" />
     </bpmn:extensionElements>
     <bpmn:laneSet id="LaneSet_1">
       <bpmn:lane id="Lane_0" name="Менеджер">

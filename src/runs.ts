@@ -173,12 +173,34 @@ export function writeMeta(db: DB, runId: string, m: RunMeta): void {
     JSON.stringify(m.usage ?? {}), m.attempts ?? 1, cost, reserved, unknown ? 0 : 1, m.durationMs ?? null, runId);
 }
 
-export function failRun(db: DB, runId: string, error: string, meta?: RunMeta, violations: Violation[] = []): void {
+/**
+ * Журнал спроб невдалого запуску: що саме не так у КОЖНІЙ спробі, а не лише в останній.
+ * Сирих відповідей моделі тут немає й бути не може — лише вид збою, повідомлення й перелік порушень,
+ * які вже пройшли через `verifyReviewOutput` (імена зайвих полів і довгі рядки туди не переносяться дослівно).
+ */
+export interface AttemptJournalEntry {
+  attempt: number;
+  kind: string;
+  message: string;
+  violations: { code: string; path: string; message: string }[];
+}
+
+export function failRun(db: DB, runId: string, error: string, meta?: RunMeta, violations: Violation[] = [], journal: AttemptJournalEntry[] = []): void {
   const r = one<{ case_id: string }>(db, 'SELECT case_id FROM run WHERE id = ?', runId);
   // 4000, а не 2000: повідомлення тепер містить первинну причину (з підказкою, що саме доступно) І блокування повтору.
   const msg = redact(error).slice(0, 4000);
-  run(db, `UPDATE run SET technical_state = 'error', finished_at = ?, error = ?, violations_json = ? WHERE id = ? AND technical_state = 'running'`,
-    new Date().toISOString(), msg, JSON.stringify(violations), runId);
+  // Журнал спроб зберігаємо в checks_json: раніше для невдалих запусків він лишався порожнім, і з експорту
+  // неможливо було зрозуміти, чим саме завершилась кожна спроба.
+  const checks = journal.length > 0
+    ? JSON.stringify({
+      failed_attempts: journal.slice(0, 4).map((a) => ({
+        attempt: a.attempt, kind: a.kind, message: redact(a.message).slice(0, 1000),
+        violations: a.violations.slice(0, 12).map((v) => ({ code: v.code.slice(0, 60), path: v.path.slice(0, 120), message: redact(v.message).slice(0, 400) })),
+      })),
+    })
+    : null;
+  run(db, `UPDATE run SET technical_state = 'error', finished_at = ?, error = ?, violations_json = ?, checks_json = COALESCE(?, checks_json) WHERE id = ? AND technical_state = 'running'`,
+    new Date().toISOString(), msg, JSON.stringify(violations), checks, runId);
   if (meta) writeMeta(db, runId, meta);
   audit(db, r?.case_id ?? null, AGENT_SYSTEM_ACTOR, 'run_failed', { run_id: runId, error: msg.slice(0, 300) });
 }

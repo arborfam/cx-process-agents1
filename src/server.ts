@@ -235,6 +235,9 @@ export function createApp(opts: ServerOptions): Server {
         state: r.state, run_id: r.runId ?? null, review_id: r.reviewId ?? null, created_at: r.createdAt ?? null,
         technical_limits: tech,
         findings: r.findings ?? [], warnings: r.warnings ?? [], requirements: r.requirements ?? [], reasons: r.reasons ?? [], error: r.error ?? null,
+        // Для невдалого запуску: що саме не так у відповіді агента й чим завершилась кожна спроба.
+        // Сирих відповідей моделі тут немає (їх і не зберігаємо для невдалих запусків).
+        violations: r.violations ?? [], failed_attempts: r.failedAttempts ?? [],
         // Знахідки з ключем, рішенням людини, тим, чи їх можна відхилити (D31; припущення про непідтримувану
         // нотацію — теж, за рішенням D84), і тим, де в пакеті знайдено цитату (довідка, D85).
         findings_view: (r.findingsView ?? []).map((v) => ({

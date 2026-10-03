@@ -394,9 +394,13 @@ const FINDING_CODE_LABEL = {
 
 async function loadDiagram() {
   const id = state.caseId;
+  // `load_error`, а не `error`: у нормальній відповіді API поле `error` — це РЯДОК із причиною невдалого
+  // запуску агента. Коли обидва випадки жили в одному полі, стан `failed` показувався як «undefined»,
+  // а справжня причина, порушення й дії ховалися.
+  const loadFail = (e) => ({ load_error: (e && e.message) ? e.message : String(e) });
   const [review, art] = await Promise.all([
-    api('GET', `/api/cases/${id}/bpmn/review`).catch((e) => ({ error: e })),
-    api('GET', `/api/cases/${id}/bpmn/artifact`).catch((e) => ({ error: e })),
+    api('GET', `/api/cases/${id}/bpmn/review`).catch(loadFail),
+    api('GET', `/api/cases/${id}/bpmn/artifact`).catch(loadFail),
   ]);
   state.diagram = { review, art };
   if (state.tab === 'diagram') renderTabs();
@@ -490,6 +494,32 @@ async function startLabelDialog(card) {
         await loadDiagram();
       } }, 'Погодити підпис'),
       el('button', { onclick: () => dlg.close() }, 'Скасувати')));
+}
+
+/**
+ * Чому запуск агента 2 завершився помилкою. Показуємо справжню причину, порушення відповіді й журнал
+ * КОЖНОЇ спроби — інакше людина бачить лише «помилка запуску» й не розуміє, що робити далі.
+ * Сирих відповідей моделі тут немає: їх для невдалих запусків не зберігають.
+ */
+function reviewFailureBox(review) {
+  const violations = review.violations || [];
+  const attempts = review.failed_attempts || [];
+  const vList = (items) => el('ul', { class: 'small' }, items.map((v) => el('li', {},
+    el('code', {}, v.code), v.path ? ' ' + v.path : '', ': ', v.message)));
+  return el('div', { class: 'warnbox', 'data-block': 'review-failed' },
+    el('strong', {}, 'Смислова перевірка не завершилась. '),
+    el('div', {}, review.error || 'Причину не записано.'),
+    violations.length
+      ? el('div', {}, el('p', { class: 'small' }, 'Що саме не так у відповіді агента:'), vList(violations))
+      : null,
+    attempts.length
+      ? el('details', {}, el('summary', { class: 'small' }, `Журнал спроб (${attempts.length})`),
+        ...attempts.map((a) => el('div', { class: 'small' },
+          el('strong', {}, `Спроба ${a.attempt}: `), a.message || a.kind,
+          (a.violations || []).length ? vList(a.violations) : null)))
+      : null,
+    el('p', { class: 'small' }, 'Опис, погодження й рішення не змінилися. Коли причину усунуто, перевірку можна запустити заново кнопкою нижче; ' +
+      'якщо причина в самому описі — виправте опис і погодьте нову версію.'));
 }
 
 function findingBox(card, reviewId, view, canDecide) {
@@ -1012,14 +1042,20 @@ PANELS.diagram = (card) => {
 
   // 1) Зауваження агента й стан смислової перевірки
   out.push(el('h3', { class: 'group-h' }, 'Смислова перевірка опису'));
-  if (review.error) out.push(el('div', { class: 'warnbox' }, 'Стан перевірки не прочитано: ' + review.error.message));
-  else {
+  if (review.load_error) {
+    out.push(el('div', { class: 'warnbox' },
+      el('strong', {}, 'Стан перевірки не вдалося завантажити. '),
+      'Це збій зв’язку з сервером, а не результат перевірки: нічого не змінилось і нічого не оплачено. ',
+      el('span', { class: 'small muted' }, review.load_error),
+      el('div', {}, el('button', { onclick: loadDiagram }, 'Спробувати ще раз'))));
+  } else {
     out.push(el('div', { class: 'kv' }, el('div', { class: 'k' }, 'Стан'),
       el('div', { class: 'v' }, REVIEW_STATE_LABEL[review.state] || review.state,
         review.created_at ? el('span', { class: 'small muted' }, ' · ' + review.created_at) : null)));
     if (review.state === 'none' || review.state === 'stale' || review.state === 'failed' || review.state === 'untrusted') {
       if ((review.reasons || []).length) out.push(el('div', { class: 'warnbox' }, review.reasons.join(' ')));
-      if (review.error) out.push(el('div', { class: 'warnbox' }, String(review.error)));
+      if (review.state === 'failed') out.push(reviewFailureBox(review));
+      else if (review.error) out.push(el('div', { class: 'warnbox' }, String(review.error)));
       out.push(technicalLimitsBox(review.technical_limits, card));
       out.push(el('p', { class: 'small' }, ai.available
         ? 'Наступна дія: запустити смислову перевірку опису моделлю. Схему вона не будує — лише шукає неоднозначності.'
@@ -1069,7 +1105,11 @@ PANELS.diagram = (card) => {
 
   // 2) Побудова схеми
   out.push(el('h3', { class: 'group-h' }, 'Побудова схеми'));
-  if (art.error) out.push(el('div', { class: 'warnbox' }, 'Стан схеми не прочитано: ' + art.error.message));
+  if (art.load_error) out.push(el('div', { class: 'warnbox' },
+    el('strong', {}, 'Стан схеми не вдалося завантажити. '),
+    'Це збій зв’язку з сервером, а не результат побудови. ',
+    el('span', { class: 'small muted' }, art.load_error),
+    el('div', {}, el('button', { onclick: loadDiagram }, 'Спробувати ще раз'))));
   else {
     if (art.can_build) {
       out.push(el('p', { class: 'small' }, 'Усі перевірки пройдено. Побудова не звертається до моделі: схема створюється зі змісту погодженої версії.'));
