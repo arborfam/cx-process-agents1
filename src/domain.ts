@@ -317,7 +317,10 @@ export function protectAnalystEdits(
     if (key === 'summary') result.summary = base.summary;
     else if (key === 'business_context') result.business_context = base.business_context;
     else if (key.startsWith('boundaries.')) {
-      const f = key.slice('boundaries.'.length) as keyof Content['boundaries'];
+      // Ключі конфліктів беруться з переліку вище (рядок із `['trigger', 'input', 'completion', 'result']`).
+      // `trigger_short` там навмисно немає: це пропозиція агента, а не зміст, який редагує аналітикиня,
+      // і на схему вона потрапляє лише через окреме погодження підпису.
+      const f = key.slice('boundaries.'.length) as 'trigger' | 'input' | 'completion' | 'result';
       result.boundaries[f] = base.boundaries[f];
     } else if (key === 'roles') result.roles = [...base.roles];
     else if (key === 'entry_step_id') {

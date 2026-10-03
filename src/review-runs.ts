@@ -14,7 +14,7 @@
  */
 import { all, one, run, tx, type DB } from './db.ts';
 import { DomainError } from './errors.ts';
-import { startLabelState } from './start-label.ts';
+import { startLabelState, triggerShortProposal } from './start-label.ts';
 import {
   audit, bpmnGuard, currentApproval, getVersion, headVersion, listSources, requireHuman, verifyVersionIntegrity, versionContent,
   type Actor,
@@ -150,7 +150,7 @@ export function beginBpmnReview(db: DB, actor: Actor, caseId: string, reviewer?:
       const version = getVersion(db, approval.version_id);
       const content = versionContent(version);
       // Підпис початкової події бере програма з погодженого рішення (D88), а не агент.
-      const sl = startLabelState(db, caseId, version.id, version.content_hash, content.boundaries.trigger);
+      const sl = startLabelState(db, caseId, version.id, version.content_hash, content.boundaries.trigger, triggerShortProposal(content));
       const pkg: ReviewPackage = { versionId: version.id, contentHash: version.content_hash, content, startLabel: sl.label, startDocumentation: sl.documentation };
       const instruction = reviewer?.instruction ?? loadBpmnInstruction();
       const startedAt = new Date().toISOString();
@@ -402,7 +402,7 @@ export function getCaseReview(db: DB, caseId: string, instruction: InstructionIn
 
   const version = getVersion(db, row.version_id);
   const contentNow = versionContent(version);
-  const slNow = startLabelState(db, caseId, version.id, version.content_hash, contentNow.boundaries.trigger);
+  const slNow = startLabelState(db, caseId, version.id, version.content_hash, contentNow.boundaries.trigger, triggerShortProposal(contentNow));
   const pkg: ReviewPackage = {
     versionId: version.id, contentHash: version.content_hash, content: contentNow,
     startLabel: slNow.label, startDocumentation: slNow.documentation,

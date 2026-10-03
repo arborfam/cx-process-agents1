@@ -476,14 +476,24 @@ function startLabelBox(card, info) {
 
 async function startLabelDialog(card) {
   const r = await api('POST', `/api/cases/${card.case.id}/start-label/preview`, { label: '' });
-  const label = el('input', { type: 'text', maxlength: '240', placeholder: 'Короткий підпис для схеми (пишете ви)', style: 'width:100%' });
+  // Межа береться з чинного контракту сервера, а не зашита в інтерфейс.
+  const max = r.preview.max_chars;
+  const prop = r.preview.agent_proposal;
+  const label = el('input', { type: 'text', maxlength: String(max), placeholder: 'Короткий підпис для схеми (пишете ви)', style: 'width:100%' });
+  const left = el('div', { class: 'small muted' });
+  const countLeft = () => { left.textContent = `${label.value.length} з ${max} символів`; };
+  label.oninput = countLeft; countLeft();
   const reason = el('textarea', { rows: '3', placeholder: 'Чому саме такий підпис і що лишається в повному тексті (обов’язково)', style: 'width:100%' });
   openDialog(
     el('h3', {}, 'Короткий підпис початкової події'),
     el('p', { class: 'small' }, el('strong', {}, 'Повний текст тригера (не змінюється, ' + r.preview.trigger.length + ' симв.):')),
     el('blockquote', {}, r.preview.trigger),
     el('ul', { class: 'small' }, r.preview.consequences.map((x) => el('li', {}, x))),
-    el('p', {}, el('strong', {}, 'Короткий підпис: ')), label,
+    prop ? el('div', { class: 'warnbox' },
+      el('div', {}, el('strong', {}, 'Варіант із аналізу (' + prop.chars + ' симв.): '), '«' + prop.text + '»'),
+      el('div', { class: 'small' }, 'Його запропонував агент разом із повним описом — окремого запуску для цього не було. Перевірте текст: на схему він піде лише після вашого погодження.'),
+      el('button', { class: 'link', onclick: () => { label.value = prop.text; countLeft(); label.focus(); } }, 'Підставити у поле й відредагувати')) : null,
+    el('p', {}, el('strong', {}, 'Короткий підпис: ')), label, left,
     el('p', {}, el('strong', {}, 'Пояснення: ')), reason,
     el('div', { class: 'row' },
       el('button', { class: 'primary', onclick: async () => {

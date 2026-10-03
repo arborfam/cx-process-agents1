@@ -173,7 +173,17 @@ const NotationRequirement = z
 const Conflict = z.object({ key: z.string(), kept: z.string(), proposed: z.string(), note: z.string() }).strict();
 
 /** Межі процесу: тригер, вхід, завершення, результат. Їх задає аналітикиня (п. 1 інструкції агента). */
-const Boundaries = z.object({ trigger: z.string(), input: z.string(), completion: z.string(), result: z.string() }).strict();
+const Boundaries = z.object({
+  trigger: z.string(), input: z.string(), completion: z.string(), result: z.string(),
+  /**
+   * Пропозиція короткого підпису початкової події (D94). Її дає агент 1 у ТІЙ САМІЙ відповіді,
+   * що й повний опис, — окремого платного виклику для цього не потрібно.
+   * Це лише пропозиція: підпис на схему потрапляє тільки через погодження людини (`start_label`).
+   * Межі тут навмисно немає: задовгу чи непридатну пропозицію програма просто не показує
+   * (див. `triggerShortProposal`), а не відхиляє через неї всю відповідь і не обрізає текст.
+   */
+  trigger_short: z.string().optional(),
+}).strict();
 
 export const ContentSchema = z
   .object({

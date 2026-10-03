@@ -45,6 +45,26 @@ export function confirmedStartLabel(db: DB, caseId: string, versionId: string, c
   return null;
 }
 
+/**
+ * Пропозиція короткого підпису з уже отриманої відповіді агента 1 (D94).
+ * Повертається лише тоді, коли її справді можна записати у схему: інакше пропозиції немає
+ * і лишається ручне редагування. Текст НЕ скорочується й не виправляється.
+ */
+export interface StartLabelProposal {
+  text: string;
+  source: 'agent';
+  chars: number;
+}
+
+export function triggerShortProposal(content: { boundaries: { trigger: string; trigger_short?: string } }): StartLabelProposal | null {
+  const raw = (content.boundaries.trigger_short ?? '').trim();
+  if (!raw) return null;
+  if (raw === content.boundaries.trigger.trim()) return null;      // це не коротший підпис
+  if (raw.length > MAX_EVENT_LABEL_CHARS) return null;             // не вміщається — механічно не ріжемо
+  if (textProblem(raw)) return null;                               // у схему дослівно не записати
+  return { text: raw, source: 'agent', chars: raw.length };
+}
+
 export interface StartLabelState {
   /** Підпис, який піде на схему: погоджений короткий або повний тригер. */
   label: string;
@@ -55,30 +75,44 @@ export interface StartLabelState {
   message: string | null;
   confirmed: StartLabelRow | null;
   trigger: string;
+  /** Межа зовнішнього підпису події — із чинного контракту, а не з інтерфейсу. */
+  maxChars: number;
+  /** Пропозиція агента з тієї самої відповіді. Сама собою нічого не змінює. */
+  proposal: StartLabelProposal | null;
 }
 
 /** Стан підпису початкової події для погодженої версії. Нічого не змінює. */
-export function startLabelState(db: DB, caseId: string, versionId: string, contentHash: string, trigger: string): StartLabelState {
+export function startLabelState(
+  db: DB, caseId: string, versionId: string, contentHash: string, trigger: string,
+  proposal: StartLabelProposal | null = null,
+): StartLabelState {
+  const base = { maxChars: MAX_EVENT_LABEL_CHARS, proposal };
   const confirmed = confirmedStartLabel(db, caseId, versionId, contentHash, trigger);
   if (confirmed) {
+    // Погоджений підпис непомітно не змінюється: пропозиція агента тут нічого не вирішує.
     return {
-      label: confirmed.label, documentation: trigger, needsDecision: false, confirmed, trigger,
+      ...base, label: confirmed.label, documentation: trigger, needsDecision: false, confirmed, trigger,
       message: `Початкова подія підписана погодженим коротким підписом; повний текст тригера (${trigger.length} симв.) збережено в деталях події й показується поряд зі схемою.`,
     };
   }
   if (trigger.length > MAX_EVENT_LABEL_CHARS) {
     return {
-      label: trigger, documentation: null, needsDecision: true, confirmed: null, trigger,
-      message: `Тригер процесу має ${trigger.length} символів — це більше за межу розбірливого підпису події (${MAX_EVENT_LABEL_CHARS}). Текст не скорочується: щоб побудувати схему, погодьте короткий підпис початкової події. Повний текст залишиться в описі й у деталях події.`,
+      ...base, label: trigger, documentation: null, needsDecision: true, confirmed: null, trigger,
+      message: `Тригер процесу має ${trigger.length} символів — це більше за межу розбірливого підпису події (${MAX_EVENT_LABEL_CHARS}). Текст не скорочується: щоб побудувати схему, погодьте короткий підпис початкової події. Повний текст залишиться в описі й у деталях події.`
+        + (proposal ? ` Агент запропонував варіант на ${proposal.chars} симв. — перевірте його й погодьте або напишіть свій.` : ''),
     };
   }
-  return { label: trigger, documentation: null, needsDecision: false, confirmed: null, trigger, message: null };
+  return { ...base, label: trigger, documentation: null, needsDecision: false, confirmed: null, trigger, message: null };
 }
 
 export interface StartLabelPreview {
   trigger: string;
   current_label: string;
   proposed_label: string;
+  /** Межа з чинного контракту (`MAX_EVENT_LABEL_CHARS`), а не з інтерфейсу. */
+  max_chars: number;
+  /** Пропозиція з уже отриманої відповіді агента 1; застосовує її лише людина. */
+  agent_proposal: StartLabelProposal | null;
   version_number: number;
   content_hash: string;
   consequences: string[];
@@ -92,11 +126,13 @@ export function previewStartLabel(db: DB, caseId: string, label: string): StartL
   const version = getVersion(db, approval.version_id);
   const content = versionContent(version);
   const trigger = content.boundaries.trigger;
-  const state = startLabelState(db, caseId, version.id, version.content_hash, trigger);
+  const state = startLabelState(db, caseId, version.id, version.content_hash, trigger, triggerShortProposal(content));
   return {
     trigger,
     current_label: state.label,
     proposed_label: label,
+    max_chars: state.maxChars,
+    agent_proposal: state.proposal,
     version_number: version.number,
     content_hash: version.content_hash,
     consequences: [

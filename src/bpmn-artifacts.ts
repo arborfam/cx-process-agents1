@@ -35,7 +35,7 @@ import { GENERATOR_NAME, pipelineVersion } from './pipeline/scripts.ts';
 import { verifyBpmnAgainstPackage } from './pipeline/verify.ts';
 import { verifyBpmn } from './bpmn/verify.ts';
 import { verifyDrawioAgainstBpmn } from './pipeline/verify-drawio.ts';
-import { startLabelState, type StartLabelState } from './start-label.ts';
+import { startLabelState, triggerShortProposal, type StartLabelProposal, type StartLabelState } from './start-label.ts';
 
 /** Шов для тестів: пошкодження готового файлу перед його зворотною перевіркою (доводить, що пошкоджений файл не видається). */
 export interface GenerateFaultInjection {
@@ -268,7 +268,7 @@ export function buildPreflight(db: DB, caseId: string, instruction?: Instruction
   }
 
   // Підпис початкової події: або сам тригер, або ПОГОДЖЕНИЙ людиною короткий підпис (D88). Мовчки не скорочуємо.
-  const startLabel = startLabelState(db, caseId, version.id, version.content_hash, pkg.content.boundaries.trigger);
+  const startLabel = startLabelState(db, caseId, version.id, version.content_hash, pkg.content.boundaries.trigger, triggerShortProposal(pkg.content));
   if (startLabel.needsDecision) {
     return { ok: false, code: 'START_LABEL_REQUIRED', message: startLabel.message! };
   }
@@ -311,7 +311,7 @@ export interface TechnicalLimits {
   /** Відомі обмеження, які побудову не зупиняють (показуються як застереження). */
   known_limits: Finding[];
   /** Стан підпису початкової події: чи потрібне окреме рішення про короткий підпис (D88). */
-  start_label: { label: string; needs_decision: boolean; message: string | null; trigger_chars: number } | null;
+  start_label: { label: string; needs_decision: boolean; message: string | null; trigger_chars: number; max_chars: number; proposal: StartLabelProposal | null } | null;
 }
 
 export function technicalLimits(db: DB, caseId: string): TechnicalLimits {
@@ -325,11 +325,11 @@ export function technicalLimits(db: DB, caseId: string): TechnicalLimits {
   } catch (e) {
     return none(e instanceof Error ? e.message : 'Пакет не вдалося зібрати.');
   }
-  const sl = startLabelState(db, caseId, pkg.versionId, pkg.contentHash, pkg.content.boundaries.trigger);
+  const sl = startLabelState(db, caseId, pkg.versionId, pkg.contentHash, pkg.content.boundaries.trigger, triggerShortProposal(pkg.content));
   const a = analyzePackage(pkg, { startLabel: sl.label });
   return {
     available: true, reason: null, unsupported: a.unsupported, blocking: a.blocking, known_limits: a.knownLimits,
-    start_label: { label: sl.label, needs_decision: sl.needsDecision, message: sl.message, trigger_chars: sl.trigger.length },
+    start_label: { label: sl.label, needs_decision: sl.needsDecision, message: sl.message, trigger_chars: sl.trigger.length, max_chars: sl.maxChars, proposal: sl.proposal },
   };
 }
 
