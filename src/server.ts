@@ -329,7 +329,12 @@ export function createApp(opts: ServerOptions): Server {
           return json(res, 201, { source_id: s.id });
         }
         case 'sources/file': {
-          const origin = b.origin === 'real' || b.origin === 'synthetic' ? b.origin : 'synthetic';
+          // Походження не має тихого значення за замовчуванням: мовчазне «synthetic» позначило б
+          // реальні дані як навчальні й відкрило б їх для надсилання моделі (D18, D98).
+          if (b.origin !== 'real' && b.origin !== 'synthetic') {
+            throw new DomainError('VALIDATION', 'Потрібно явно вказати походження файла: "real" або "synthetic".', 400);
+          }
+          const origin = b.origin;
           const bytes = Buffer.from(str(b.content_base64, 'content_base64'), 'base64');
           const s = addSourceFromFile(db, human, caseId, {
             name: str(b.name, 'name'), bytes, kind: str(b.kind, 'kind') as 'transcript', required: b.required === true, origin,

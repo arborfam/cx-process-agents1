@@ -147,14 +147,21 @@ try {
   await page.waitForSelector('#toptabs'); await page.waitForTimeout(400);
   await page.getByRole('tab', { name: 'AS-IS' }).click(); await page.waitForTimeout(300);
   await page.locator('.subtabs .tab', { hasText: 'Питання' }).click(); await page.waitForTimeout(400);
-  const ta = page.locator('#main textarea').first();
-  if (await ta.count()) {
+  // Поле нового питання є на цій вкладці завжди (відповіді на закриті питання — ні).
+  const ta = page.locator('#main [data-draft="q-new-text"]').first();
+  // Відсутність поля — це НЕВДАЧА перевірки, а не підстава її зарахувати: без поля твердження
+  // про збереження введення нічого не доводить.
+  const taCount = await ta.count();
+  ck('текстове поле присутнє (інакше перевірку збереження введення зараховувати нема за чим)', taCount > 0, `знайдено ${taCount}`);
+  if (taCount > 0) {
     await ta.fill('Напівнабраний текст, який не має зникнути');
     await page.evaluate(() => window.scrollTo(0, 300));
     await page.evaluate(() => (window as unknown as { route: () => Promise<void> }).route?.());
     await page.waitForTimeout(900);
+    ck('введений текст не зник при оновленні стану', (await ta.inputValue()).includes('Напівнабраний'), (await ta.inputValue()).slice(0, 50));
+  } else {
+    ck('введений текст не зник при оновленні стану', false, 'поля немає — перевірити нічого');
   }
-  ck('введений текст не зник при оновленні стану', (await ta.count()) ? (await ta.inputValue()).includes('Напівнабраний') : true);
   ck('вкладка не скинулась', (await page.locator('.subtabs .tab[aria-selected="true"]').textContent() || '').includes('Питання'));
 
   await ctx.close();

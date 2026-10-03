@@ -3,32 +3,71 @@
 // Дані завжди вставляються через textContent (без innerHTML), щоб текст джерел не міг виконатися як код.
 
 const app = document.getElementById('app');
-const state = { config: null, top: 'overview', tab: 'context', card: null, caseId: null, diagram: null, viewer: null, marked: [] };
+const state = { config: null, top: 'overview', tab: 'context', card: null, caseId: null, diagram: null, viewer: null, marked: [], diagramPoll: null, diagramSince: null, diagramLost: false };
 
-/* ─────────── збереження введення й позиції між перемальовуваннями (D97) ───────────
-   Автоматичне оновлення стану не має стирати напівнабраний текст і не має кидати сторінку вгору. */
+/* ─────────── чернетки незавершеного введення (D98) ───────────
+   Автоматичне оновлення стану не має стирати напівнабраний текст і кидати сторінку вгору.
+   Значення перехоплюються ПІД ЧАС набору (делегованим слухачем), а не лише в момент перемальовування:
+   інакше введене під час очікування відповіді сервера губиться.
+   Чернетки належать конкретному кейсу й конкретному полю; між кейсами не переносяться
+   й після успішного надсилання форми не відновлюються. */
+const drafts = new Map();                       // caseId → Map(ключ → значення)
+function draftsFor(caseId) {
+  if (!drafts.has(caseId)) drafts.set(caseId, new Map());
+  return drafts.get(caseId);
+}
+/** Стабільний ключ поля. `id` — найкращий; далі `name` (радіо — з урахуванням значення); інакше поле не зберігаємо. */
+function draftKey(e) {
+  if (e.dataset && e.dataset.draft) return 'd:' + e.dataset.draft;
+  if (e.id) return 'i:' + e.id;
+  if (e.name) return 'n:' + e.name;
+  return null;
+}
+function rememberField(e) {
+  if (!state.caseId || !e || !e.tagName) return;
+  if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(e.tagName)) return;
+  const k = draftKey(e); if (!k) return;
+  const m = draftsFor(state.caseId);
+  if (e.type === 'checkbox') m.set(k, e.checked);
+  else if (e.type === 'radio') { if (e.checked) m.set(k, e.value); }
+  else if (e.type === 'file') return;            // файл відновити не можна — і не вдаємо, що можна
+  else m.set(k, e.value);
+}
+document.addEventListener('input', (ev) => rememberField(ev.target), true);
+document.addEventListener('change', (ev) => rememberField(ev.target), true);
+
+/** Прибрати чернетки після успішного надсилання: відновлювати вже надіслану форму не можна. */
+function clearDrafts(caseId, keys) {
+  const m = drafts.get(caseId); if (!m) return;
+  for (const k of keys) { m.delete('i:' + k); m.delete('n:' + k); m.delete('d:' + k); }
+}
+function clearDraftsByPrefix(caseId, prefix) {
+  const m = drafts.get(caseId); if (!m) return;
+  for (const k of [...m.keys()]) if (k.slice(2).startsWith(prefix)) m.delete(k);
+}
+
 function captureUi() {
-  const vals = {};
-  document.querySelectorAll('#app textarea[id], #app input[id], #app select[id]').forEach((e) => {
-    if (e.type === 'checkbox' || e.type === 'radio') vals[e.id] = e.checked;
-    else if (e.value) vals[e.id] = e.value;
-  });
   const a = document.activeElement;
   return {
-    y: window.scrollY, vals,
+    y: window.scrollY,
     focus: a && a.id ? a.id : null,
     sel: a && a.id && a.selectionStart != null ? [a.selectionStart, a.selectionEnd] : null,
     open: [...document.querySelectorAll('#app details[open]')].map((d) => (d.querySelector('summary') || {}).textContent || ''),
   };
 }
 function restoreUi(st) {
-  if (!st) return;
-  for (const [id, v] of Object.entries(st.vals)) {
-    const e = document.getElementById(id);
-    if (!e) continue;
-    if (e.type === 'checkbox' || e.type === 'radio') e.checked = v;
-    else if (!e.value) e.value = v;
+  const m = state.caseId ? drafts.get(state.caseId) : null;
+  if (m) {
+    document.querySelectorAll('#app input, #app textarea, #app select').forEach((e) => {
+      const k = draftKey(e); if (!k || !m.has(k)) return;
+      const v = m.get(k);
+      // Відновлюємо навіть тоді, коли нове поле вже має значення: чернетка людини головніша.
+      if (e.type === 'checkbox') e.checked = !!v;
+      else if (e.type === 'radio') e.checked = e.value === v;
+      else if (e.type !== 'file' && e.value !== v) e.value = v;
+    });
   }
+  if (!st) return;
   document.querySelectorAll('#app details').forEach((d) => {
     const t = (d.querySelector('summary') || {}).textContent || '';
     if (st.open.includes(t)) d.open = true;
@@ -131,7 +170,7 @@ async function renderList() {
 async function renderCase(id) {
   const ui = state.caseId === id ? captureUi() : null;
   const card = await api('GET', '/api/cases/' + id);
-  if (state.caseId !== id) { state.caseId = id; state.top = 'overview'; state.tab = 'context'; }
+  if (state.caseId !== id) { stopDiagram(); state.caseId = id; state.top = 'overview'; state.tab = 'context'; }
   state.card = card;
 
   const appbar = el('header', { class: 'appbar' }, el('div', { class: 'appbar-in' },
@@ -176,7 +215,7 @@ function renderTop() {
   if (state.top === 'overview') main.replaceChildren(overviewPage(card));
   else if (state.top === 'asis') main.replaceChildren(asisPage(card));
   else if (state.top === 'sources') main.replaceChildren(el('div', { class: 'page' }, el('div', { class: 'cols' },
-    el('div', { class: 'stack' }, el('div', { class: 'card lead' }, VIEWS.sources(card))), railNext(card))));
+    el('div', { class: 'stack' }, el('div', { class: 'card lead' }, VIEWS.sources(card)), analysisCard(card)), railNext(card))));
   else if (state.top === 'diagram') main.replaceChildren(el('div', { class: 'page wide' }, el('div', { class: 'stack' }, el('div', { class: 'card' }, VIEWS.diagram(card)))));
   else main.replaceChildren(el('div', { class: 'page' }, el('div', { class: 'stack' }, el('div', { class: 'card' }, VIEWS.history(card)))));
 }
@@ -237,6 +276,23 @@ function runSection(card) {
 function goTo(top, tab) {
   state.top = top; if (tab) state.tab = tab;
   renderTop(); window.scrollTo(0, 0);
+}
+
+/**
+ * Видима дія аналізу після додавання джерел (D98). Раніше `aiButton` була визначена,
+ * але в інтерфейс не потрапляла, тож запустити аналіз з екрана було неможливо.
+ */
+function analysisCard(card) {
+  const n = card.sources.filter((s) => s.read_status === 'ok' && !s.covered).length;
+  const ai = (card.ai && card.ai.analyst) || card.ai || {};
+  return el('section', { class: 'card', 'data-block': 'analysis' },
+    el('h2', {}, card.head.content.steps.length ? 'Оновити аналіз' : 'Запустити аналіз'),
+    el('p', { class: 'small muted' }, n
+      ? `Нових джерел, ще не врахованих у описі: ${n}. Аналіз виконується один раз на весь пакет.`
+      : 'Усі додані джерела вже враховано в поточній версії. Новий запуск має сенс після нового джерела або уточнення.'),
+    el('div', { class: 'actions' }, aiButton(card)),
+    el('span', { class: 'paid' }, 'Платний етап: тексти джерел надсилаються постачальнику моделі.'),
+    aiNote(card));
 }
 
 /** Одна картка «Наступна дія» для всіх вкладок: позначка витрат не змінюється від місця. */
@@ -301,6 +357,21 @@ function reviewTable(card) {
 
 /* ─────────────── AS-IS ─────────────── */
 
+/** Редагування біля відповідного змісту: окремої вкладки «Редагувати» немає (D98). */
+function editBlock(card, focusField) {
+  const empty = !card.head.content.steps.length && !card.head.content.boundaries.trigger;
+  const d = el('details', { 'data-block': 'edit-inline', open: empty ? '' : undefined },
+    el('summary', {}, 'Редагувати опис — створить нову версію'),
+    VIEWS.edit(card));
+  if (focusField) {
+    setTimeout(() => {
+      const f = d.querySelector(`[name="${focusField}"]`);
+      if (f && d.open) f.focus();
+    }, 60);
+  }
+  return d;
+}
+
 function asisPage(card) {
   const sub = el('nav', { class: 'subtabs', role: 'tablist' }, ...TABS.map(([k, label]) => {
     const n = k === 'questions' && card.critical_open_questions.length ? ' · ' + (card.critical_open_questions.length + card.other_open_questions_count) : '';
@@ -309,7 +380,9 @@ function asisPage(card) {
       onclick: () => { state.tab = k; renderTop(); },
     }, label + n);
   }));
-  const panel = el('div', { id: 'panel' }, VIEWS[state.tab](card));
+  const FOCUS = { context: 'trigger', steps: 'steps' };
+  const panel = el('div', { id: 'panel' }, VIEWS[state.tab](card),
+    ['context', 'steps'].includes(state.tab) ? editBlock(card, FOCUS[state.tab]) : null);
   return el('div', { class: 'page' }, critLine(card),
     el('div', { class: 'cols' },
       el('div', { class: 'stack' },
@@ -413,7 +486,7 @@ function showTab(tab) { goTo(TOP_OF[tab] || 'asis', TOP_OF[tab] === 'asis' ? tab
 /** Явний вибір початкового кроку. Система ніколи не обирає його сама (D27). Для погоджених записів створюється нова версія. */
 function entryForm(card) {
   const steps = card.head.content.steps;
-  if (!steps.length) return el('p', { class: 'hint' }, 'Спершу додайте кроки на вкладці «Редагувати».');
+  if (!steps.length) return el('p', { class: 'hint' }, 'Спершу додайте кроки — форма «Редагувати опис» нижче на цій вкладці.');
   const sel = el('select', { id: 'entry-select', 'aria-label': 'Початковий крок' }, el('option', { value: '' }, '— оберіть початковий крок —'),
     steps.map((s) => el('option', { value: s.id }, `${s.id} — ${s.action}`)));
   const save = async () => {
@@ -525,8 +598,17 @@ const FINDING_CODE_LABEL = {
   ENTRY_TRIGGER_MISMATCH: 'початок не відповідає тригеру', UNSUPPORTED_CANDIDATE: 'кандидат на непідтримувану нотацію',
 };
 
+let diagramReq = 0;
+function stopDiagram() {
+  clearTimeout(state.diagramPoll); state.diagramPoll = null;
+  diagramReq++;                                   // запізнілі відповіді стають недійсними
+  if (state.viewer) { try { state.viewer.destroy(); } catch (e) { /* уже знищено */ } state.viewer = null; }
+  state.diagram = null; state.marked = [];
+}
+
 async function loadDiagram() {
   const id = state.caseId;
+  const req = ++diagramReq;
   // `load_error`, а не `error`: у нормальній відповіді API поле `error` — це РЯДОК із причиною невдалого
   // запуску агента. Коли обидва випадки жили в одному полі, стан `failed` показувався як «undefined»,
   // а справжня причина, порушення й дії ховалися.
@@ -535,7 +617,22 @@ async function loadDiagram() {
     api('GET', `/api/cases/${id}/bpmn/review`).catch(loadFail),
     api('GET', `/api/cases/${id}/bpmn/artifact`).catch(loadFail),
   ]);
-  state.diagram = { review, art };
+  // Відповідь кейсу А не має заміщати дані кейсу Б: і кейс, і номер запиту мають збігтися.
+  if (req !== diagramReq || state.caseId !== id) return;
+  state.diagram = { caseId: id, review, art };
+
+  // ── Дефект 3: стан перевірки оновлюється сам до завершення або явної помилки ──
+  const st = (review && review.state) || null;
+  const transport = !!(review && review.load_error) || !!(art && art.load_error);
+  clearTimeout(state.diagramPoll); state.diagramPoll = null;
+  if (st === 'running' || transport) {
+    state.diagramSince = state.diagramSince || Date.now();
+    state.diagramLost = transport;
+    // Читання стану моделі не викликає: це той самий GET, що й при відкритті вкладки.
+    state.diagramPoll = setTimeout(() => { if (state.caseId === id) void loadDiagram(); }, transport ? 5000 : 2000);
+  } else {
+    state.diagramSince = null; state.diagramLost = false;
+  }
   if (state.top === 'diagram') renderTop();   // схема тепер вкладка верхнього рівня
 }
 
@@ -855,10 +952,10 @@ const VIEWS = {
   },
   steps: (card) => {
     const c = card.head.content; const steps = c.steps;
-    if (!steps.length) return el('p', { class: 'muted' }, 'Кроків ще немає. Додайте їх на вкладці «Редагувати».');
+    if (!steps.length) return el('p', { class: 'muted' }, 'Кроків ще немає. Додайте їх у формі «Редагувати опис» нижче — або запустіть аналіз на вкладці «Джерела».');
     const entryLine = card.entry.defined
       ? el('p', { class: 'small' }, el('strong', {}, '▶ Початок: '), `${c.entry_step_id} — ${steps.find((x) => x.id === c.entry_step_id).action}`)
-      : el('p', { class: 'warnbox' }, el('strong', {}, 'Початковий крок не задано. '), 'Оберіть його в блоці «Критичні прогалини» або на вкладці «Редагувати».');
+      : el('p', { class: 'warnbox' }, el('strong', {}, 'Початковий крок не задано. '), 'Оберіть його в блоці «Потребує уваги» або у формі «Редагувати опис» нижче.');
     return el('div', {}, entryLine, proposalsView(card),
       el('table', {}, el('thead', {}, el('tr', {}, ['ID', 'Роль', 'Дія', 'Результат', 'Далі'].map((h) => el('th', {}, h)))),
         el('tbody', {}, steps.map((s) => el('tr', {}, el('td', {}, s.id === c.entry_step_id ? '▶ ' + s.id : s.id), el('td', {}, s.role), el('td', {}, s.action, s.details ? el('details', { class: 'small' }, el('summary', {}, 'Деталі'), s.details) : null), el('td', {}, s.result),
@@ -913,13 +1010,13 @@ const VIEWS = {
       e.preventDefault(); const f = e.target;
       const t = f.transition.value === '' ? null : transitions[Number(f.transition.value)];
       const ok = await act(() => api('POST', `/api/cases/${card.case.id}/questions`, { base_version_id: card.head.id, text: f.text.value, impact: f.impact.value, critical: f.critical.checked, affects: t ? [{ step_id: t.step_id, condition: t.condition }] : [] }), 'Питання додано (нова версія)');
-      if (ok) await refresh();
+      if (ok) { clearDraftsByPrefix(card.case.id, 'q-new'); clearDrafts(card.case.id, ['critical']); await refresh(); }
     } }, el('h3', {}, 'Поставити питання (вручну)'),
       el('p', { class: 'hint' }, 'Питання можуть ставити аналітикиня, сценарій демо та (якщо підключено модель) агент. Нічого не імітується.'),
-      el('label', {}, 'Питання'), el('input', { type: 'text', name: 'text', required: true }),
-      el('label', {}, 'Від чого залежить відповідь (вплив на опис)'), el('input', { type: 'text', name: 'impact' }),
+      el('label', {}, 'Питання'), el('input', { type: 'text', name: 'text', 'data-draft': 'q-new-text', required: true }),
+      el('label', {}, 'Від чого залежить відповідь (вплив на опис)'), el('input', { type: 'text', name: 'impact', 'data-draft': 'q-new-impact' }),
       el('label', {}, 'Стосується переходу (необов’язково)'),
-      el('select', { name: 'transition' }, el('option', { value: '' }, 'не стосується конкретного переходу'),
+      el('select', { name: 'transition', 'data-draft': 'q-new-transition' }, el('option', { value: '' }, 'не стосується конкретного переходу'),
         transitions.map((t, i) => el('option', { value: String(i) }, `${t.step_id}${t.condition ? ' (' + t.condition + ')' : ''} → ${t.to === 'END' ? 'кінець' : t.to === 'UNKNOWN' ? 'невідомо' : t.to}`))),
       el('p', { class: 'hint' }, 'Якщо обрати перехід, він одразу стане «невідомо»: невідоме не записується в опис як факт.'),
       el('label', { class: 'inline' }, el('input', { type: 'checkbox', name: 'critical' }), 'Критичне (блокує погодження)'),
@@ -936,21 +1033,29 @@ const VIEWS = {
     const form = el('form', { onsubmit: async (e) => {
       e.preventDefault(); const f = e.target;
       const ok = await act(() => api('POST', `/api/cases/${card.case.id}/sources`, { kind: f.kind.value, title: f.title.value, content: f.content.value, required: f.required.checked, origin: f.synthetic.checked ? 'synthetic' : 'real' }), 'Джерело додано');
-      if (ok) await refresh();
+      if (ok) { clearDraftsByPrefix(card.case.id, 'src-'); clearDrafts(card.case.id, ['kind', 'synthetic', 'required']); await refresh(); }
     } }, el('h3', {}, 'Додати текстове джерело'),
       el('p', { class: 'hint' }, 'Для навчальних перевірок використовуйте лише синтетичні (вигадані) матеріали: під час справжнього AI-запуску тексти джерел передаються постачальнику моделі (матеріали з позначкою «реальні» не надсилаються). Нове джерело повертає кейс до дослідження.'),
       el('label', {}, 'Тип'), el('select', { name: 'kind' }, ['transcript', 'request', 'document', 'analyst_note'].map((k) => el('option', { value: k }, KIND_LABEL[k]))),
-      el('label', {}, 'Назва'), el('input', { type: 'text', name: 'title', required: true }),
-      el('label', {}, 'Текст'), el('textarea', { name: 'content', required: true }),
+      el('label', {}, 'Назва'), el('input', { type: 'text', name: 'title', 'data-draft': 'src-title', required: true }),
+      el('label', {}, 'Текст'), el('textarea', { name: 'content', 'data-draft': 'src-content', required: true }),
       el('label', { class: 'inline' }, el('input', { type: 'checkbox', name: 'synthetic', checked: true }), 'Синтетичний (навчальний) матеріал'),
       el('label', { class: 'inline' }, el('input', { type: 'checkbox', name: 'required' }), 'Обов’язкове джерело'),
       el('div', { class: 'actions' }, el('button', { type: 'submit' }, 'Додати джерело')));
     const fileForm = el('form', { onsubmit: async (e) => {
       e.preventDefault(); const f = e.target; const file = f.file.files[0]; if (!file) return;
       const buf = new Uint8Array(await file.arrayBuffer()); let bin = ''; buf.forEach((b) => { bin += String.fromCharCode(b); });
-      const r = await act(() => api('POST', `/api/cases/${card.case.id}/sources/file`, { name: file.name, kind: 'document', content_base64: btoa(bin), required: f.required.checked, origin: 'synthetic' }));
-      if (r) { toast(r.read_status === 'ok' ? 'Файл прочитано' : 'Файл НЕ прочитано: ' + r.read_error, r.read_status === 'ok'); await refresh(); }
+      // Походження вказує людина. Ні назва файлу, ні розширення, ні режим роботи його не визначають (D98).
+      const picked = f.querySelector('input[name="file-origin"]:checked');
+      if (!picked) { toast('Оберіть походження файла: синтетичний приклад чи реальні дані.'); return; }
+      const r = await act(() => api('POST', `/api/cases/${card.case.id}/sources/file`, { name: file.name, kind: 'document', content_base64: btoa(bin), required: f.required.checked, origin: picked.value }));
+      if (r) { toast(r.read_status === 'ok' ? 'Файл прочитано' : 'Файл НЕ прочитано: ' + r.read_error, r.read_status === 'ok'); clearDrafts(card.case.id, ['file', 'file-origin', 'required']); await refresh(); }
     } }, el('h3', {}, 'Додати файл (.txt або .md)'), el('input', { type: 'file', name: 'file' }),
+      el('fieldset', { class: 'origin-pick' },
+        el('legend', { class: 'small' }, 'Походження файла (обов’язково)'),
+        el('label', { class: 'inline' }, el('input', { type: 'radio', name: 'file-origin', value: 'synthetic' }), 'синтетичний приклад — вигаданий для навчання'),
+        el('label', { class: 'inline' }, el('input', { type: 'radio', name: 'file-origin', value: 'real' }), 'реальні дані — з роботи з людьми'),
+        el('div', { class: 'small muted' }, 'Матеріали з позначкою «реальні дані» моделі не надсилаються (D18).')),
       el('label', { class: 'inline' }, el('input', { type: 'checkbox', name: 'required' }), 'Обов’язкове джерело'), el('div', { class: 'actions' }, el('button', { type: 'submit' }, 'Завантажити')));
     return el('div', {}, list, form, fileForm);
   },
@@ -1381,7 +1486,14 @@ async function submitAnswer(card, q, ans) {
     .map((e) => ({ step_id: e.dataset.step, condition: e.dataset.cond, to: e.value }));
   if (trs.length) body.transitions = trs;
   const r = await act(() => api('POST', `/api/cases/${card.case.id}/questions/answer`, body), 'Уточнення додано; створено нову версію');
-  if (r) { basisState.delete(q.id); await refresh(); }
+  if (r) {
+    basisState.delete(q.id);
+    clearDraftsByPrefix(card.case.id, 'answer-' + q.id);
+    clearDraftsByPrefix(card.case.id, 'basis-' + q.id);
+    clearDraftsByPrefix(card.case.id, 'origin-' + q.id);
+    clearDraftsByPrefix(card.case.id, 'tr-' + q.id);
+    await refresh();
+  }
 }
 
 function closedAnswerBlock(card, q) {
@@ -1460,7 +1572,7 @@ async function showSource(sourceId, quote, answerQid) {
 }
 
 // ───────────── запуск ─────────────
-async function refresh() { state.diagram = null; state.viewer = null; await route(); }
+async function refresh() { stopDiagram(); await route(); }
 
 async function route() {
   try {
@@ -1483,13 +1595,21 @@ window.addEventListener('hashchange', route);
 route();
 
 VIEWS.diagram = (card) => {
-  const d = state.diagram;
+  const out0 = [];
+  const d = state.diagram && state.diagram.caseId === card.case.id ? state.diagram : null;
   if (!d) { void loadDiagram(); return el('p', { class: 'muted' }, 'Завантаження стану схеми…'); }
   const review = d.review || {};
+  if (state.diagramPoll) {
+    const secs = Math.round((Date.now() - (state.diagramSince || Date.now())) / 1000);
+    out0.push(el('div', { class: state.diagramLost ? 'warnbox' : 'note info', 'data-block': 'auto-refresh' },
+      state.diagramLost
+        ? `Стан не надходить ${secs} с: зв’язок перервано. Операція могла тривати далі на сервері — читання стану її не перезапускає. Спроби тривають.`
+        : `Перевірка виконується ${secs} с. Стан оновлюється сам; модель повторно не викликається.`));
+  }
   const art = d.art || {};
   // Доступність саме агента 2: смислову перевірку виконує він, а не агент 1 (різні клієнти).
   const ai = (card.ai && card.ai.review) || { available: false, reason: 'Стан смислової перевірки невідомий.' };
-  const out = [];
+  const out = [...out0];
 
   // 1) Зауваження агента й стан смислової перевірки
   out.push(el('h3', { class: 'group-h' }, 'Смислова перевірка опису'));
