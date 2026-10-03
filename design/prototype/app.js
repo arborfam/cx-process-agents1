@@ -6,7 +6,7 @@ const { STAGES, STATE_LABEL, CASES } = window.PROTO;
 
 /* ---------------- стан ---------------- */
 const S = {
-  caseId: 'cx', stage: 0,
+  caseId: 'cx', stage: 0, protoOpen: false,
   tab: 'overview', sub: 'context',
   panel: null, dialog: null, focus: null,
   newSources: [], batchOrigin: '', pendingBatch: [],
@@ -43,14 +43,11 @@ function resolve() {
     out.version.approvedAt = 'щойно';
     out.state = 'approved';
     out.approvedNow = true;
-    out.attention = [
-      { kind: 'paid', n: 1, title: 'Побудова доступна. Це окреме платне рішення', go: { tab: 'diagram' } },
-      ...(out.attention || []).filter(a => a.kind !== 'critical'),
-    ];
+    out.attention = (out.attention || []).filter(a => a.kind !== 'critical');
     out.next = {
-      title: 'Побудувати схему',
-      why: 'AS-IS погоджено. Побудова — окреме рішення: вона звертається до моделі й коштує грошей. Саме погодження нічого не запускає.',
-      label: 'Перейти до побудови', go: { tab: 'diagram' }, paid: true,
+      title: 'Перейти до побудови схеми',
+      why: 'AS-IS погоджено. Побудова — окрема дія на вкладці «Схема»; перехід туди нічого не запускає.',
+      label: 'Відкрити вкладку «Схема»', go: { tab: 'diagram' },
     };
   }
   if (S.reused) out.reusedNow = S.reused;
@@ -92,9 +89,10 @@ const ATT = {
   void:     ['err', 'Рішення не застосовується'],
 };
 const DEC_STATE = {
-  valid:  ['ok',   'Рішення чинне — пов’язаний зміст не змінився'],
-  review: ['warn', 'Потрібно переглянути — змінилися пов’язані елементи'],
-  void:   ['err',  'Попереднє рішення не застосовується'],
+  valid:   ['ok',   'Діє — пов’язаний зміст не змінився'],
+  confirm: ['warn', 'Потрібне ваше підтвердження'],
+  review:  ['warn', 'Потрібно переглянути — змінилися пов’язані елементи'],
+  void:    ['err',  'Попереднє рішення не застосовується'],
 };
 
 /* ---------------- каркас ---------------- */
@@ -119,17 +117,19 @@ function shell(d) {
     q: (d.questions || []).filter(q => q.status === 'open').length,
   };
   return `
-  <div class="protobar">
-    <strong>ПРОТОТИП</strong>
-    <span class="hide-narrow">дизайн-макет на синтетичних даних · продуктові API не викликаються</span>
-    <label class="sr" for="pcase">Процес</label>
+  <button id="pbtn" class="proto-toggle" aria-expanded="${S.protoOpen ? 'true' : 'false'}" title="Керування прототипом">Прототип</button>
+  <div class="proto-panel" ${S.protoOpen ? '' : 'hidden'} role="dialog" aria-label="Керування прототипом">
+    <div class="proto-head"><strong>Керування прототипом</strong><button id="pclose" class="btn btn-ghost btn-sm">Сховати</button></div>
+    <p class="small muted">Не частина продукту. Тут вибирають демонстраційний процес і стан маршруту.</p>
+    <label class="lbl" for="pcase">Процес</label>
     <select id="pcase">${Object.values(CASES).map(x => `<option value="${x.id}" ${x.id === S.caseId ? 'selected' : ''}>${h(x.short)}</option>`).join('')}</select>
-    <label class="sr" for="pstage">Стан маршруту</label>
-    <select id="pstage">${STAGES.map((s, i) => `<option value="${i}" ${i === S.stage ? 'selected' : ''}>${h(s.label)}</option>`).join('')}</select>
-    <button id="pprev" ${S.stage === 0 ? 'disabled' : ''}>←</button>
-    <button id="pnext" ${S.stage === STAGES.length - 1 ? 'disabled' : ''}>→</button>
-    <span class="sep"></span>
-    <span class="hide-narrow">${h(c.syntheticNote)}</span>
+    <label class="lbl" for="pstage">Стан маршруту</label>
+    <select id="pstage">${STAGES.map((x, i) => `<option value="${i}" ${i === S.stage ? 'selected' : ''}>${h(x.label)}</option>`).join('')}</select>
+    <div class="btnrow" style="margin-top:var(--s3)">
+      <button id="pprev" class="btn btn-sm" ${S.stage === 0 ? 'disabled' : ''}>← Назад</button>
+      <button id="pnext" class="btn btn-sm" ${S.stage === STAGES.length - 1 ? 'disabled' : ''}>Далі →</button>
+    </div>
+    <p class="small muted" style="margin-top:var(--s3)">${h(c.syntheticNote)}</p>
   </div>
 
   <header class="appbar"><div class="appbar-in">
@@ -143,7 +143,7 @@ function shell(d) {
     <nav class="tabs" role="tablist">
       ${tab('overview', 'Огляд')}
       ${tab('asis', 'AS-IS', counts.asis ? `<span class="count">${counts.asis}</span>` : (counts.q ? `<span class="count q">${counts.q}</span>` : ''))}
-      ${tab('sources', 'Джерела', (d.sources || []).length ? `<span class="count q" style="background:var(--bg);color:var(--ink-2)">${d.sources.length}</span>` : '')}
+      ${tab('sources', 'Джерела', (d.sources || []).length ? `<span class="count plain">${d.sources.length}</span>` : '')}
       ${tab('diagram', 'Схема')}
       ${tab('history', 'Історія')}
     </nav>
@@ -171,7 +171,6 @@ function nextCard(d, opts) {
     ${d.next.paid ? `<div class="paid">Платний етап: звернення до моделі</div>` : ''}
     ${d.next.free ? `<div class="free">Безкоштовно: побудова зі збереженої таблиці, модель не викликається</div>` : ''}
     ${d.next.freeNote ? `<div class="free">${h(d.next.freeNote)}</div>` : ''}
-    ${!d.next.paid && !d.next.free && !d.next.freeNote ? `<div class="small muted" style="margin-top:var(--s2)">Ця дія нічого не коштує: модель не викликається.</div>` : ''}
   </section>`;
 }
 
@@ -180,39 +179,35 @@ function critLine(d) {
   const crit = (d.questions || []).filter(q => q.status === 'open' && q.critical);
   if (!crit.length) return '';
   const q = crit[0];
+  const go = { tab: 'asis', sub: 'questions', focus: q.id };
+  // якщо головна дія вже веде сюди, другої кнопки не додаємо
+  const dup = JSON.stringify(d.next.go) === JSON.stringify(go);
   return `<div class="note err critline">
     <strong>${crit.length === 1 ? 'Критичне питання блокує погодження й побудову' : `${crit.length} критичні питання блокують погодження й побудову`}:</strong>
     ${h(q.id)} — ${h(trunc(q.text, 110))}
-    <button class="btn btn-ghost btn-sm" data-go='${h(JSON.stringify({ tab: 'asis', sub: 'questions', focus: q.id }))}'>Перейти до питання</button>
+    ${dup ? '' : `<button class="btn btn-ghost btn-sm" data-go='${h(JSON.stringify(go))}'>Перейти до питання</button>`}
   </div>`;
 }
 
 function viewOverview(d) {
   const ctx = d.context;
   const ns = '<span class="unknown">Ще не з’ясовано</span>';
+  // один маршрут до одного рішення: не повторюємо те, куди вже ведуть критичний рядок і головна дія
+  const hasCrit = (d.questions || []).some(q => q.status === 'open' && q.critical);
+  const nextGo = JSON.stringify(d.next.go);
+  const att = (d.attention || []).filter(a =>
+    !(hasCrit && a.kind === 'critical') && JSON.stringify(a.go) !== nextGo);
   return `<div class="page">${critLine(d)}<div class="cols">
     <div class="stack">
       <section class="card lead" id="ctx">
         <h2>Коротко</h2>
         <dl class="kv">
           <dt>Навіщо існує процес</dt><dd>${ctx.processGoal ? h(ctx.processGoal) : ns}</dd>
-          <dt>Від</dt><dd>${ctx.start ? h(trunc(ctx.start, 120)) : ns}</dd>
+          <dt>Від</dt><dd>${ctx.start ? h(trunc(ctx.start, 110)) : ns}</dd>
           <dt>До</dt><dd>${ctx.end ? h(ctx.end) : ns}</dd>
         </dl>
-      </section>
-
-      <section class="card">
-        <h2>Межі, ролі й мета дослідження</h2>
-        <dl class="kv">
-          <dt>Навіщо його досліджуємо</dt><dd>${ctx.researchGoal ? h(ctx.researchGoal) : ns}</dd>
-          <dt>Результат процесу</dt><dd>${ctx.result ? h(ctx.result) : ns}</dd>
-          <dt>Тригер — повний текст</dt><dd>${ctx.start ? longText(ctx.start, 'start') : ns}</dd>
-          <dt>Фактичне завершення</dt><dd>${ctx.end ? h(ctx.end) : ns}</dd>
-          <dt>Ролі</dt><dd>${ctx.roles.length ? ctx.roles.map(r => `<span class="tag">${h(r)}</span>`).join(' ') : ns}</dd>
-          <dt>Поза межами</dt><dd>${ctx.outOfScope && ctx.outOfScope.length ? ctx.outOfScope.map(r => `<span class="tag">${h(r)}</span>`).join(' ') : ns}</dd>
-        </dl>
         <div class="btnrow" style="margin-top:var(--s4)">
-          <button class="btn btn-sm" data-go='{"tab":"asis","sub":"context"}'>Редагувати бізнес-контекст</button>
+          <button class="btn btn-ghost btn-sm" data-go='{"tab":"asis","sub":"context"}'>Межі, ролі й мета дослідження →</button>
         </div>
       </section>
 
@@ -229,14 +224,14 @@ function viewOverview(d) {
 
       <section class="card card-tight">
         <h2>Потребує уваги</h2>
-        ${(d.attention || []).length ? `<div class="att">${d.attention.map(a => {
+        ${att.length ? `<div class="att">${att.map(a => {
           const [tone, label] = ATT[a.kind] || ['', a.kind];
           return `<div class="att-item">
             <div><span class="tag ${tone}">${h(label)}</span></div>
             <div class="t"><span class="n">${a.n}</span> · ${h(a.title)}</div>
             <div><button class="btn btn-ghost btn-sm" data-go='${h(JSON.stringify(a.go))}'>Перейти →</button></div>
           </div>`;
-        }).join('')}</div>` : `<p class="small muted">Нічого не потребує уваги.</p>`}
+        }).join('')}</div>` : `<p class="small muted">Нічого іншого не потребує уваги.</p>`}
       </section>
     </aside>
   </div></div>`;
@@ -283,7 +278,7 @@ function runCard(d) {
       <div class="line"><span class="muted">Час від початку:</span> <b>${mm(t)}</b>
         <span class="muted">Останній отриманий стан:</span> <b>${since < 5 ? 'щойно' : mm(since) + ' тому'}</b></div>
       ${S.run.stale ? `<div class="note warn"><strong>Оновлення стану не надходять ${mm(since)}.</strong>
-        Це не доводить, що операція зупинилась: вона могла тривати далі на сервері. Нічого повторно запускати не потрібно — повторне натискання дубля не створює.
+        Операція могла тривати далі на сервері. Повторно запускати нічого не потрібно.
         <div class="btnrow" style="margin-top:var(--s3)"><button class="btn btn-sm" data-act="resync">Оновити стан вручну</button></div></div>`
       : `<div class="note info">Стан оновлюється автоматично. ${h(r.note)}</div>`}
       <ol class="small muted" style="margin:0;padding-left:20px">
@@ -366,7 +361,7 @@ function asisContext(d) {
         ${row('Мета дослідження', c.researchGoal ? h(c.researchGoal) : ns, 'researchGoal')}
         ${row('Результат процесу', c.result ? h(c.result) : ns, 'result')}
       </dl>
-      <p class="small muted" style="margin-top:var(--s4)">Мета процесу й мета його дослідження — різні речі. «Ще не з’ясовано» — допустимий стан; заповнювати все до початку дослідження не обов’язково.</p>
+      <p class="small muted" style="margin-top:var(--s4)">Заповнювати все до початку дослідження не обов’язково.</p>
     </section>
     <section class="card">
       <h2>Межі процесу</h2>
@@ -381,13 +376,14 @@ function asisContext(d) {
     </section>
   </div>${railShort(d)}</div>`;
 }
-function railShort(d) { return `<aside class="rail">${nextCard(d, { secondary: !!d.failure })}</aside>`; }
+// Коли головну дію вже видно в картці змісту, права панель її не дублює синьою.
+function railShort(d, opts) { return `<aside class="rail">${nextCard(d, { secondary: !!d.failure || !!(opts && opts.secondary) })}</aside>`; }
 
 function asisSteps(d) {
   if (!d.steps.length) return `<section class="card"><p class="muted">Кроків ще немає: аналіз не запускався.</p></section>`;
   return `<section class="card">
     <h2>Кроки процесу · ${d.steps.length}</h2>
-    <p class="small muted">Натисніть на крок, щоб відкрити деталі й докази поруч. Позиція на сторінці збережеться.</p>
+    <p class="small muted">Натисніть на крок, щоб відкрити деталі й докази.</p>
     <div class="tbl-wrap"><table class="steps">
       <thead><tr><th>ID</th><th>Роль</th><th>Дія</th><th>Умова входу</th><th>Далі</th></tr></thead>
       <tbody>${d.steps.map(s => `<tr data-step="${h(s.id)}" aria-selected="${S.panel && S.panel.kind === 'step' && S.panel.id === s.id}">
@@ -405,7 +401,7 @@ function asisClaims(d) {
   if (!d.claims.length) return `<section class="card"><p class="muted">Тверджень ще немає.</p></section>`;
   return `<section class="card">
     <h2>Твердження й докази · ${d.claims.length}</h2>
-    <p class="small muted">Твердження джерела не стає автоматично перевіреним фактом. Позначка показує походження, а не істинність.</p>
+    <p class="small muted">Позначка показує походження твердження.</p>
     <div class="rows">${d.claims.map(c => `<div class="row">
       <div class="row-head">
         <div class="row-tags"><span class="tag ${CLAIM_TONE[c.type]}">${h(CLAIM_LABEL[c.type])}</span>
@@ -423,7 +419,6 @@ function asisQuestions(d) {
   if (!qs.length) return `<section class="card"><p class="muted">Питань ще немає.</p></section>`;
   return `<section class="card">
     <h2>Питання · ${qs.length}</h2>
-    <p class="small muted">Питання не закриваються автоматично й не знижують критичність самі собою.</p>
     <div class="rows">${qs.map(q => `<div class="row" id="${h(q.id)}">
       <div class="row-head">
         <div class="row-tags">
@@ -448,7 +443,6 @@ function asisProblems(d) {
   if (!ps.length) return `<section class="card"><p class="muted">Проблем не зафіксовано.</p></section>`;
   return `<section class="card">
     <h2>Проблеми й гіпотези · ${ps.length}</h2>
-    <p class="small muted">Тип проблеми й критичність — різні ознаки. Технічні проблеми не подаються як бізнес-питання.</p>
     <div class="rows">${ps.map(p => {
       const [tone, sevLabel] = SEVERITY[p.severity] || ['', ''];
       return `<div class="row" id="${h(p.id)}">
@@ -483,9 +477,9 @@ function viewSources(d) {
   return `<div class="page"><div class="cols"><div class="stack">
     <section class="card">
       <h2>Додати пакет джерел</h2>
-      <p class="small muted">Аналіз не запускається після кожного документа. Додайте все, що маєте, і зробіть одне оновлення.</p>
+      <p class="small muted">Додайте все, що маєте, і зробіть одне оновлення.</p>
       <div class="sect">
-        <label class="lbl" for="newsrc">Назва джерела (у прототипі — без завантаження файлів)</label>
+        <label class="lbl" for="newsrc">Назва джерела</label>
         <input type="text" id="newsrc" placeholder="Напр.: Інтерв’ю 5 — керівник підрозділу" value="${h(S.texts.newsrc || '')}">
         <div class="btnrow" style="margin-top:var(--s3)"><button class="btn btn-sm" data-act="addsrc">Додати до пакета</button></div>
       </div>
@@ -503,13 +497,13 @@ function viewSources(d) {
           <label class="radio"><input type="radio" name="origin" value="synthetic" ${S.batchOrigin === 'synthetic' ? 'checked' : ''}><span><strong>Синтетичний приклад</strong><br><span class="small muted">Вигадані матеріали для навчання чи демонстрації</span></span></label>
           <div class="btnrow" style="margin-top:var(--s3)">
             <button class="btn btn-sm" data-act="applyorigin" ${S.batchOrigin ? '' : 'disabled'}>Застосувати до всього пакета (${pend.length})</button>
-            <span class="small muted">Вибір зберігається для кожного джерела окремо, виправити можна будь-яке.</span>
+            <span class="small muted">Виправити можна будь-яке джерело окремо.</span>
           </div>
         </fieldset>
         <div class="btnrow" style="margin-top:var(--s4)">
           <button class="btn btn-primary" data-act="analyze" ${pend.every(p => p.origin) ? '' : 'disabled'}>Оновити аналіз одним запуском (${pend.length})</button>
         </div>
-        ${pend.every(p => p.origin) ? `<div class="paid">Платний етап: звернення до моделі. Програмні перевірки джерел виконуються до нього й нічого не коштують.</div>`
+        ${pend.every(p => p.origin) ? `<div class="paid">Платний етап: звернення до моделі</div>`
           : `<div class="note warn" style="margin-top:var(--s3)">Укажіть походження для всіх джерел пакета — без цього оновлення не запуститься.</div>`}
       </div>` : ''}
     </section>
@@ -525,7 +519,6 @@ function viewSources(d) {
         </div>
         <div class="small muted">${h(s.id)} · прочитано повністю</div>
       </div>`).join('')}</div>` : `<p class="muted">Жодного джерела ще не додано.</p>`}
-      <p class="small muted" style="margin-top:var(--s4)">Джерела — дані. Інструкції, знайдені всередині інтерв’ю чи документів, не виконуються.</p>
     </section>
   </div>${railShort(d)}</div></div>`;
 }
@@ -536,7 +529,7 @@ function viewHistory(d) {
   return `<div class="page"><div class="stack">
     <section class="card">
       <h2>Рішення аналітикині · ${decs.length}</h2>
-      <p class="small muted">Рішення про окреме питання й погодження всієї версії — різні речі. Повторне використання рішення не погоджує нову версію.</p>
+      <p class="small muted">Рішення щодо окремого питання не погоджує версію AS-IS.</p>
       ${decs.length ? `<div class="rows">${decs.map(x => {
         const [tone, label] = DEC_STATE[x.status];
         return `<div class="row">
@@ -554,8 +547,8 @@ function viewHistory(d) {
     <section class="card">
       <h2>Версії та погодження</h2>
       ${d.reusedNow ? `<div class="note ${d.reusedNow.approved ? 'ok' : 'warn'}" style="margin-bottom:var(--s4)">
-        <strong>Рішення ${h(d.reusedNow.id)} застосовано повторно до версії «${h(d.reusedNow.version)}».</strong>
-        ${d.reusedNow.approved ? 'Версія вже погоджена.' : 'Версія <strong>не погоджена</strong>: перенесення окремого рішення погодження не замінює.'}
+        <strong>Рішення ${h(d.reusedNow.id)} підтверджено для версії «${h(d.reusedNow.version)}».</strong>
+        ${d.reusedNow.approved ? 'Версія вже погоджена.' : 'Версія <strong>не погоджена</strong>.'}
       </div>` : ''}
       <div class="rows">
         <div class="row"><div class="row-head"><div><strong>${h(d.version.label)}</strong></div>
@@ -582,22 +575,20 @@ function viewDiagram(d) {
   if (d.failure) return `<div class="page"><div class="stack">${failureCard(d)}</div></div>`;
   if (!d.diagram) {
     const bl = buildBlockers(d);
-    return `<div class="page"><div class="cols"><div class="stack"><section class="card">
+    // перелік блокувань сам є причиною й дією — права панель його не дублює
+    return `<div class="page"><div class="${bl.length ? '' : 'cols'}"><div class="stack"><section class="card">
       <h2>Схеми ще немає</h2>
-      ${bl.length ? `<p class="prose">Побудову стримує ${bl.length} ${plural(bl.length, 'причина', 'причини', 'причин')}. Кожна має власну дію — неактивної кнопки без пояснення тут немає.</p>
-      <div class="rows">${bl.map(x => `<div class="row">
-        <div class="row-head"><div class="row-tags"><span class="tag ${x.tone}">${h(x.kind)}</span></div></div>
+      ${bl.length ? `<p class="prose">${bl.length === 1 ? 'Побудову стримує одна причина.' : `Побудову стримують ${bl.length} ${plural(bl.length, 'причина', 'причини', 'причин')} — у цьому порядку.`}</p>
+      <ol class="blockers">${bl.map((x, i) => `<li>
+        <div class="row-tags"><span class="tag ${x.tone}">${h(x.kind)}</span>${i > 0 ? `<span class="tag">доступно після кроку ${i}</span>` : ''}</div>
         <div class="prose">${h(x.text)}</div>
         <div class="small muted">Хто має діяти: ${h(x.who)}</div>
-        <div class="btnrow"><button class="btn btn-sm" data-go='${h(JSON.stringify(x.go))}'>${h(x.label)}</button></div>
-      </div>`).join('')}</div>
-      <div class="note info small" style="margin-top:var(--s4)">Цей перелік веде програмна перевірка на сервері, а не кнопка.
-        Відхилення припущення агента, повторне використання збереженого рішення чи редагування опису його не скорочують:
-        зникає лише та причина, яку справді усунуто.</div>`
-      : `<p class="prose">Усі перевірки пройдено: побудова доступна. Це окремий платний етап — звернення до моделі.</p>
-         <div class="btnrow"><button class="btn btn-primary" data-go='${h(JSON.stringify(d.next.go))}'>${h(d.next.label)}</button></div>
-         <div class="paid">Платний етап: звернення до моделі</div>`}
-    </section></div>${railShort(d)}</div></div>`;
+        ${i === 0 && x.go ? `<div class="btnrow"><button class="btn btn-primary btn-sm" data-go='${h(JSON.stringify(x.go))}'>${h(x.label)}</button></div>` : ''}
+      </li>`).join('')}</ol>`
+      : `<p class="prose">Перевірки пройдено. Побудова звертається до моделі — це платна дія.</p>
+         <div class="btnrow"><button class="btn btn-primary" data-act="build">Побудувати схему</button></div>
+         <div class="paid">Орієнтовна вартість запуску — близько $0,3. Перед списанням буде підтвердження.</div>`}
+    </section></div>${bl.length ? '' : railShort(d, { secondary: true })}</div></div>`;
   }
   const g = d.diagram, hist = S.view.historical;
   return `<div class="page wide"><div class="stack">
@@ -622,7 +613,7 @@ function viewDiagram(d) {
     <div class="cols even">
       <section class="card">
         <h2>Перехід до кроку</h2>
-        <p class="small muted">Підписи на полотні короткі. Повний зміст лишається доступним у деталях.</p>
+        <p class="small muted">Підписи на полотні короткі. Повний зміст — у деталях кроку.</p>
         <div class="row-tags">${d.steps.map(s => `<button class="btn btn-sm" data-goto="${h(s.id)}">${h(s.id)}</button>`).join('')}</div>
         ${S.view.sel ? `<div class="sect"><h3>Вибраний елемент</h3>
           <div class="prose">${h(S.view.sel.name || '(без підпису)')}</div>
@@ -647,7 +638,6 @@ function viewDiagram(d) {
           <div class="quote small">${h(g.shortLabel.full)}</div></div>` : ''}
         <div class="sect"><h3>Відомі вади наявного пайплайна</h3>
           <ul class="small muted">${g.pipelineNotes.map(n => `<li>${h(n)}</li>`).join('')}</ul>
-          <p class="small muted">Це окремі вимоги до пайплайна. У цьому завданні він не перебудовується.</p>
         </div>
       </section>
     </div>
@@ -658,13 +648,21 @@ function viewDiagram(d) {
 // а не стан кнопки: жодне рішення людини й жодне відхилення припущення агента його не скорочує.
 function buildBlockers(d) {
   const out = [];
-  (d.questions || []).filter(q => q.status === 'open' && q.critical).forEach(q => out.push({
-    tone: 'err', kind: 'Критичне бізнес-невідоме', text: `${q.id}: ${q.text}`,
-    who: 'Аналітикиня — отримати відповідь від людей, які знають процес',
-    go: { tab: 'asis', sub: 'questions', focus: q.id }, label: `Відкрити ${q.id}`,
-  }));
+  (d.questions || []).filter(q => q.status === 'open' && q.critical).forEach(q => {
+    // Якщо нове джерело вже дає відповідь — ведемо до її перевірки; якщо ні — не обіцяємо, що пакет закриє питання.
+    const pkg = d.package && d.package.answerNeeded && d.package.answerNeeded.q === q.id ? d.package : null;
+    const hasAnswer = pkg && pkg.answerNeeded.prefill;
+    out.push({
+      tone: 'err', kind: 'Критичне бізнес-невідоме', text: `${q.id}: ${q.text}`,
+      who: hasAnswer
+        ? `Аналітикиня — перевірити відповідь, запропоновану з ${pkg.answerNeeded.source}`
+        : 'Аналітикиня — отримати відповідь від людей, які знають процес',
+      go: hasAnswer ? { dialog: 'package' } : { tab: 'asis', sub: 'questions', focus: q.id },
+      label: hasAnswer ? 'Перевірити відповідь у пакеті змін' : `Відкрити ${q.id}`,
+    });
+  });
   (d.problems || []).filter(x => x.severity === 'blocking-tech').forEach(x => {
-    if (x.kind === 'generator_limit' && S.shortLabel) return;   // причину справді усунуто
+    if (x.kind === 'generator_limit' && S.shortLabel) return;
     out.push({
       tone: 'warn', kind: PROBLEM_KIND[x.kind] || x.kind, text: x.what,
       who: x.who, go: { dialog: 'shortlabel' }, label: (x.action && x.action.label) || 'Відкрити',
@@ -673,8 +671,8 @@ function buildBlockers(d) {
   if (!d.version.approved) out.push({
     tone: '', kind: 'Погодження версії', text: `${d.version.label} — побудова запускається лише з погодженої версії AS-IS.`,
     who: 'Аналітикиня — погодити конкретну версію',
-    go: d.approval ? { dialog: 'approve' } : { tab: 'asis', sub: 'questions' },
-    label: d.approval ? 'Погодити версію' : 'Опрацювати відкриті питання',
+    go: d.approval ? { dialog: 'approve' } : null,
+    label: d.approval ? 'Погодити версію' : null,
   });
   return out;
 }
@@ -750,8 +748,7 @@ function openPanel(d) {
           <div class="small">${h(c.text)}</div>
           ${c.quote ? `<div class="quote small" style="margin-top:var(--s2)"><mark>${h(c.quote)}</mark></div>` : ''}
         </div>`).join('')}</div>` : `<p class="small muted">Окремих цитат для цього кроку в синтетичних даних немає.</p>`}
-      <div class="note info small">Редагування доступне тут, біля змісту. Окремої вкладки «Редагувати» немає.
-        <div class="btnrow" style="margin-top:var(--s2)"><button class="btn btn-sm" data-edit="step:${h(s.id)}">Редагувати крок</button></div></div>`;
+      <div class="btnrow"><button class="btn btn-sm" data-edit="step:${h(s.id)}">Редагувати крок</button></div>`;
   } else if (p.kind === 'claim') {
     const c = (d.claims || []).find(x => x.id === p.id);
     if (!c) { S.panel = null; return; }
@@ -759,7 +756,7 @@ function openPanel(d) {
     body = `<div class="row-tags"><span class="tag ${CLAIM_TONE[c.type]}">${h(CLAIM_LABEL[c.type])}</span><span class="tag">${h(c.source)}</span></div>
       <div class="prose">${h(c.text)}</div>
       <div><h3>Точний фрагмент джерела</h3><div class="quote"><mark>${h(c.quote)}</mark></div></div>
-      <p class="small muted">Область застосування: ${h(c.scope)}. Твердження джерела не стає автоматично перевіреним фактом.</p>`;
+      <p class="small muted">Область застосування: ${h(c.scope)}.</p>`;
   }
   const wrap = document.createElement('div');
   wrap.className = 'panel-layer';
@@ -797,6 +794,15 @@ function openDialog(d) {
     need.disabled = !vals();
     els('textarea, input[type="text"]', dlg).forEach(x => x.oninput = () => { need.disabled = !vals(); });
   }
+  const pk = el('#pkgans', dlg), orig = el('#ans-origin', dlg);
+  if (pk && orig) {
+    const base = pk.dataset.prefill, src = orig.textContent;
+    pk.addEventListener('input', () => {
+      const own = pk.value.trim() !== base.trim();
+      orig.textContent = own ? 'Рішення аналітика' : src;
+      orig.className = own ? 'tag ok' : 'tag acc';
+    });
+  }
   const body = el('.dlg-body', dlg); if (body) body.scrollTop = 0;
 }
 
@@ -806,8 +812,7 @@ function dlgPackage(d) {
   return `<div class="dlg-head"><h2>${h(p.title)}</h2>
     <p class="small muted">${h(p.reason)}</p></div>
   <div class="dlg-body">
-    <div class="note warn"><strong>Застосування пакета — одна узгоджена операція: усе або нічого.</strong>
-      Частково застосованих змін і недосяжних кроків не буде.</div>
+    <div class="note warn"><strong>Пакет застосовується цілком або не застосовується.</strong> Частково змінений опис не виникне.</div>
     <div><h3>Додається · ${p.add.length}</h3><ul class="small">${p.add.map(x => `<li><span class="mono">${h(x.id)}</span> — ${h(x.t)}</li>`).join('')}</ul></div>
     <div><h3>Вилучається · ${p.remove.length}</h3><ul class="small">${p.remove.map(x => `<li><span class="mono">${h(x.id)}</span> — ${h(x.t)}</li>`).join('')}</ul></div>
     <div><h3>Як зміняться переходи</h3><ul class="small">${p.transitions.map(x => `<li>${h(x)}</li>`).join('')}</ul></div>
@@ -815,8 +820,14 @@ function dlgPackage(d) {
     <div><h3>Що лишиться відкритим</h3><ul class="small">${p.stillOpen.map(x => `<li>${h(x)}</li>`).join('')}</ul></div>
     <div><h3>${h(p.answerNeeded.label)}</h3>
       <div class="quote small" style="margin-bottom:var(--s3)"><strong>${h(p.answerNeeded.q)}.</strong> ${h(p.answerNeeded.questionText || '')}</div>
-      <p class="small muted">Питання не закривається автоматично. Відповідь збирається тут, у межах пакета — ні відкривати іншу вкладку, ні редагувати ID вручну не треба.</p>
-      <textarea id="pkgans" placeholder="${h(p.answerNeeded.placeholder)}">${h(S.texts.pkgans != null ? S.texts.pkgans : p.answerNeeded.prefill)}</textarea></div>
+      <div class="row-tags" style="margin-bottom:var(--s2)">
+        <span class="tag acc" id="ans-origin">${h(p.answerNeeded.prefill ? 'З джерела ' + p.answerNeeded.source : 'Рішення аналітика')}</span>
+        <span class="tag">${h(p.answerNeeded.sourceOrigin || 'Синтетичний приклад')}</span>
+      </div>
+      ${p.answerNeeded.prefill
+        ? `<p class="small muted">Текст нижче взято з ${h(p.answerNeeded.source)} — перевірте його перед застосуванням. Щойно ви його зміните, відповідь стане вашим рішенням.</p>`
+        : `<p class="small muted">Відповіді в джерелах немає. Напишіть її самі — без неї пакет не застосовується.</p>`}
+      <textarea id="pkgans" data-prefill="${h(p.answerNeeded.prefill || '')}" placeholder="${h(p.answerNeeded.placeholder)}">${h(S.texts.pkgans != null ? S.texts.pkgans : (p.answerNeeded.prefill || ''))}</textarea></div>
   </div>
   <div class="dlg-foot"><button class="btn" data-close>Скасувати</button>
     <button class="btn btn-primary" data-confirm data-needtext="1">Застосувати пакет повністю</button></div>`;
@@ -826,43 +837,44 @@ function dlgDecision(d) {
   const x = (d.decisions || []).find(y => y.id === S.dialog.id);
   if (!x) return `<div class="dlg-head"><h2>Рішення не знайдено</h2></div><div class="dlg-foot"><button class="btn" data-close>Закрити</button></div>`;
   const [tone, label] = DEC_STATE[x.status];
+  const editable = x.status === 'confirm' || x.status === 'review' || x.status === 'void';
   return `<div class="dlg-head">
     <div class="row-tags" style="margin-bottom:var(--s2)"><span class="tag">${h(x.id)}</span><span class="tag ${tone}">${h(label)}</span></div>
     <h2>${h(x.subject)}</h2></div>
   <div class="dlg-body">
-    <div><h3>Ваше попереднє пояснення</h3><div class="quote">${h(x.explain)}</div>
+    ${x.status === 'valid' ? `<div class="note ok"><strong>Рішення вже діє — робити нічого не потрібно.</strong>
+      Воно застосоване до цієї версії, і це записано в історії.</div>` : ''}
+    <div><h3>Ваше пояснення</h3><div class="quote">${h(x.explain)}</div>
       <p class="small muted" style="margin-top:var(--s2)">${h(x.author)} · ${h(x.date)} · застосовано до: ${h(x.scope)}</p>
       <p class="small muted">Докази: ${x.evidence.map(h).join('; ')}</p></div>
-    ${x.status === 'valid' ? `<div class="note ok"><strong>Перевірено автоматично — пояснювати заново не потрібно.</strong>
-      <ul style="margin:var(--s2) 0 0">${x.checked.map(c => `<li>${h(c)}</li>`).join('')}</ul></div>` : ''}
-    ${x.unrelated && x.unrelated.length ? `<div><h3>Що змінилося в кейсі, але рішення не стосується</h3>
-      <ul class="small">${x.unrelated.map(c => `<li>${h(c)}</li>`).join('')}</ul>
-      <p class="small muted">Жоден із цих елементів не входить до контексту застосування рішення, тому воно не скидається. Скидати чинне рішення через зміну в іншій частині опису — зайва робота без причини.</p></div>` : ''}
-    ${x.noBypass ? `<div class="note warn"><strong>Що це рішення не робить.</strong> ${h(x.noBypass)}</div>` : ''}
+    ${x.status === 'valid' ? `<div><h3>Що звірено</h3>
+      <ul class="small">${x.checked.map(c => `<li>${h(c)}</li>`).join('')}</ul></div>` : ''}
+    ${x.status === 'confirm' ? `<div class="note warn"><strong>Чому потрібне підтвердження.</strong> ${h(x.whyConfirm)}</div>` : ''}
     ${x.status !== 'valid' ? `<div><h3>Що саме змінилося</h3>
       <ul class="small">${(x.changedSince || []).map(c => `<li>${h(c)}</li>`).join('')}</ul></div>` : ''}
     ${x.status === 'void' ? `<div class="note err"><strong>Попереднє рішення не застосовується.</strong> ${h(x.whatToDo)}
-      <p class="small" style="margin:var(--s2) 0 0">${h(x.voidNote || '')}</p></div>` : ''}
-    ${x.status === 'review' ? `<div class="note warn">${h(x.whatToDo)}</div>
-      <div><label class="lbl" for="decedit">Пояснення (можна залишити як є)</label>
+      ${x.voidNote ? `<p class="small" style="margin:var(--s2) 0 0">${h(x.voidNote)}</p>` : ''}</div>` : ''}
+    ${x.status === 'review' ? `<div class="note warn">${h(x.whatToDo)}</div>` : ''}
+    ${x.unrelated && x.unrelated.length ? `<div><h3>Змінилося інше — рішення це не зачіпає</h3>
+      <ul class="small">${x.unrelated.map(c => `<li>${h(c)}</li>`).join('')}</ul></div>` : ''}
+    ${x.noBypass ? `<div class="note warn"><strong>Що це рішення не робить.</strong> ${h(x.noBypass)}</div>` : ''}
+    ${editable && x.status !== 'void' ? `<div><label class="lbl" for="decedit">Пояснення — можна залишити як є</label>
       <textarea id="decedit">${h(S.texts.decedit != null ? S.texts.decedit : x.explain)}</textarea></div>` : ''}
-    ${x.status === 'void' ? `<div><label class="lbl" for="decedit">Нове рішення — для якого періоду описуємо AS-IS</label>
-      <textarea id="decedit" placeholder="Напишіть нове рішення. Попереднє пояснення лишається в історії.">${h(S.texts.decedit || '')}</textarea></div>` : ''}
-    <div class="note info small"><strong>Повторне використання рішення не погоджує версію.</strong>
-      ${h(d.version.label)} ${d.version.approved ? 'уже погоджена — рішення нічого в погодженні не змінює.' : 'лишиться непогодженою: погодження — окрема дія з власним підтвердженням.'}
-      Застосування буде видно в історії.</div>
+    ${x.status === 'void' ? `<div><label class="lbl" for="decedit">Нове рішення</label>
+      <textarea id="decedit" placeholder="Попереднє пояснення лишається в історії.">${h(S.texts.decedit || '')}</textarea></div>` : ''}
+    ${d.version.approved ? '' : `<div class="note info small">${h(d.version.label)} ще не погоджена. Рішення щодо окремого питання погодження версії не замінює.</div>`}
   </div>
   <div class="dlg-foot"><button class="btn" data-close>${x.status === 'valid' ? 'Закрити' : 'Скасувати'}</button>
-    ${x.status === 'valid' ? `<button class="btn btn-primary" data-confirm>Застосувати повторно без змін</button>`
-      : x.status === 'review' ? `<button class="btn btn-primary" data-confirm>Підтвердити пояснення</button>`
-      : `<button class="btn btn-primary" data-confirm data-needtext="1">Записати нове рішення</button>`}</div>`;
+    ${x.status === 'valid' ? ''
+      : x.status === 'void' ? `<button class="btn btn-primary" data-confirm data-needtext="1">Записати нове рішення</button>`
+      : `<button class="btn btn-primary" data-confirm>Підтвердити пояснення</button>`}</div>`;
 }
 
 function dlgApprove(d) {
   const a = d.approval;
   const acc = a.version.replace(/^Версія/, 'версію');   // «Погодити версію 29», а не «Погодити Версія 29»
   return `<div class="dlg-head"><h2>Погодити ${h(acc)}</h2>
-    <p class="small muted">Одне змістовне підтвердження. Службового «передати на погодження» для одного користувача немає.</p></div>
+    <p class="small muted">Перевірте, що саме погоджуєте.</p></div>
   <div class="dlg-body">
     <div><h3>Точна версія</h3><p class="mono small">${h(a.hash)}</p>
       <p class="small muted">Погодження прив’язується саме до цього незмінного знімка. Зміна змісту створить нову версію, яка потребуватиме нового погодження.</p></div>
@@ -887,12 +899,12 @@ function dlgShortLabel(d) {
   <div class="dlg-body">
     <div><h3>Повний текст тригера</h3><div class="quote small">${h(full)}</div>
       <p class="small muted">Повний текст не зникає ніде: лишається в погодженому описі, у деталях події в .bpmn і .drawio та поруч зі схемою.</p></div>
-    <div class="note warn">Програма підпис не пропонує й не скорочує: ви пишете його самі. Запис незмінний і прив’язаний до цієї версії та цього тексту тригера.</div>
+    <div class="note warn">Підпис пишете ви: програма погоджений текст не скорочує.</div>
     <div><label class="lbl" for="sl">Короткий підпис (до 240 символів)</label>
       <input type="text" id="sl" value="${h(S.texts.sl || '')}" placeholder="Напр.: Підрозділ повідомив про потребу поза складом">
       <label class="lbl" for="slwhy" style="margin-top:var(--s3)">Пояснення (обов’язкове)</label>
       <textarea id="slwhy" placeholder="Чому саме такий підпис">${h(S.texts.slwhy || '')}</textarea></div>
-    <div class="note info small">Рішення про підпис ухвалюють <strong>до</strong> платної перевірки: саме цей підпис передається агентові 2.</div>
+    <div class="note info small">Підпис потрібен до побудови: саме він піде на схему.</div>
   </div>
   <div class="dlg-foot"><button class="btn" data-close>Скасувати</button>
     <button class="btn btn-primary" data-confirm data-needtext="1">Зберегти підпис</button></div>`;
@@ -903,7 +915,7 @@ function dlgProposal(d) {
   return `<div class="dlg-head"><h2>${h(p.title || 'Пропозиція агента')}</h2></div>
   <div class="dlg-body">
     <dl class="kv"><dt>Що сталося</dt><dd>${h(p.what)}</dd><dt>Чому важливо</dt><dd>${h(p.why)}</dd></dl>
-    <div class="note warn">Відхилення припущення агента не скасовує програмних перевірок і не дозволяє обійти підтверджене обмеження генератора.</div>
+    <div class="note warn">Відхилення пропозиції агента не знімає обмежень побудови.</div>
     <div><label class="lbl" for="propwhy">Пояснення рішення (обов’язкове)</label>
       <textarea id="propwhy" placeholder="Чому приймаєте або відхиляєте">${h(S.texts.propwhy || '')}</textarea></div>
   </div>
@@ -917,9 +929,9 @@ function dlgEdit(d) {
   const title = f.startsWith('step:') ? 'Редагувати крок ' + f.slice(5) : (names[f] || 'Редагувати');
   const cur = f.startsWith('step:') ? ((d.steps || []).find(s => s.id === f.slice(5)) || {}).action : d.context[f];
   return `<div class="dlg-head"><h2>${h(title)}</h2>
-    <p class="small muted">Редагування — біля відповідного змісту. Редакційна правка окремого підтвердження не потребує.</p></div>
+    <p class="small muted">Редакційна правка окремого підтвердження не потребує.</p></div>
   <div class="dlg-body"><textarea id="edit">${h(S.texts.edit != null ? S.texts.edit : (cur || ''))}</textarea>
-    <div class="note info small">У прототипі правка не зберігається в дані: показано саме місце й спосіб редагування.</div></div>
+  </div>
   <div class="dlg-foot"><button class="btn" data-close>Скасувати</button><button class="btn btn-primary" data-confirm>Зберегти</button></div>`;
 }
 
@@ -931,12 +943,10 @@ function applyDialog(d, dlg) {
   else if (k === 'decision') {
     const x = (d.decisions || []).find(y => y.id === S.dialog.id) || {};
     S.reused = { id: x.id, subject: x.subject, status: x.status, version: d.version.label, approved: !!d.version.approved };
-    toast(x.status === 'valid'
-      ? `Рішення ${x.id} застосовано повторно. Версію це не погоджує — погодження лишається окремою дією.`
-      : `Рішення ${x.id} оновлено. Версію це не погоджує — погодження лишається окремою дією.`);
+    toast(`Рішення ${x.id} підтверджено. Версію це не погоджує.`);
   }
   else if (k === 'proposal') { toast('Пропозицію відхилено з поясненням. Програмні перевірки лишаються чинними.'); }
-  else toast('Правку збережено (у прототипі — без запису в дані).');
+  else toast('Правку збережено.');
   S.texts = {};
 }
 
@@ -952,6 +962,8 @@ function toast(msg) {
 /* ---------------- Обробники ---------------- */
 function wire(d) {
   // смуга прототипу
+  el('#pbtn').onclick = () => { S.protoOpen = !S.protoOpen; render(); };
+  const pcl = el('#pclose'); if (pcl) pcl.onclick = () => { S.protoOpen = false; render(); };
   el('#pcase').onchange = (e) => { S.caseId = e.target.value; reset(); render(false); window.scrollTo(0, 0); };
   el('#pstage').onchange = (e) => { S.stage = +e.target.value; reset(); render(false); window.scrollTo(0, 0); };
   el('#pprev').onclick = () => { S.stage = Math.max(0, S.stage - 1); reset(); render(false); window.scrollTo(0, 0); };
@@ -1017,6 +1029,8 @@ function act(a, d) {
     toast('Це буде новий платний виклик моделі. Доки інструкція не виправлена, результат очікується той самий.');
   } else if (a === 'report') {
     toast('Діагностичний звіт збережено. PowerShell і ручні виправлення не потрібні — це робота розробника.');
+  } else if (a === 'build') {
+    toast('Тут був би запит підтвердження з точною сумою перед зверненням до моделі.');
   } else if (a === 'dl') {
     toast('У прототипі завантаження симульоване. У продукті файл має версію в назві.');
   }

@@ -48,21 +48,22 @@ a { color: var(--accent); }
 /* ---------- Фокус і доступність ---------- */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 
-/* ---------- Смуга прототипу (не частина продукту) ---------- */
-.protobar {
-  background: #182230; color: #fff; padding: var(--s2) var(--s5);
-  display: flex; gap: var(--s3); align-items: center; flex-wrap: wrap; font-size: 14px;
+/* ---------- Керування прототипом: поза продуктовим інтерфейсом ---------- */
+.proto-toggle {
+  position: fixed; right: 16px; bottom: 16px; z-index: 45;
+  font: 14px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: #182230; color: #fff; border: 1px solid #44505f; border-radius: 999px;
+  padding: 10px 16px; cursor: pointer; box-shadow: var(--shadow); opacity: .9;
 }
-.protobar strong { font-weight: 600; letter-spacing: .02em; }
-.protobar select, .protobar button {
-  font: inherit; font-size: 14px; width: auto; max-width: 280px; height: 32px;
-  border-radius: 6px; border: 1px solid #44505f;
-  background: #232f3f; color: #fff; padding: 0 8px; cursor: pointer;
+.proto-toggle:hover { opacity: 1; }
+.proto-panel {
+  position: fixed; right: 16px; bottom: 64px; z-index: 46; width: min(320px, calc(100vw - 32px));
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card);
+  box-shadow: var(--shadow); padding: var(--s4);
 }
-.protobar button { min-width: 34px; }
-.protobar button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); }
-.protobar .sep { flex: 1 1 auto; }
-@media (max-width: 860px) { .protobar .hide-narrow { display: none; } .protobar select { max-width: 150px; } }
+.proto-panel[hidden] { display: none; }
+.proto-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--s2); }
+.proto-panel select { height: 38px; }
 
 /* ---------- Шапка ---------- */
 .appbar { background: var(--surface); border-bottom: 1px solid var(--line); }
@@ -77,6 +78,19 @@ a { color: var(--accent); }
   font: inherit; border: 0; background: none; color: var(--ink-2); cursor: pointer;
   padding: var(--s3) var(--s3); border-bottom: 2px solid transparent; white-space: nowrap; border-radius: 0;
 }
+@media (max-width: 760px) {
+  /* усі вкладки видно одразу: без прихованого горизонтального прокручування */
+  .tabs { overflow-x: visible; gap: 0; }
+  .tabs button { font-size: 14px; padding: var(--s3) 4px; }
+  .tabs .count { margin-left: 3px; padding: 0 4px; }
+  .tabs .count.plain { display: none; }   /* кількість джерел видно на самій вкладці «Джерела» */
+}
+@media (max-width: 345px) {
+  /* на дуже вузькому екрані вкладки прокручуються — край затінено, щоб було видно, що є продовження */
+  .tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity;
+    mask-image: linear-gradient(to right, #000 85%, transparent 100%); }
+  .tabs button { scroll-snap-align: start; }
+}
 .tabs button:hover { color: var(--ink); }
 .tabs button[aria-selected="true"] { color: var(--ink); font-weight: 600; border-bottom-color: var(--accent); }
 .tabs .count {
@@ -84,6 +98,7 @@ a { color: var(--accent); }
   font-size: 13px; font-weight: 600; background: var(--err-bg); color: var(--err-ink);
 }
 .tabs .count.q { background: var(--warn-bg); color: var(--warn-ink); }
+.tabs .count.plain { background: var(--bg); color: var(--ink-2); font-weight: 400; }
 
 /* тихіша внутрішня навігація AS-IS */
 .subtabs { display: flex; gap: var(--s1); flex-wrap: wrap; margin-bottom: var(--s5); }
