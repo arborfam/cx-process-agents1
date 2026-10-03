@@ -44,6 +44,8 @@ const LONG_SUMMARY = [
   '- ручне перенесення історії між системами підтримки й обліку.',
   'Описане стосується поточного стану AS-IS і не містить пропозицій щодо того, як процес мав би виглядати.',
 ].join('\n');
+/** Випадок зі скриншота: той самий текст одним абзацом, без жодного переносу рядка. */
+const FLAT_SUMMARY = LONG_SUMMARY.split('\n').join(' ');
 const LONG_CONTEXT = [
   'Процес існує, щоб клієнт отримав рішення за своїм зверненням у передбачуваний строк, а команда продукту — впорядковані сигнали про повторювані причини звернень.',
   'Результат потрібен трьом групам: клієнту (відповідь і дія за його запитом), керівництву підтримки (навантаження й строки), продуктовій команді (перелік причин, які варто прибрати в самому продукті).',
@@ -81,10 +83,11 @@ const PROC: Record<string, { name: string; roles: string[]; steps: { id: string;
 
 const analyst = new ScriptedDemoClient((input: AnalystInput) => {
   const refs = input.sources.map((s) => s.id);
+  const flat = input.sources.some((s) => /суцільн/i.test(s.title));
   const kind = input.sources.some((s) => /закупівл/i.test(s.title) || /постачальник/i.test(s.text)) ? 'proc' : 'cx';
   const p = PROC[kind]!;
   const base = structuredClone(input.head_content);
-  base.summary = kind === 'cx' ? LONG_SUMMARY : LONG_SUMMARY.replace(/звернення клієнта/g, 'заявки на закупівлю');
+  base.summary = flat ? FLAT_SUMMARY : kind === 'cx' ? LONG_SUMMARY : LONG_SUMMARY.replace(/звернення клієнта/g, 'заявки на закупівлю');
   base.business_context = LONG_CONTEXT;
   base.boundaries = kind === 'cx'
     ? { trigger: 'Клієнт звернувся будь-яким каналом: чат, пошта, телефон або форма у застосунку', input: 'Опис потреби словами клієнта', completion: 'Клієнт отримав рішення, а причину звернення записано для продуктової команди', result: 'Рішення за зверненням і запис причини' }
@@ -215,7 +218,7 @@ try {
     ck(`${key}: повний опис доступний на вкладці`, ctxTxt.includes('Основні вузли'), ctxTxt.slice(0, 80));
     ck(`${key}: перелік усередині тексту став списком`, (await page.locator('#panel .prose ul li').count()) >= 3,
       String(await page.locator('#panel .prose ul li').count()));
-    ck(`${key}: мета, межі й учасники розділені`, ['Мета', 'Межі процесу', 'Учасники'].every((h) => ctxTxt.includes(h)));
+    ck(`${key}: контекст, межі й учасники розділені`, ['Бізнес-контекст', 'Межі процесу', 'Учасники'].every((h) => ctxTxt.includes(h)), ctxTxt.slice(0, 120));
 
     /* ── Кроки ── */
     await page.locator('.subtabs .tab', { hasText: 'Кроки' }).click(); await page.waitForTimeout(400);
@@ -259,6 +262,69 @@ try {
     }
     await shot(`${key}-5-історія`);
     ck(`${key}: історія подана короткими записами`, (await page.locator('[data-block="history-version"]').count()) > 0);
+  }
+
+  /* ── Випадок зі скриншота: один довгий абзац БЕЗ переносів рядків (D101) ── */
+  const flatId = await build('Суцільний абзац (синтетичний, без переносів)', 'Інтерв’ю одним абзацом (синтетичне)', cxText);
+  await page.goto(`${app.url}/#/case/${flatId}`);
+  await page.waitForSelector('#toptabs'); await page.waitForTimeout(500);
+  await page.getByRole('tab', { name: 'AS-IS' }).click();
+  await page.locator('.subtabs .tab', { hasText: 'Бізнес-контекст' }).click();
+  await page.waitForTimeout(500);
+  const flatLen = FLAT_SUMMARY.length;
+  ck('суцільний абзац справді без переносів рядків', !FLAT_SUMMARY.includes('\n') && flatLen > 700, `${flatLen} симв.`);
+  await shot('flat-1-згорнуто');
+  if (await need(page.locator('[data-block="longtext"]'), 'суцільний абзац подано під розкриттям')) {
+    // Саме ВИДИМИЙ текст: у згорнутому <details> вміст лишається в DOM, але його не видно.
+    const collapsed = (await page.locator('#panel').innerText()).replace(/\s+/g, ' ');
+    ck('у згорнутому стані повного абзацу не видно',
+      !collapsed.includes('ручне перенесення історії між системами підтримки й обліку'), collapsed.slice(0, 160));
+    ck('розкриття названо з розміром тексту', (await T('[data-block="longtext"] summary')).includes(String(flatLen)),
+      await T('[data-block="longtext"] summary'));
+    await page.evaluate('document.querySelector(\'[data-block="longtext"]\').open = true');
+    await page.waitForTimeout(250);
+    await page.locator('[data-block="longtext"]').scrollIntoViewIfNeeded();
+    await shot('flat-2-розкрито');
+    const items = await page.locator('[data-block="longtext"] ul li').allTextContents();
+    ck('перелік усередині рядка став списком з трьох пунктів', items.length === 3, JSON.stringify(items.map((x) => x.slice(0, 28))));
+    ck('порядок пунктів збережено', items[0]!.startsWith('очікування') && items[1]!.startsWith('повторне') && items[2]!.startsWith('ручне'),
+      JSON.stringify(items.map((x) => x.slice(0, 18))));
+    // Жодного слова не загублено: текст розкритого блоку містить усі слова оригіналу.
+    const shown = (await T('[data-block="longtext"]')).replace(/\s+/g, ' ');
+    const missing = FLAT_SUMMARY.replace(/[-–—•]/g, ' ').split(/\s+/).filter((w) => w.length > 2 && !shown.includes(w));
+    ck('усі слова оригіналу на місці', missing.length === 0, JSON.stringify(missing.slice(0, 6)));
+    ck('повний текст показано один раз',
+      shown.split('ручне перенесення історії').length - 1 === 1, String(shown.split('ручне перенесення історії').length - 1));
+    ck('хвіст після переліку — окремий абзац',
+      (await page.locator('[data-block="longtext"] p').allTextContents()).some((x) => x.startsWith('Описане стосується')),
+      JSON.stringify((await page.locator('[data-block="longtext"] p').allTextContents()).map((x) => x.slice(0, 24))));
+  }
+  // Огляд цього ж кейсу: замість «заповнено, текст довгий» — назване посилання.
+  await page.getByRole('tab', { name: 'Огляд' }).click(); await page.waitForTimeout(400);
+  const flatBrief = await T('[data-block="brief"]');
+  ck('в огляді немає підміни змісту фразою про довжину', !/Заповнено, текст довгий/.test(flatBrief), flatBrief.slice(0, 120));
+  ck('в огляді немає пояснень будови даних', !/мета дослідження/i.test(await T('#main')));
+  ck('довге поле веде за названим посиланням', ['Бізнес-контекст', 'Умови початку', 'Умови завершення'].some((x) => flatBrief.includes(x)), flatBrief.slice(0, 160));
+  await shot('flat-3-огляд');
+
+  /* ── Розбір переліку всередині рядка: дефіси, умови, заперечення ── */
+  const parse = async (line: string) => JSON.parse(String(await page.evaluate(
+    'JSON.stringify((() => { const r = inlineList(' + JSON.stringify(line) + '); return r ? { intro: r.intro, items: r.items, tail: r.tail } : null; })())')));
+  const cases: [string, string, (r: any) => boolean][] = [
+    ['перелік із трьох пунктів', 'Вузли: - перший пункт; - другий пункт; - третій пункт.',
+      (r) => r && r.items.length === 3 && r.intro === 'Вузли:'],
+    ['звичайний дефіс у слові', 'Бізнес-контекст і AS-IS опис процесу-замовлення не є переліком.', (r) => r === null],
+    ['тире в реченні', 'Процес — це послідовність кроків; він — не документ.', (r) => r === null],
+    ['умови через крапку з комою', 'Якщо тариф покриває запит; якщо не покриває — рішення ухвалює старший спеціаліст.', (r) => r === null],
+    ['заперечення в пункті', 'Не враховано: - випадки, коли тариф не покриває запит; - звернення без опису.',
+      (r) => r && r.items.length === 2 && r.items[0].includes('не покриває')],
+    ['один маркер не робить списку', 'Результат: - лише один пункт і більше нічого.', (r) => r === null],
+    ['пункти з дефісами всередині', 'Джерела: - бізнес-контекст і AS-IS; - крос-функційна команда; - back-office.',
+      (r) => r && r.items.length === 3 && r.items[1] === 'крос-функційна команда'],
+  ];
+  for (const [name, line, ok] of cases) {
+    const r = await parse(line);
+    ck(`розбір переліку: ${name}`, ok(r), JSON.stringify(r));
   }
 
   /* ── Вузькі екрани: горизонтального переповнення бути не повинно ── */

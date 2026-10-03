@@ -10,6 +10,7 @@ import { sha256 } from './hash.ts';
 import {
   acceptDraft, addQuestion, addNotationRequirement, decideNotationRequirement, removeNotationRequirement, decideStepProposal, decideStepProposals, relinkQuestion, unlinkQuestionFromMissingStep, addSource, addSourceFromFile, answerQuestion, approve, buildCard, createCase, getCase,
   approveDirect, listCases, listSources, previewOriginCorrection, applyOriginCorrection, requestBpmnStart, returnToResearch, saveAnalystVersion, setQuestionCritical, submitForApproval,
+  headVersion, versionContent,
   type Actor, type EditFields,
 } from './domain.ts';
 import { LinkKind, type LinkKindT } from './schema.ts';
@@ -20,7 +21,7 @@ import { budgetLeftUsd, spentUsd, unknownCostRuns, type ModelPolicy } from './ai
 import type { AnalystClient, InstructionInfo, OutputContract } from './ai/types.ts';
 import { beginBpmnReview, executeBpmnReview, getCaseReview, rejectFinding, type Reviewer } from './review-runs.ts';
 import { buildArtifact, buildPreflight, getCaseArtifact, listCaseArtifacts, readArtifactCsv, readArtifactFile, technicalLimits, type ArtifactView } from './bpmn-artifacts.ts';
-import { confirmStartLabel, previewStartLabel } from './start-label.ts';
+import { confirmStartLabel, confirmedStartLabel, previewStartLabel } from './start-label.ts';
 import { addExplicitClarification, advanceScenario, createScenarioCase, scenarioInfo, TOTAL_STAGES } from './scenarios.ts';
 
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -223,8 +224,18 @@ export function createApp(opts: ServerOptions): Server {
     if (method === 'POST' && path === '/api/demo/seed') return json(res, 201, { case_id: seedDemoCase(db, mode) });
 
     if ((m = /^\/api\/cases\/([\w-]+)$/.exec(path)) && method === 'GET') {
-      const card = buildCard(db, m[1]!, mode);
-      return json(res, 200, { ...card, scenario: scenarioInfo(db, getCase(db, m[1]!)), ai: aiState() });
+      const caseId = m[1]!;
+      const card = buildCard(db, caseId, mode);
+      // Погоджений короткий підпис початкової події — лише для показу (D101). Нічого не змінює:
+      // рішення вже ухвалене людиною й привʼязане до цієї версії та її хеша.
+      const head = headVersion(db, caseId);
+      const trigger = versionContent(head).boundaries.trigger;
+      const sl = confirmedStartLabel(db, caseId, head.id, head.content_hash, trigger);
+      return json(res, 200, {
+        ...card,
+        start_label: sl ? { label: sl.label, short: sl.label.trim() !== trigger.trim() } : null,
+        scenario: scenarioInfo(db, getCase(db, caseId)), ai: aiState(),
+      });
     }
 
     // Стан смислової перевірки відновлюється з довіреного серверного запису; вхідних даних від браузера немає.

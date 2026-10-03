@@ -301,17 +301,21 @@ function overviewPage(card) {
     el('dt', {}, 'Процес'),
     el('dd', {}, card.process_name.value || ns('Назву процесу ще не зазначено')),
   ];
-  // Окремого поля «мета дослідження» в даних немає — не вигадуємо його. Найближче зафіксоване —
-  // бізнес-потреба процесу; показуємо її лише тоді, коли вона справді заповнена.
   if ((c.business_context || '').trim()) {
-    rows.push(el('dt', {}, 'Навіщо цей процес'),
-      el('dd', {}, briefField(c.business_context, toContext, { linkLabel: 'Читати в «Бізнес-контекст» →' })));
+    rows.push(el('dt', {}, 'Бізнес-контекст'),
+      el('dd', {}, briefField(c.business_context, toContext, { linkLabel: 'Бізнес-контекст →' })));
   }
+  // Початок: якщо є ПОГОДЖЕНИЙ короткий підпис початкової події — показуємо саме його.
+  // Інакше короткий тригер як є, а довгий — назване посилання, без вигаданого резюме (D101).
+  const shortStart = card.start_label && card.start_label.short ? card.start_label.label : null;
   rows.push(
     el('dt', {}, 'Початок'),
-    el('dd', {}, briefField(c.boundaries.trigger, toContext, { missing: 'Тригер ще не з’ясовано' })),
+    el('dd', {}, shortStart
+      ? el('span', {}, shortStart, el('div', { class: 'small muted' }, 'погоджений короткий підпис початкової події'),
+          el('button', { class: 'link', onclick: toContext }, 'Умови початку →'))
+      : briefField(c.boundaries.trigger, toContext, { missing: 'Тригер ще не з’ясовано', linkLabel: 'Умови початку →' })),
     el('dt', {}, 'Завершення'),
-    el('dd', {}, briefField(c.boundaries.completion, toContext, { missing: 'Завершення ще не з’ясовано' })),
+    el('dd', {}, briefField(c.boundaries.completion, toContext, { missing: 'Завершення ще не з’ясовано', linkLabel: 'Умови завершення →' })),
     el('dt', {}, 'Обсяг опису'),
     el('dd', {}, `Кроків: ${c.steps.length} · ролей: ${c.roles.length} · джерел: ${card.sources.length}`),
   );
@@ -339,12 +343,46 @@ function overviewPage(card) {
 
 function clip(t, n) { return t.length > n ? t.slice(0, n - 1) + '…' : t; }
 
-/* ─────────── подання довгих текстів (D100) ───────────
-   Текст у кейсі пишуть люди й агент: це абзаци, а подекуди вже готові переліки.
-   Розбиваємо ЛИШЕ по рядках: речення й крапки з комою не чіпаємо, бо це змінило б зміст
-   («А, Б; але не В» після розбиття читалося б як два окремі твердження). */
+/* ─────────── подання довгих текстів (D100, D101) ───────────
+   Текст у кейсі пишуть люди й агент. Часто це один довгий абзац БЕЗ переносів рядків, усередині
+   якого вже є перелік: «…затримується: - очікування …; - повторне …; - ручне ….».
+   Такий перелік ми показуємо списком, зберігаючи порядок і всі слова.
+
+   Маркером пункту вважаємо дефіс (тире, крапку) лише там, де перед ним початок рядка або «:»/«;»,
+   і лише коли таких маркерів щонайменше два. Тому звичайний дефіс у слові («бізнес-контекст»,
+   «AS-IS»), тире в реченні («Процес — це …») і крапка з комою між умовами («якщо А; якщо не Б»)
+   списком не стають. Погоджений текст у базі не змінюється — це лише подання. */
 const LIST_RE = /^\s*([-–—•*]|\d+[.)])\s+/;
 function listText(l) { return l.replace(LIST_RE, '').trim(); }
+
+/** Маркер пункту всередині рядка: початок рядка або «:»/«;», потім дефіс і пробіл. */
+const INLINE_MARK_RE = /(^|[;:])[ \t]*([-–—•*])[ \t]+/g;
+/** Межа речення після останнього пункту: крапка, пробіл і велика літера. */
+const SENT_END_RE = /\.\s+(?=[А-ЯЁЇІЄҐA-Z])/;
+
+/**
+ * Перелік, записаний усередині одного рядка. Повертає вступ, пункти по порядку й «хвіст» —
+ * текст після останнього пункту, якщо він починається новим реченням. Нічого не переписує.
+ */
+function inlineList(line) {
+  INLINE_MARK_RE.lastIndex = 0;
+  const marks = [];
+  let m;
+  while ((m = INLINE_MARK_RE.exec(line))) marks.push({ at: m.index, sep: m[1], end: INLINE_MARK_RE.lastIndex });
+  if (marks.length < 2) return null;
+  const first = marks[0];
+  const intro = line.slice(0, first.at + (first.sep === ':' ? 1 : 0)).trim();
+  const items = marks.map((x, i) => line.slice(x.end, i + 1 < marks.length ? marks[i + 1].at : line.length).trim());
+  let tail = '';
+  const last = items[items.length - 1];
+  const cut = last.search(SENT_END_RE);
+  if (cut > 0) {
+    const rest = last.slice(cut + 1).trim();
+    // Хвіст відокремлюємо лише тоді, коли це справді окреме речення, а не скорочення в пункті.
+    if (rest.length >= 15) { items[items.length - 1] = last.slice(0, cut + 1).trim(); tail = rest; }
+  }
+  return { intro, items: items.filter(Boolean), tail };
+}
 
 /** Абзаци й справжні списки там, де текст уже містить перелік. Нічого не вигадує й не скорочує. */
 function longText(text) {
@@ -358,6 +396,14 @@ function longText(text) {
     const l = raw.trim();
     if (!l) { flushList(); flushPara(); continue; }
     if (LIST_RE.test(raw)) { flushPara(); list.push(listText(raw)); continue; }
+    const inl = inlineList(l);
+    if (inl) {
+      flushList(); flushPara();
+      if (inl.intro) out.push(el('p', {}, inl.intro));
+      out.push(el('ul', {}, inl.items.map((x) => el('li', {}, x))));
+      if (inl.tail) out.push(el('p', {}, inl.tail));
+      continue;
+    }
     flushList(); para.push(l);
   }
   flushList(); flushPara();
@@ -365,39 +411,31 @@ function longText(text) {
 }
 
 /**
- * Довгий текст із поступовим розкриттям. Під «Показати повністю» лежить не суцільне полотно,
- * а той самий структурований текст: абзаци й списки (вимога D100).
+ * Довгий текст показуємо ОДИН раз — під явним розкриттям. Раніше перший вузол виводився цілком
+ * незалежно від довжини, а потім той самий текст повторювався всередині «Показати повністю»:
+ * для абзацу без переносів це означало 723 символи двічі (D101).
  */
 function textBlock(text, opts) {
   const t = String(text || '').trim();
   const o = opts || {};
   if (!t) return el('p', { class: 'notset' }, o.missing || 'Не заповнено');
-  const limit = o.limit || 420;
-  const nodes = longText(t);
-  if (t.length <= limit) return el('div', { class: 'prose' }, ...nodes);
-  // Перший блок видно завжди; решта — за явною дією. Нічого не обрізаємо посеред речення.
-  // Якщо абзац закінчується двокрапкою, а далі йде перелік — показуємо й перелік: інакше
-  // на екрані лишився б «висячий» вступ без того, що він вводить.
-  let cut = 1;
-  const firstTxt = (nodes[0] && nodes[0].textContent) || '';
-  if (/:$/.test(firstTxt.trim()) && nodes[1] && nodes[1].tagName === 'UL') cut = 2;
-  const head = nodes.slice(0, cut);
-  return el('div', { class: 'prose' }, ...head,
-    el('details', { class: 'more' }, el('summary', {}, o.moreLabel || 'Показати повністю'),
-      el('div', { class: 'prose' }, ...longText(t))));
+  if (t.length <= (o.limit || 420)) return el('div', { class: 'prose' }, ...longText(t));
+  return el('details', { class: 'more', 'data-block': 'longtext' },
+    el('summary', {}, `${o.moreLabel || 'Показати повний текст'} · ${t.length} симв.`),
+    el('div', { class: 'prose' }, ...longText(t)));
 }
 
 /**
- * Коротке структуроване поле для огляду. Якщо текст довгий — не видаємо перші N символів
- * за резюме: кажемо, що він заповнений, і ведемо до повного тексту (вимога D100).
+ * Коротке значення для огляду. Є коротке — показуємо його. Немає — даємо змістовно назване
+ * посилання на розділ, де лежить повний текст. Ніяких «заповнено, текст довгий» і ніяких
+ * вигаданих резюме (D101).
  */
 function briefField(text, go, opts) {
   const t = String(text || '').trim();
   const o = opts || {};
   if (!t) return el('span', { class: 'notset' }, o.missing || 'Ще не з’ясовано');
   if (t.length <= (o.limit || 160) && !t.includes('\n')) return document.createTextNode(t);
-  return el('span', {}, el('span', { class: 'muted' }, o.longLabel || 'Заповнено, текст довгий. '),
-    el('button', { class: 'link', onclick: go }, o.linkLabel || 'Читати повністю →'));
+  return el('button', { class: 'link', onclick: go }, o.linkLabel || 'Читати повністю →');
 }
 
 /**
@@ -1151,9 +1189,8 @@ const VIEWS = {
         'Не зазначено. Потрібна перед побудовою схеми; назва кейсу «' + card.case.title + '» у схему не підставляється.'),
       el('p', { class: 'small muted' }, 'Назва входить у погодження й стає написом на пулі схеми; її зміна створює нову версію.'),
       block('Опис процесу', c.summary, 'Опису ще немає: запустіть аналіз на вкладці «Джерела» або заповніть поле «Суть» у формі редагування.'),
-      el('h3', { class: 'group-h' }, 'Мета'),
+      el('h3', { class: 'group-h' }, 'Бізнес-контекст'),
       block('Навіщо процес, хто отримує результат', c.business_context, 'Не з’ясовано: бізнес-контекст ще не заповнено.'),
-      el('p', { class: 'small muted' }, 'Окремого поля «мета дослідження» в описі немає — показано те, що зафіксовано.'),
       el('h3', { class: 'group-h' }, 'Межі процесу'),
       row('Початок — що запускає процес', c.boundaries.trigger),
       row('Вхід', c.boundaries.input),
