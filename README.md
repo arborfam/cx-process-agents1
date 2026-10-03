@@ -16,7 +16,13 @@ GitHub-репозиторій — папка проєкту з історією 
 
 Зріз 1 (деморежим, без AI) реалізовано: `npm install`, `npm test`, `npm run demo`. Запуск на Windows — docs/windows-start.md, оновлення зі збереженням даних — docs/windows-update.md; як пройти сценарій самостійно — docs/demo-guide.md; результати перевірок — docs/slice-1-report.md; знімки — docs/demo/.
 
-Зріз 3a (генерація й перевірка BPMN, **без AI**, не підключено до застосунку) реалізовано: `docs/slice-3a-report.md`, готові файли — `docs/bpmn-3a/index.html`, команда `npm run bpmn:samples`.
+Зріз 3a (генерація й перевірка BPMN, **без AI**) реалізовано: `docs/slice-3a-report.md`, готові файли — `docs/bpmn-3a/index.html`, команда `npm run bpmn:samples`.
+
+**03.10.2026 — архітектуру побудови замінено (D87).** Схему будує ланцюг скриптів власниці (`pipeline/`,
+робоча копія оригіналів із `reference/bpmn-pipeline/original/`) з таблиці процесу, яку формує агент 2;
+програма таблицю лише перевіряє проти погодженого опису, запускає скрипти й звіряє готові файли.
+Для роботи **потрібен Python 3** (див. `docs/windows-start.md`, крок 0; шлях можна задати змінною `CX_PYTHON`).
+Контракт таблиці — `docs/csv-contract.md`, відмінності робочої копії — `pipeline/DIFFERENCES.md`.
 
 ## Файли
 
