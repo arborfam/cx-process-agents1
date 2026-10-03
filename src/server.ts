@@ -9,7 +9,7 @@ import { DomainError } from './errors.ts';
 import { sha256 } from './hash.ts';
 import {
   acceptDraft, addQuestion, addNotationRequirement, decideNotationRequirement, removeNotationRequirement, decideStepProposal, decideStepProposals, relinkQuestion, unlinkQuestionFromMissingStep, addSource, addSourceFromFile, answerQuestion, approve, buildCard, createCase, getCase,
-  listCases, listSources, previewOriginCorrection, applyOriginCorrection, requestBpmnStart, returnToResearch, saveAnalystVersion, setQuestionCritical, submitForApproval,
+  approveDirect, listCases, listSources, previewOriginCorrection, applyOriginCorrection, requestBpmnStart, returnToResearch, saveAnalystVersion, setQuestionCritical, submitForApproval,
   type Actor, type EditFields,
 } from './domain.ts';
 import { LinkKind, type LinkKindT } from './schema.ts';
@@ -383,6 +383,9 @@ export function createApp(opts: ServerOptions): Server {
           const v = answerQuestion(db, human, caseId, {
             baseVersionId: str(b.base_version_id, 'base_version_id'), questionId: str(b.question_id, 'question_id'),
             answer: str(b.answer, 'answer'), origin: b.origin as 'real' | 'synthetic', basis,
+            transitions: Array.isArray(b.transitions)
+              ? (b.transitions as Record<string, unknown>[]).map((t) => ({ step_id: String(t.step_id), condition: String(t.condition ?? ''), to: String(t.to) }))
+              : undefined,
           });
           return json(res, 201, { version_id: v.id });
         }
@@ -415,6 +418,13 @@ export function createApp(opts: ServerOptions): Server {
         case 'submit':
           submitForApproval(db, human, caseId);
           return json(res, 200, { ok: true });
+        case 'approve/direct': {
+          // Одна дія для одного користувача. Серверні перевірки ті самі (D97).
+          const a2 = approveDirect(db, human, caseId, {
+            versionId: str(b.version_id, 'version_id'), checklistConfirmed: b.checklist_confirmed === true, note: str(b.note, 'note', false),
+          });
+          return json(res, 201, { approval: a2 });
+        }
         case 'approve': {
           const a = approve(db, human, caseId, { versionId: str(b.version_id, 'version_id'), checklistConfirmed: b.checklist_confirmed === true, note: str(b.note, 'note', false) });
           return json(res, 201, { approval_id: a.id });

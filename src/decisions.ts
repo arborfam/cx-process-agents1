@@ -120,7 +120,11 @@ function recordApplication(
 /* ─────────────────────── актуальність ─────────────────────── */
 
 export type CheckStatus = 'ok' | 'changed' | 'unknown';
-export interface DecisionCheck { key: string; label: string; status: CheckStatus; detail: string }
+export interface DecisionCheck {
+  key: string; label: string; status: CheckStatus; detail: string;
+  /** Конкретні зміни: об'єкт, поле, було → стало. Порожньо, якщо точне порівняння неможливе. */
+  diffs?: FieldDiff[];
+}
 export type DecisionState = 'valid' | 'needs_confirmation' | 'review' | 'void';
 
 export interface DecisionCurrency {
@@ -132,6 +136,8 @@ export interface DecisionCurrency {
   checks: DecisionCheck[];
   changed: string[];
   unknown: string[];
+  /** Усі конкретні зміни пласким списком: об'єкт · поле · було → стало. */
+  diffs: FieldDiff[];
 }
 
 export const DECISION_STATE_LABEL: Record<DecisionState, string> = {
@@ -161,24 +167,46 @@ function stepBodyFingerprint(s: Step): string {
   }));
 }
 
-function matchStep(stepId: string, was: Content, now: Content): { kind: 'same' | 'renamed' | 'changed' | 'ambiguous' | 'gone'; to?: string; detail: string } {
+/** Поля кроку, зміну яких показуємо поіменно: загальне «щось змінилося» людині нічого не дає. */
+const STEP_FIELDS: [keyof Step, string][] = [
+  ['action', 'дія'], ['entry_condition', 'умова входу'], ['result', 'результат'],
+  ['input_artifact', 'вхідний артефакт'], ['details', 'деталі опису'],
+];
+
+export interface FieldDiff { object: string; field: string; was: string; now: string }
+
+function stepDiffs(before: Step, after: Step): FieldDiff[] {
+  const out: FieldDiff[] = [];
+  const name = `Крок ${before.id}` + (after.id !== before.id ? ` (тепер ${after.id})` : '');
+  for (const [k, label] of STEP_FIELDS) {
+    const a = String(before[k] ?? '').trim(), b = String(after[k] ?? '').trim();
+    if (a !== b) out.push({ object: name, field: label, was: a, now: b });
+  }
+  const tr = (s: Step) => [...s.next].map((n) => `${n.condition || '(без умови)'} → ${n.to}`).sort().join('; ');
+  if (tr(before) !== tr(after)) out.push({ object: name, field: 'переходи', was: tr(before), now: tr(after) });
+  const src = (s: Step) => [...s.source_ids].sort().join(', ');
+  if (src(before) !== src(after)) out.push({ object: name, field: 'джерела', was: src(before), now: src(after) });
+  return out;
+}
+
+function matchStep(stepId: string, was: Content, now: Content): { kind: 'same' | 'renamed' | 'changed' | 'ambiguous' | 'gone'; to?: string; detail: string; diffs?: FieldDiff[] } {
   const before = was.steps.find((s) => s.id === stepId);
   if (!before) return { kind: 'gone', detail: `Кроку ${stepId} не було й у версії, на якій ухвалювалось рішення.` };
   const sameId = now.steps.find((s) => s.id === stepId);
   if (sameId) {
     if (stepFingerprint(sameId) === stepFingerprint(before)) return { kind: 'same', to: stepId, detail: `Крок ${stepId} не змінився.` };
-    if (stepBodyFingerprint(sameId) === stepBodyFingerprint(before)) {
-      return { kind: 'changed', to: stepId, detail: `Крок ${stepId}: сам опис дії той самий, але змінилися переходи або джерела.` };
-    }
-    return { kind: 'changed', to: stepId, detail: `Крок ${stepId}: змінився опис дії, умова входу або результат.` };
+    const diffs = stepDiffs(before, sameId);
+    return { kind: 'changed', to: stepId, diffs, detail: `Крок ${stepId}: ${diffs.map((d) => d.field).join(', ')}.` };
   }
   // ID зник. Зміна ID сама по собі не доводить зміни змісту — шукаємо той самий зміст під іншим ID.
   const byBody = now.steps.filter((s) => stepBodyFingerprint(s) === stepBodyFingerprint(before));
   if (byBody.length === 1) {
     const to = byBody[0]!;
-    return stepFingerprint(to) === stepFingerprint(before)
-      ? { kind: 'renamed', to: to.id, detail: `Крок ${stepId} має тепер ID ${to.id}; зміст той самий.` }
-      : { kind: 'changed', to: to.id, detail: `Крок ${stepId} має тепер ID ${to.id}, і разом із цим змінилися його переходи або джерела.` };
+    if (stepFingerprint(to) === stepFingerprint(before)) {
+      return { kind: 'renamed', to: to.id, detail: `Крок ${stepId} має тепер ID ${to.id}; зміст той самий.` };
+    }
+    const diffs = stepDiffs(before, to);
+    return { kind: 'changed', to: to.id, diffs, detail: `Крок ${stepId} має тепер ID ${to.id}; змінилося: ${diffs.map((d) => d.field).join(', ')}.` };
   }
   if (byBody.length > 1) {
     return { kind: 'ambiguous', detail: `Крок ${stepId} зник, а з таким самим описом у поточній версії є кілька кроків (${byBody.map((s) => s.id).join(', ')}): зіставити надійно не вдалося.` };
@@ -208,7 +236,10 @@ export function decisionCurrency(db: DB, caseId: string, decisionId: string): De
     if (!after) {
       checks.push({ key: 'question:' + qid, label: `Питання ${qid}`, status: 'changed', detail: `Питання ${qid} у поточній версії немає.` });
     } else if (before && before.text.trim() !== after.text.trim()) {
-      checks.push({ key: 'question:' + qid, label: `Питання ${qid}`, status: 'changed', detail: `Формулювання питання ${qid} змінилося.` });
+      checks.push({
+        key: 'question:' + qid, label: `Питання ${qid}`, status: 'changed', detail: `Питання ${qid}: формулювання.`,
+        diffs: [{ object: `Питання ${qid}`, field: 'формулювання', was: before.text.trim(), now: after.text.trim() }],
+      });
     } else if (!before) {
       checks.push({ key: 'question:' + qid, label: `Питання ${qid}`, status: 'unknown', detail: `Питання ${qid} немає у версії, на якій ухвалювалось рішення: порівняти немає з чим.` });
     } else {
@@ -220,7 +251,11 @@ export function decisionCurrency(db: DB, caseId: string, decisionId: string): De
   for (const sid of scope.step_ids) {
     const m = matchStep(sid, was, now);
     const status: CheckStatus = m.kind === 'same' || m.kind === 'renamed' ? 'ok' : m.kind === 'ambiguous' ? 'unknown' : 'changed';
-    checks.push({ key: 'step:' + sid, label: `Крок ${sid}`, status, detail: m.detail });
+    checks.push({
+      key: 'step:' + sid, label: `Крок ${sid}`, status, diffs: m.diffs,
+      // Коли крок зник, порівнювати поля немає з чим — кажемо це прямо, а не вигадуємо різницю.
+      detail: m.kind === 'gone' ? m.detail + ' Точно порівняти поля немає з чим.' : m.detail,
+    });
   }
 
   // 3. Докази. Зміна тексту джерела або зникнення цитати — зміна підстави.
@@ -236,7 +271,11 @@ export function decisionCurrency(db: DB, caseId: string, decisionId: string): De
       continue;
     }
     if (e.quote && findQuote(src.content, e.quote).kind === 'not_found') {
-      checks.push({ key: 'evidence:' + e.source_id, label: `Доказ «${src.title}»`, status: 'changed', detail: 'Фрагмента, на який спиралося рішення, у джерелі більше немає.' });
+      checks.push({
+        key: 'evidence:' + e.source_id, label: `Доказ «${src.title}»`, status: 'changed',
+        detail: 'Фрагмента, на який спиралося рішення, у джерелі більше немає.',
+        diffs: [{ object: `Джерело «${src.title}»`, field: 'фрагмент-доказ', was: e.quote, now: '— у тексті джерела не знайдено —' }],
+      });
       continue;
     }
     checks.push({ key: 'evidence:' + e.source_id, label: `Доказ «${src.title}»`, status: 'ok', detail: 'Доказ на місці.' });
@@ -266,6 +305,7 @@ export function decisionCurrency(db: DB, caseId: string, decisionId: string): De
 
 function finish(d: DecisionRow, head: { id: string; content_hash: string }, checks: DecisionCheck[]): DecisionCurrency {
   const changed = checks.filter((c) => c.status === 'changed').map((c) => c.detail);
+  const diffs = checks.flatMap((c) => c.diffs ?? []);
   const unknown = checks.filter((c) => c.status === 'unknown').map((c) => c.detail);
   // Зміна доказу чи цілісності — це зміна ПІДСТАВИ: рішення не переноситься.
   const basisGone = checks.some((c) => c.status === 'changed' && (c.key.startsWith('evidence:') || c.key === 'record'));
@@ -273,7 +313,7 @@ function finish(d: DecisionRow, head: { id: string; content_hash: string }, chec
   return {
     decision_id: d.id, state, state_label: DECISION_STATE_LABEL[state],
     applied_to_current: d.content_hash === head.content_hash,
-    checks, changed, unknown,
+    checks, changed, unknown, diffs,
   };
 }
 

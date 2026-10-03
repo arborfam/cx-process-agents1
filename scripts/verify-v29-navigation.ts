@@ -30,24 +30,39 @@ import type { ModelCallResult } from '../src/ai/types.ts';
 const OUT = 'docs/ux/shots';
 mkdirSync(OUT, { recursive: true });
 /**
- * Збережена таблиця версії 29 складалася ДО чинного контракту: у ній колонка `role` заповнена
- * і в подій, і в шлюзів, а чинна перевірка вимагає там порожнечі (`CSV_EVENT_ROLE`) — доріжка
- * успадковується від кроку. Тому перед подачею очищається РІВНО ця колонка рівно в цих рядках.
- * Топологія, підписи й умови переходів лишаються дослівно тими самими.
+ * Перевірка виконується на АДАПТОВАНІЙ КОПІЇ `tests/fixtures/v29-pipeline-adapted.csv`.
+ * Оригінал `docs/bpmn-3c/v29-pipeline.csv` не змінюється й не перезаписується.
+ *
+ * Єдине перетворення: у рядках типу start/end/xor очищено колонку `role` — чинна перевірка
+ * вимагає там порожнечі (`CSV_EVENT_ROLE`), а таблицю складено до цього правила. Перетворення
+ * описане в `tests/fixtures/README.md` і звіряється нижче: будь-яка інша відмінність зупиняє прогін.
  */
+const ORIGINAL = 'docs/bpmn-3c/v29-pipeline.csv';
+const ADAPTED = 'tests/fixtures/v29-pipeline-adapted.csv';
+function cells(line: string, width: number): string[] {
+  const c = line.match(/("([^"]|"")*"|[^,]*)(,|$)/g)!.map((x) => x.replace(/,$/, '')).slice(0, width);
+  while (c.length < width) c.push('');
+  return c;
+}
 function v29Csv(): string {
-  const lines = readFileSync('docs/bpmn-3c/v29-pipeline.csv', 'utf8').trim().split('\n');
-  const header = lines[0]!;
-  const width = header.split(',').length;
-  const out = [header];
-  for (const line of lines.slice(1)) {
-    const cells = line.match(/("([^"]|"")*"|[^,]*)(,|$)/g)!.map((x) => x.replace(/,$/, '')).slice(0, width);
-    while (cells.length < width) cells.push('');
-    const type = cells[2];
-    if (type === 'start' || type === 'end' || type === 'xor') cells[3] = '';
-    out.push(cells.join(','));
+  const orig = readFileSync(ORIGINAL, 'utf8').trim().split('\n');
+  const adapted = readFileSync(ADAPTED, 'utf8').trim().split('\n');
+  const width = orig[0]!.split(',').length;
+  assert.equal(adapted[0], orig[0], 'заголовок копії має збігатися з оригіналом');
+  assert.equal(adapted.length, orig.length, 'кількість рядків має збігатися');
+  let normalised = 0;
+  for (let i = 1; i < orig.length; i++) {
+    const a = cells(orig[i]!, width), b = cells(adapted[i]!, width);
+    for (let k = 0; k < width; k++) {
+      if (a[k] === b[k]) continue;
+      assert.equal(k, 3, `копія відрізняється від оригіналу в колонці ${k} рядка ${i}: дозволено лише колонку role`);
+      assert.ok(['start', 'end', 'xor'].includes(a[2]!), `колонку role очищено в рядку типу ${a[2]} — дозволено лише start/end/xor`);
+      assert.equal(b[k], '', 'у копії колонка role має бути порожня');
+      normalised++;
+    }
   }
-  return out.join('\n') + '\n';
+  console.log(`адаптована копія звірена з оригіналом: нормалізовано колонку role у ${normalised} рядках, інших відмінностей немає`);
+  return readFileSync(ADAPTED, 'utf8');
 }
 const CSV = v29Csv();
 const human: Actor = { kind: 'human', name: 'Аналітикиня' };
@@ -131,13 +146,13 @@ try {
   page.on('dialog', (d) => d.accept());
   await page.goto(`${app.url}/login?code=${CODE}`);
   await page.getByRole('link', { name: /навігації схемою/ }).click();
-  await page.waitForSelector('#tabs');
-  await page.getByRole('tab', { name: /Схема/ }).click();
+  await page.waitForSelector('#toptabs');
+  await page.getByRole('tab', { name: /^Схема$/ }).click();
   await page.waitForTimeout(500);
 
   // смислова перевірка (підставна відповідь) → побудова
   for (let i = 0; i < 4; i++) {
-    const b2 = page.locator('#panel button').filter({ hasText: /перевірк|Побудувати|побудов/i }).first();
+    const b2 = page.locator('#main button').filter({ hasText: /перевірк|Побудувати|побудов/i }).first();
     if (!(await b2.count())) break;
     await b2.click(); await page.waitForTimeout(3500);
     if (await page.locator('.djs-container').count()) break;

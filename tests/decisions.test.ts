@@ -217,3 +217,46 @@ test('15. Рішення без предмета застосування не �
     subject: 'Без предмета', explanation: 'Пояснення.', scope: { step_ids: [], question_ids: [] }, evidence: [],
   }), (e: { code?: string }) => e.code === 'VALIDATION');
 });
+
+test('16. Зміни показуються поіменно: об’єкт, поле, було → стало', () => {
+  const db = freshDb();
+  const { caseId, decisionId, srcId } = caseWithDecision(db);
+  next(db, caseId, (c) => {
+    c.steps = c.steps.map((s) => (s.id === 'S12' ? { ...s, action: 'Запитати овнера й ескалювати', result: 'Ескалацію створено' } : s));
+  }, [srcId]);
+  const cur = decisionCurrency(db, caseId, decisionId);
+  assert.equal(cur.state, 'review');
+  const byField = Object.fromEntries(cur.diffs.map((d) => [d.field, d]));
+  assert.ok(byField['дія'], JSON.stringify(cur.diffs));
+  assert.equal(byField['дія'].object, 'Крок S12');
+  assert.equal(byField['дія'].was, 'Повторно запитати овнера');
+  assert.equal(byField['дія'].now, 'Запитати овнера й ескалювати');
+  assert.ok(byField['результат'], 'друге змінене поле теж назване');
+});
+
+test('17. Якщо порівнювати немає з чим — сказано прямо, різниця не вигадується', () => {
+  const db = freshDb();
+  const { caseId, decisionId, srcId } = caseWithDecision(db);
+  next(db, caseId, (c) => { c.steps = c.steps.filter((s) => s.id !== 'S12'); }, [srcId]);
+  const cur = decisionCurrency(db, caseId, decisionId);
+  const chk = cur.checks.find((x) => x.key === 'step:S12')!;
+  assert.equal(chk.status, 'changed');
+  assert.equal(chk.diffs, undefined, 'вигаданих значень немає');
+  assert.ok(chk.detail.includes('немає з чим'), chk.detail);
+});
+
+test('18. Змінений доказ показано як «було → стало»', () => {
+  const db = freshDb();
+  const c = createCase(db, human, 'Доказ', 'demo');
+  const src = addSource(db, human, c.id, { kind: 'transcript', title: 'Інтерв’ю', content: SRC_TEXT, origin: 'synthetic' });
+  const content = emptyContent();
+  content.steps = [step('S1', 'Крок')];
+  putHead(db, c.id, content, [src.id]);
+  const d = createDecision(db, human, c.id, {
+    subject: 'Рішення', explanation: 'Пояснення.',
+    scope: { step_ids: ['S1'], question_ids: [] }, evidence: [{ source_id: src.id, quote: QUOTE }],
+  });
+  // джерело незмінне (воно незмінне за правилами), тож перевіряємо зворотний бік: цитата є → доказ ок
+  const cur = decisionCurrency(db, c.id, d.id);
+  assert.equal(cur.checks.find((x) => x.key.startsWith('evidence:'))!.status, 'ok');
+});

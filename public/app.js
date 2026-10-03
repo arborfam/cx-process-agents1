@@ -3,7 +3,42 @@
 // Дані завжди вставляються через textContent (без innerHTML), щоб текст джерел не міг виконатися як код.
 
 const app = document.getElementById('app');
-const state = { config: null, tab: 'context', card: null, caseId: null, diagram: null, viewer: null };
+const state = { config: null, top: 'overview', tab: 'context', card: null, caseId: null, diagram: null, viewer: null, marked: [] };
+
+/* ─────────── збереження введення й позиції між перемальовуваннями (D97) ───────────
+   Автоматичне оновлення стану не має стирати напівнабраний текст і не має кидати сторінку вгору. */
+function captureUi() {
+  const vals = {};
+  document.querySelectorAll('#app textarea[id], #app input[id], #app select[id]').forEach((e) => {
+    if (e.type === 'checkbox' || e.type === 'radio') vals[e.id] = e.checked;
+    else if (e.value) vals[e.id] = e.value;
+  });
+  const a = document.activeElement;
+  return {
+    y: window.scrollY, vals,
+    focus: a && a.id ? a.id : null,
+    sel: a && a.id && a.selectionStart != null ? [a.selectionStart, a.selectionEnd] : null,
+    open: [...document.querySelectorAll('#app details[open]')].map((d) => (d.querySelector('summary') || {}).textContent || ''),
+  };
+}
+function restoreUi(st) {
+  if (!st) return;
+  for (const [id, v] of Object.entries(st.vals)) {
+    const e = document.getElementById(id);
+    if (!e) continue;
+    if (e.type === 'checkbox' || e.type === 'radio') e.checked = v;
+    else if (!e.value) e.value = v;
+  }
+  document.querySelectorAll('#app details').forEach((d) => {
+    const t = (d.querySelector('summary') || {}).textContent || '';
+    if (st.open.includes(t)) d.open = true;
+  });
+  if (st.focus) {
+    const e = document.getElementById(st.focus);
+    if (e) { e.focus(); if (st.sel && e.setSelectionRange) { try { e.setSelectionRange(st.sel[0], st.sel[1]); } catch (err) { /* не текстове поле */ } } }
+  }
+  window.scrollTo(0, st.y);
+}
 
 function el(tag, attrs, ...children) {
   const n = document.createElement(tag);
@@ -68,9 +103,10 @@ const fmt = (iso) => new Date(iso).toLocaleString('uk-UA', { dateStyle: 'short',
 
 // ───────────── список кейсів ─────────────
 async function renderList() {
+  // список кейсів має власну сторінку шириною контенту
   const { cases } = await api('GET', '/api/cases');
   const title = el('input', { type: 'text', id: 'newtitle', placeholder: 'Назва нового кейсу' });
-  app.replaceChildren(
+  app.replaceChildren(el('div', { class: 'page' },
     el('h1', {}, 'Кейси'),
     el('div', { class: 'card' },
       cases.length === 0 ? el('p', { class: 'muted' }, 'Кейсів ще немає. Створіть власний або завантажте демо-кейс.') : null,
@@ -87,113 +123,198 @@ async function renderList() {
         el('button', { class: 'primary', onclick: () => act(async () => {
           const r = await api('POST', '/api/cases', { title: title.value }); location.hash = '#/case/' + r.case.id; }) }, 'Створити кейс'),
         el('button', { onclick: () => act(async () => { const r = await api('POST', '/api/demo/seed'); location.hash = '#/case/' + r.case_id; }) },
-          'Завантажити демо-кейс (синтетичний)'))));
+          'Завантажити демо-кейс (синтетичний)')))));
 }
 
 // ───────────── картка кейсу ─────────────
 // Порядок блоків: шапка → Суть → Предметний опис AS-IS (вкладки) → Критичні прогалини й наступна дія → Головні зміни → Перевірки готовності.
 async function renderCase(id) {
+  const ui = state.caseId === id ? captureUi() : null;
   const card = await api('GET', '/api/cases/' + id);
-  if (state.caseId !== id) { state.caseId = id; state.tab = 'context'; }   // при відкритті кейсу першою відкрита «Бізнес-контекст і межі»
+  if (state.caseId !== id) { state.caseId = id; state.top = 'overview'; state.tab = 'context'; }
   state.card = card;
-  const { head, next_action: na } = card;
-  const warns = card.blockers.filter((b) => b.severity === 'warning');
-  const content = head.content;
 
-  // Шапка: назва, статус, версія, режим
-  const header = el('div', { class: 'card' },
-    el('a', { href: '#/', class: 'small' }, '← усі кейси'),
+  const appbar = el('header', { class: 'appbar' }, el('div', { class: 'appbar-in' },
+    el('a', { href: '#/', class: 'brand' }, '← усі кейси'),
     el('h1', {}, card.case.title),
     el('div', { class: 'chips' },
-      el('span', { class: 'chip state' }, 'Статус: ' + card.case.state_label),
-      el('span', { class: 'chip' }, 'Версія ' + head.number + ' · ' + CREATED_BY[head.created_by] + versionOrigin(card)),
-      head.accepted ? el('span', { class: 'chip ok' }, 'Прийнято аналітиком (це ще не погодження)') : el('span', { class: 'chip' }, 'Не прийнято аналітиком'),
-      card.approval ? el('span', { class: 'chip ok' }, 'Погоджено: версія ' + (card.versions.find((v) => v.id === card.approval.version_id)?.number ?? '?') + ', ' + fmt(card.approval.created_at)) : null,
+      el('span', { class: 'chip state' }, card.case.state_label),
+      el('span', { class: 'chip' }, 'Версія ' + card.head.number + ' · ' + CREATED_BY[card.head.created_by] + versionOrigin(card)),
+      card.approval
+        ? el('span', { class: 'chip ok' }, 'Погоджено ' + fmt(card.approval.created_at))
+        : el('span', { class: 'chip' }, 'Не погоджено'),
       modeChip(card),
-      head.integrity_ok ? null : el('span', { class: 'chip', style: 'color:var(--danger)' }, '⚠ Цілісність версії порушена')));
+      card.head.integrity_ok ? null : el('span', { class: 'chip err' }, 'Цілісність версії порушена')),
+    el('nav', { class: 'tabs', id: 'toptabs', role: 'tablist' })));
 
-  // 1) Суть
-  const essence = el('div', { class: 'card', 'data-block': 'essence' }, el('h2', {}, 'Суть'),
-    el('p', {}, content.summary || el('span', { class: 'notset' }, 'Суть процесу ще не сформульовано.')),
-    el('p', { class: 'small' }, el('strong', {}, 'Назва процесу (напис на схемі): '),
-      card.process_name.defined ? card.process_name.value : el('span', { class: 'notset' }, 'не зазначено — потрібна перед побудовою схеми (назва кейсу в схему не підставляється)')));
+  const main = el('main', { id: 'main' });
+  app.replaceChildren(appbar, main);
+  renderTop();
+  clearTimeout(state.poll);
+  if (card.runs[0] && card.runs[0].technical_state === 'running') {
+    state.poll = setTimeout(() => { if (state.caseId === id) route(); }, 2000);
+  }
+  restoreUi(ui);
+}
 
-  // 2) Предметний опис AS-IS із вкладками (перша — «Бізнес-контекст і межі», друга — «Кроки процесу»)
-  const asis = el('div', { class: 'card', id: 'details', 'data-block': 'asis' }, el('h2', {}, 'Опис процесу AS-IS'), el('div', { id: 'tabs' }), el('div', { id: 'panel' }));
+function renderTop() {
+  const card = state.card; if (!card) return;
+  const crit = card.gap_items.length;
+  const openQ = card.other_open_questions_count + card.critical_open_questions.length;
+  const bar = document.getElementById('toptabs');
+  bar.replaceChildren(...TOP_TABS.map(([k, label]) => {
+    const n = k === 'asis' && crit ? el('span', { class: 'n' }, String(crit))
+      : k === 'asis' && openQ ? el('span', { class: 'n q' }, String(openQ))
+      : k === 'sources' && card.sources.length ? el('span', { class: 'n plain' }, String(card.sources.length)) : null;
+    return el('button', {
+      class: 'tab', role: 'tab', 'aria-selected': String(state.top === k), 'data-top': k,
+      onclick: () => { state.top = k; renderTop(); window.scrollTo(0, 0); },
+    }, label, n);
+  }));
+  const main = document.getElementById('main');
+  main.className = '';
+  if (state.top === 'overview') main.replaceChildren(overviewPage(card));
+  else if (state.top === 'asis') main.replaceChildren(asisPage(card));
+  else if (state.top === 'sources') main.replaceChildren(el('div', { class: 'page' }, el('div', { class: 'cols' },
+    el('div', { class: 'stack' }, el('div', { class: 'card lead' }, VIEWS.sources(card))), railNext(card))));
+  else if (state.top === 'diagram') main.replaceChildren(el('div', { class: 'page wide' }, el('div', { class: 'stack' }, el('div', { class: 'card' }, VIEWS.diagram(card)))));
+  else main.replaceChildren(el('div', { class: 'page' }, el('div', { class: 'stack' }, el('div', { class: 'card' }, VIEWS.history(card)))));
+}
 
-  // 3) Критичні прогалини + рекомендована наступна дія
-  const gapLine = (g) => {
-    const isQ = g.code === 'CRITICAL_QUESTION';
-    const q = isQ ? content.questions.find((x) => x.id === g.ref) : null;
-    const isTr = ['UNRESOLVED_TRANSITION', 'UNKNOWN_WITHOUT_QUESTION', 'UNKNOWN_QUESTION_CLOSED'].includes(g.code);
-    const isEntry = g.code === 'ENTRY_MISSING' || g.code === 'ENTRY_BAD_REF';
-    const isFlow = g.code === 'STEP_UNREACHABLE' || g.code === 'STEP_NO_EXIT';
-    const qid = g.code === 'CONTRADICTION' || g.code === 'QUESTION_LINK_BROKEN' || g.code === 'SEQUENCE_UNCONFIRMED' ? g.ref : isTr ? (card.unknown_transitions.find((u) => u.step_id === g.ref)?.question_ids[0]) : null;
-    const title = isQ ? 'Критичне питання ' : isTr ? 'Невизначений перехід. ' : g.code === 'CONTRADICTION' ? 'Суперечність. ' : g.code === 'SEQUENCE_UNCONFIRMED' ? 'Послідовність не підтверджена. '
-      : isEntry ? 'Початковий крок. ' : g.code === 'STEP_UNREACHABLE' ? 'Недосяжні кроки. ' : g.code === 'STEP_NO_EXIT' ? 'Немає виходу до завершення. ' : g.code === 'PENDING_STEP_PROPOSAL' ? 'Пропозиція агента без рішення. ' : g.code === 'PENDING_NOTATION_PROPOSAL' ? 'Пропозиція щодо нотації без рішення. ' : g.code === 'NOTATION_BAD_STEP' ? 'Вимога до нотації без кроку. ' : 'Прогалина. ';
-    return el('div', { class: 'blocker' },
-      el('strong', {}, title),
-      isQ ? `${q ? q.id + ': ' + q.text : g.message}` : g.message,
-      isQ && q && q.impact ? el('div', { class: 'small' }, 'Чому важливо: ' + q.impact) : null,
-      (isQ || qid) ? el('button', { class: 'link', onclick: () => goToQuestion(isQ ? g.ref : qid) }, 'Перейти до питання ' + (isQ ? g.ref : qid)) : null,
-      isTr && !qid ? el('button', { class: 'link', onclick: () => showTab('steps') }, 'Показати крок ' + g.ref) : null,
-      isFlow || g.code === 'PENDING_STEP_PROPOSAL' ? el('button', { class: 'link', onclick: () => showTab('steps') }, g.code === 'PENDING_STEP_PROPOSAL' ? 'Перейти до пропозиції' : 'Показати кроки процесу') : null,
-      g.code === 'PENDING_NOTATION_PROPOSAL' || g.code === 'NOTATION_BAD_STEP' ? el('button', { class: 'link', onclick: () => showTab('context') }, 'Перейти до вимог до нотації') : null,
-      isEntry ? entryForm(card) : null);
-  };
-  const questionGap = (it) => el('div', { class: 'blocker' },
-    el('strong', {}, it.title + '. '), it.text,
-    it.impact ? el('div', { class: 'small' }, 'Чому важливо: ' + it.impact) : null,
-    it.consequences.length ? el('div', { class: 'small' }, el('strong', {}, 'Наслідки для кроків: '),
-      it.consequences.map((c) => el('div', {}, c.text + ' ', el('button', { class: 'link', onclick: () => showTab('steps') }, 'Показати крок ' + c.step_id)))) : null,
-    it.question_id ? el('button', { class: 'link', onclick: () => goToQuestion(it.question_id) }, 'Перейти до питання ' + it.question_id) : null);
-  const gapItem = (it) => (it.kind === 'question' || it.kind === 'question_with_transitions') ? questionGap(it) : gapLine({ code: it.codes[0], ref: it.ref, message: it.text });
-  const gapsAndAction = el('div', { class: 'card blockers' + (card.gap_items.length ? '' : ' none'), id: 'gaps', 'data-block': 'gaps' },
-    el('h2', {}, card.gap_items.length ? `Критичні прогалини: ${card.gap_items.length}` : 'Критичних прогалин немає'),
-    card.gap_items.length ? el('p', { class: 'hint' }, 'Те, чого про процес ще не з’ясовано або де опис суперечить сам собі. Доки вони відкриті, AS-IS не можна погодити.') : null,
-    card.gap_items.map(gapItem),
-    card.other_open_questions_count ? el('div', { class: 'warnbox' }, `Некритичних відкритих питань: ${card.other_open_questions_count} (не блокують).`) : null,
-    el('div', { class: 'nextaction' },
-      el('h3', {}, 'Рекомендований наступний крок'),
-      el('p', {}, na.hint),
-      el('div', { class: 'actions' },
-        el('button', { class: 'primary', disabled: !na.enabled, onclick: () => nextAction(card) }, na.label),
-        ['pending_approval', 'approved'].includes(card.case.state) ? el('button', { onclick: () => returnDialog(card) }, 'Повернути на доопрацювання') : null,
-        aiButton(card)),
-      aiNote(card),
-      !na.enabled && na.disabledReason ? el('p', { class: 'small', style: 'color:var(--danger)' }, 'Недоступно: ' + na.disabledReason) : null,
-      runBox(card)));
+/* ─────────────── Огляд ─────────────── */
 
-  // 4) Головні зміни від попередньої версії
-  const item = (c) => el('li', {}, el('strong', {}, c.label + ': '), c.text);
+/** Критичне бізнес-невідоме видно до будь-якого прокручування. */
+function critLine(card) {
+  const q = card.critical_open_questions[0];
+  if (!q) return null;
+  const n = card.critical_open_questions.length;
+  const dup = state.top === 'asis' && state.tab === 'questions';
+  return el('div', { class: 'note err critline' },
+    el('strong', {}, n === 1 ? 'Критичне питання блокує погодження й побудову: ' : `${n} критичні питання блокують погодження й побудову: `),
+    q.id + ' — ' + (q.text.length > 110 ? q.text.slice(0, 109) + '…' : q.text),
+    dup ? null : el('button', { class: 'link', onclick: () => goToQuestion(q.id) }, 'Перейти до питання'));
+}
+
+function overviewPage(card) {
+  const c = card.head.content;
+  const ns = (t) => el('span', { class: 'notset' }, t || 'Ще не з’ясовано');
+  const lead = el('section', { class: 'card lead' },
+    el('h2', {}, 'Коротко'),
+    el('dl', { class: 'kv' },
+      el('dt', {}, 'Що це за процес'), el('dd', {}, c.summary || ns()),
+      el('dt', {}, 'Від'), el('dd', {}, c.boundaries.trigger ? clip(c.boundaries.trigger, 110) : ns()),
+      el('dt', {}, 'До'), el('dd', {}, c.boundaries.completion || ns())),
+    el('div', { class: 'actions' },
+      el('button', { class: 'link', onclick: () => goTo('asis', 'context') }, 'Межі, ролі й бізнес-контекст →')));
+
+  const item = (x) => el('li', {}, el('strong', {}, x.label + ': '), x.text);
   const top = card.changes.slice(0, 5), rest = card.changes.slice(5);
-  const changes = el('div', { class: 'card', 'data-block': 'changes' }, el('h2', {}, 'Головні зміни від попередньої версії'),
+  const changes = el('section', { class: 'card' },
+    el('h2', {}, 'Головні зміни від попередньої версії'),
     top.length ? el('ul', {}, top.map(item)) : el('p', { class: 'muted' }, 'Змін немає.'),
     rest.length ? el('details', {}, el('summary', {}, `Усі зміни (ще ${rest.length})`), el('ul', {}, rest.map(item))) : null);
 
-  // 5) Перевірки готовності: короткий підсумок, деталі розгортаються
-  const mark = { ok: '✔', fail: '✖', warn: '!' };
-  const cnt = { ok: 0, fail: 0, warn: 0 };
-  card.review.checks.forEach((c) => { cnt[c.status]++; });
-  const SHORT = { accepted: 'прийняття версії аналітиком', sources: 'врахування джерел', reading: 'читання файлів', structure: 'структурна повнота',
-    gaps: 'критичні прогалини', integrity: 'цілісність версії', conflicts: 'конфлікти правок', process_name: 'назва процесу', notation: 'пропозиції щодо нотації' };
-  const failedNames = card.review.checks.filter((c) => c.status === 'fail').map((c) => SHORT[c.key] || c.key);
-  const review = el('div', { class: 'card', 'data-block': 'review' },
-    el('h2', {}, 'Перевірки готовності'),
-    el('p', { class: 'review-sum' },
-      el('strong', {}, card.review.ready_text + '. '),
-      el('span', { class: 'muted' }, `Пройдено: ${cnt.ok} · не пройдено: ${cnt.fail} · увага: ${cnt.warn}`),
-      failedNames.length ? el('span', { class: 'small', style: 'display:block;color:var(--danger)' }, 'Не пройдено: ' + failedNames.join('; ')) : null),
-    el('details', {}, el('summary', {}, `Показати всі перевірки (${card.review.checks.length})`),
-      el('table', {}, el('tbody', {}, card.review.checks.map((c) => el('tr', {},
-        el('td', { style: 'width:9.5em;white-space:nowrap' }, el('span', { class: 'chip ' + (c.status === 'ok' ? 'ok' : ''), style: c.status === 'fail' ? 'color:var(--danger);border-color:var(--danger)' : c.status === 'warn' ? 'color:var(--warn)' : '' }, mark[c.status] + ' ' + c.status_text)),
-        el('td', {}, c.label), el('td', { class: 'small muted' }, c.detail))))),
-      warns.length ? el('div', { class: 'warnbox' }, `Попередження (не блокують): `, warns.slice(0, 3).map((w) => w.message).join(' · '), warns.length > 3 ? ' …' : '') : null));
+  return el('div', { class: 'page' },
+    critLine(card),
+    el('div', { class: 'cols' },
+      el('div', { class: 'stack' }, lead, runSection(card), changes),
+      railNext(card, attentionCard(card))));
+}
 
-  app.replaceChildren(header, ...(card.scenario ? [scenarioCard(card)] : []), essence, asis, gapsAndAction, changes, review);
-  renderTabs();
-  clearTimeout(state.poll);
-  if (card.runs[0] && card.runs[0].technical_state === 'running') state.poll = setTimeout(() => { if (state.caseId === id) route(); }, 2000);
+function clip(t, n) { return t.length > n ? t.slice(0, n - 1) + '…' : t; }
+
+/** Стан тривалої операції — окремою карткою огляду. Автооновлення не стирає введення. */
+function runSection(card) {
+  const box = runBox(card);
+  if (!box) return null;
+  const r = latestRun(card);
+  const running = r.technical_state === 'running';
+  return el('section', { class: 'card' },
+    el('h2', {}, running ? 'Запуск виконується' : 'Останній запуск'),
+    running ? el('p', { class: 'small muted' }, 'Стан оновлюється сам. Введений текст і позиція на сторінці зберігаються.') : null,
+    box);
+}
+function goTo(top, tab) {
+  state.top = top; if (tab) state.tab = tab;
+  renderTop(); window.scrollTo(0, 0);
+}
+
+/** Одна картка «Наступна дія» для всіх вкладок: позначка витрат не змінюється від місця. */
+function railNext(card, ...extra) {
+  const na = card.next_action;
+  const paid = na.key === 'start_bpmn' || na.key === 'update_analysis';
+  return el('aside', { class: 'rail' },
+    el('section', { class: 'card card-tight next' },
+      el('h2', {}, 'Наступна дія'),
+      el('p', { class: 'why' }, na.hint),
+      !na.enabled && na.disabledReason ? el('div', { class: 'blocked' }, na.disabledReason) : null,
+      el('button', { class: 'primary', disabled: !na.enabled, onclick: () => nextAction(card) }, na.label),
+      paid ? el('span', { class: 'paid' }, 'Платний етап: звернення до моделі') : null,
+      na.key === 'approve' ? el('span', { class: 'free' }, 'Погодження нічого не коштує й нічого не запускає.') : null,
+      ['pending_approval', 'approved'].includes(card.case.state)
+        ? el('button', { onclick: () => returnDialog(card) }, 'Повернути на доопрацювання') : null,
+      aiNote(card)),
+    ...extra.filter(Boolean));
+}
+
+/** Бізнес-питання, рішення й технічні проблеми розділені. */
+function attentionCard(card) {
+  const items = [];
+  // Один маршрут до одного рішення: критичне питання вже стоїть рядком угорі.
+  const shownAbove = card.critical_open_questions[0] ? card.critical_open_questions[0].id : null;
+  for (const g of card.gap_items) {
+    const business = g.kind === 'question' || g.kind === 'question_with_transitions';
+    if (business && g.question_id && g.question_id === shownAbove) continue;
+    items.push({
+      tone: business ? 'err' : 'warn',
+      label: business ? 'Критичне бізнес-невідоме' : 'Технічна прогалина опису',
+      text: g.title ? g.title + '. ' + g.text : g.text,
+      go: () => (g.question_id ? goToQuestion(g.question_id) : goTo('asis', 'steps')),
+    });
+  }
+  if (card.other_open_questions_count) {
+    items.push({ tone: '', label: 'Відкриті питання', text: `${card.other_open_questions_count} некритичних — не блокують`, go: () => goTo('asis', 'questions') });
+  }
+  const pend = (card.step_proposals || []).filter((p) => p.status === 'proposed').length;
+  if (pend) items.push({ tone: 'warn', label: 'Рішення, якого очікують від вас', text: `Пропозицій агента без рішення: ${pend}`, go: () => goTo('asis', 'steps') });
+  const failed = card.review.checks.filter((c) => c.status === 'fail').length;
+  return el('section', { class: 'card card-tight' },
+    el('h2', {}, 'Потребує уваги'),
+    items.length ? el('div', { class: 'att' }, items.map((x) => el('div', { class: 'att-item' },
+      el('div', {}, el('span', { class: 'chip ' + x.tone }, x.label)),
+      el('div', { class: 'small' }, x.text),
+      el('div', {}, el('button', { class: 'link', onclick: x.go }, 'Перейти →')))))
+      : el('p', { class: 'small muted' }, 'Нічого не потребує уваги.'),
+    el('details', {}, el('summary', {}, `Перевірки готовності (${card.review.checks.length}, не пройдено ${failed})`),
+      reviewTable(card)));
+}
+
+function reviewTable(card) {
+  const mark = { ok: '✔', fail: '✖', warn: '!' };
+  return el('div', {},
+    el('p', { class: 'small' }, el('strong', {}, card.review.ready_text)),
+    el('table', {}, el('tbody', {}, card.review.checks.map((c) => el('tr', {},
+      el('td', { style: 'width:2em' }, mark[c.status]),
+      el('td', {}, c.label),
+      el('td', { class: 'small muted' }, c.detail))))));
+}
+
+/* ─────────────── AS-IS ─────────────── */
+
+function asisPage(card) {
+  const sub = el('nav', { class: 'subtabs', role: 'tablist' }, ...TABS.map(([k, label]) => {
+    const n = k === 'questions' && card.critical_open_questions.length ? ' · ' + (card.critical_open_questions.length + card.other_open_questions_count) : '';
+    return el('button', {
+      class: 'tab', role: 'tab', 'aria-selected': String(state.tab === k),
+      onclick: () => { state.tab = k; renderTop(); },
+    }, label + n);
+  }));
+  const panel = el('div', { id: 'panel' }, VIEWS[state.tab](card));
+  return el('div', { class: 'page' }, critLine(card),
+    el('div', { class: 'cols' },
+      el('div', { class: 'stack' },
+        el('section', { class: 'card lead' }, sub, panel)),
+      railNext(card)));
 }
 
 function costText(r) {
@@ -287,7 +408,7 @@ function scenarioCard(card) {
     el('h2', {}, 'Навчальний сценарій ' + (neg ? 'Б' : 'А') + ' (синтетичні джерела)'), ...body);
 }
 
-function showTab(tab) { state.tab = tab; renderTabs(); document.getElementById('details').scrollIntoView(); }
+function showTab(tab) { goTo(TOP_OF[tab] || 'asis', TOP_OF[tab] === 'asis' ? tab : null); }
 
 /** Явний вибір початкового кроку. Система ніколи не обирає його сама (D27). Для погоджених записів створюється нова версія. */
 function entryForm(card) {
@@ -313,7 +434,7 @@ function entryForm(card) {
 }
 
 function goToQuestion(qid) {
-  state.tab = 'questions'; renderTabs();
+  state.top = 'asis'; state.tab = 'questions'; renderTop();
   const n = document.getElementById('q-' + qid);
   if (n) { n.scrollIntoView({ block: 'center' }); n.style.outline = '3px solid var(--accent)'; setTimeout(() => { n.style.outline = ''; }, 2500); }
 }
@@ -321,15 +442,13 @@ function goToQuestion(qid) {
 async function nextAction(card) {
   const k = card.next_action.key;
   if (k === 'resolve_blockers') {
-    state.tab = card.critical_open_questions.length ? 'questions' : (card.blockers.some((b) => b.code.includes('SOURCE')) ? 'sources' : 'edit');
-    renderTabs(); document.getElementById('tabs').scrollIntoView();
-  } else if (k === 'accept') { await act(() => api('POST', `/api/cases/${card.case.id}/accept-draft`, { version_id: card.head.id }), 'Робочу версію прийнято'); await refresh(); }
-  else if (k === 'submit') { await act(() => api('POST', `/api/cases/${card.case.id}/submit`, {}), 'Передано на погодження'); await refresh(); }
-  else if (k === 'approve') approveDialog(card);
-  else if (k === 'clarify_entry') { const sel = document.getElementById('entry-select'); if (sel) { sel.scrollIntoView({ block: 'center' }); sel.focus(); } else showTab('edit'); }
-  else if (k === 'clarify_process_name') { showTab('edit'); setTimeout(() => { const i = document.getElementById('process-name-input'); if (i) { i.scrollIntoView({ block: 'center' }); i.focus(); } }, 50); }
-  else if (k === 'fix_flow') showTab('edit');
-  else if (k === 'start_bpmn') { showTab('diagram'); }
+    if (card.critical_open_questions.length) goToQuestion(card.critical_open_questions[0].id);
+    else goTo(card.blockers.some((b) => b.code.includes('SOURCE')) ? 'sources' : 'asis', 'steps');
+  } else if (k === 'accept' || k === 'submit' || k === 'approve') approveDialog(card);
+  else if (k === 'clarify_entry') { const sel = document.getElementById('entry-select'); if (sel) { sel.scrollIntoView({ block: 'center' }); sel.focus(); } else goTo('asis', 'context'); }
+  else if (k === 'clarify_process_name') { goTo('asis', 'context'); setTimeout(() => { const i = document.getElementById('process-name-input'); if (i) { i.scrollIntoView({ block: 'center' }); i.focus(); } }, 50); }
+  else if (k === 'fix_flow') goTo('asis', 'steps');
+  else if (k === 'start_bpmn') goTo('diagram');
 }
 
 const dlg = document.getElementById('dlg');
@@ -343,15 +462,25 @@ function approveDialog(card) {
     'Я розумію, що погоджую саме версію ' + card.head.number + ', і зміна після цього потребує нового погодження.',
   ];
   const boxes = items.map(() => el('input', { type: 'checkbox' }));
+  // Одна фінальна дія: службові «Прийняти робочу версію» й «Передати на погодження»
+  // для одного користувача виконує сервер в одній транзакції (D97). Перевірки ті самі.
   const btn = el('button', { class: 'primary', disabled: true, onclick: async () => {
     dlg.close();
-    await act(() => api('POST', `/api/cases/${card.case.id}/approve`, { version_id: card.head.id, checklist_confirmed: true }), 'AS-IS погоджено');
+    await act(() => api('POST', `/api/cases/${card.case.id}/approve/direct`, { version_id: card.head.id, checklist_confirmed: true }), 'AS-IS погоджено');
     await refresh();
   } }, 'Погодити версію ' + card.head.number);
   boxes.forEach((b) => b.addEventListener('change', () => { btn.disabled = !boxes.every((x) => x.checked); }));
   const reqs = (card.notation_requirements || []).filter((r) => r.status !== 'rejected');
-  openDialog(el('h2', {}, 'Погодження AS-IS: версія ' + card.head.number),
-    el('p', {}, 'Це рішення людини. Агент не може його прийняти. Позначте кожен пункт:'),
+  const c = card.head.content;
+  openDialog(el('h2', {}, 'Погодити версію ' + card.head.number),
+    el('p', { class: 'small muted' }, 'Перевірте, що саме погоджуєте. Це рішення людини; агент його ухвалити не може.'),
+    el('dl', { class: 'kv' },
+      el('dt', {}, 'Початок процесу'), el('dd', { class: 'small' }, c.boundaries.trigger || '—'),
+      el('dt', {}, 'Фактичне завершення'), el('dd', { class: 'small' }, c.boundaries.completion || '—')),
+    card.other_open_questions_count
+      ? el('div', { class: 'note info' }, `Після погодження лишаються відкритими ${card.other_open_questions_count} некритичних питань — вони не блокують побудову.`)
+      : null,
+    el('div', { class: 'note info' }, 'Погодження нічого не запускає: побудова схеми — окрема платна дія.'),
     el('div', { class: 'warnbox', 'data-block': 'approve-facts' },
       el('div', {}, el('strong', {}, 'Назва процесу (напис на схемі): '), card.process_name.defined ? card.process_name.value : el('strong', { style: 'color:var(--danger)' }, 'не зазначено — схему без неї не побудувати')),
       el('div', {}, el('strong', {}, 'Вимоги до нотації: '), reqs.length ? reqs.map((r) => el('div', { class: 'small' }, `${r.id} · ${r.kind_label} · крок ${r.step_id} · ${r.status === 'confirmed' ? 'підтверджено' : 'ОЧІКУЄ РІШЕННЯ'}: ${r.detail}`)) : el('span', { class: 'notset' }, 'не зазначено (це не означає, що особливостей немає)'))),
@@ -368,10 +497,14 @@ function returnDialog(card) {
 }
 
 // ───────────── вкладки деталей ─────────────
+/** Верхній рівень — п'ять вкладок погодженого дизайну. */
+const TOP_TABS = [['overview', 'Огляд'], ['asis', 'AS-IS'], ['sources', 'Джерела'], ['diagram', 'Схема'], ['history', 'Історія']];
+/** Внутрішня навігація AS-IS. Редагування живе біля змісту, окремої вкладки немає. */
 const TABS = [
-  ['context', 'Бізнес-контекст і межі'], ['steps', 'Кроки процесу'], ['claims', 'Твердження й докази'], ['problems', 'Проблеми й вплив'], ['hypotheses', 'Гіпотези'],
-  ['questions', 'Питання'], ['sources', 'Джерела'], ['diagram', 'Схема'], ['edit', 'Редагувати'], ['history', 'Історія'],
+  ['context', 'Бізнес-контекст і межі'], ['steps', 'Кроки'], ['claims', 'Твердження й докази'],
+  ['questions', 'Питання'], ['problems', 'Проблеми й гіпотези'],
 ];
+const TOP_OF = { context: 'asis', steps: 'asis', claims: 'asis', questions: 'asis', problems: 'asis', hypotheses: 'asis', edit: 'asis', sources: 'sources', diagram: 'diagram', history: 'history' };
 
 // ───────────── вкладка «Схема»: смислова перевірка → рішення → побудова → перегляд (3b-3…3b-7) ─────────────
 // Тут немає нічого предметного: ні ролей, ні назв кроків, ні термінів конкретного процесу.
@@ -403,7 +536,7 @@ async function loadDiagram() {
     api('GET', `/api/cases/${id}/bpmn/artifact`).catch(loadFail),
   ]);
   state.diagram = { review, art };
-  if (state.tab === 'diagram') renderTabs();
+  if (state.top === 'diagram') renderTop();   // схема тепер вкладка верхнього рівня
 }
 
 /**
@@ -685,17 +818,7 @@ function artifactBlock(card, a, isHistory) {
 }
 
 
-function renderTabs() {
-  const card = state.card; if (!card) return;
-  const critQ = card.critical_open_questions.length;
-  const tabs = document.getElementById('tabs');
-  tabs.className = 'tabs'; tabs.setAttribute('role', 'tablist');
-  tabs.replaceChildren(...TABS.map(([k, label]) => el('button', { class: 'tab', role: 'tab', 'aria-selected': String(state.tab === k), onclick: () => { state.tab = k; renderTabs(); } },
-    label, k === 'questions' && critQ ? el('span', { class: 'n' }, ' ●' + critQ) : null,
-    k === 'claims' && card.head.content.conflicts.length ? el('span', { class: 'n' }, ' ⚠') : null)));
-  const panel = document.getElementById('panel');
-  panel.replaceChildren(PANELS[state.tab](card));
-}
+function renderTabs() { renderTop(); }
 
 function unknownView(card, step, n) {
   const u = card.unknown_transitions.find((x) => x.step_id === step.id && x.condition === n.condition);
@@ -708,7 +831,7 @@ function unknownView(card, step, n) {
 
 function kv(label, value) { return el('tr', {}, el('th', {}, label), el('td', {}, value || el('span', { class: 'muted' }, 'не заповнено'))); }
 
-const PANELS = {
+const VIEWS = {
   context: (card) => {
     const c = card.head.content;
     const row = (label, text, missing) => el('div', { class: 'kv' }, el('div', { class: 'k' }, label),
@@ -755,7 +878,7 @@ const PANELS = {
       c.conflicts.length ? el('div', {}, el('h3', {}, 'Конфлікти: правки аналітикині та агента'),
         c.conflicts.map((x) => el('div', { class: 'warnbox' }, el('strong', {}, x.key), ': ', x.note, el('div', {}, 'Збережено: ' + x.kept), el('div', {}, 'Запропоновано агентом: ' + x.proposed)))) : null);
   },
-  problems: (card) => {
+  problemsOnly: (card) => {
     const p = card.problems_view || card.head.content.problems;
     if (!p.length) return el('p', { class: 'muted' }, 'Проблем ще не описано.');
     const labels = card.cause_statuses || {};
@@ -777,7 +900,7 @@ const PANELS = {
     return el('table', {}, el('thead', {}, el('tr', {}, ['ID', 'Симптом', 'Можлива причина', 'Вплив'].map((h) => el('th', {}, h)))),
       el('tbody', {}, p.map((x) => el('tr', {}, el('td', {}, x.id), el('td', {}, x.symptom), causeCell(x), el('td', {}, x.impact + (x.impact_is_estimate ? ' (оцінка)' : ''))))));
   },
-  hypotheses: (card) => {
+  hypothesesOnly: (card) => {
     const h = card.head.content.hypotheses;
     if (!h.length) return el('p', { class: 'muted' }, 'Гіпотез ще немає.');
     return el('div', {}, h.map((x) => el('div', { class: 'claim' }, el('div', {}, el('span', { class: 'chip' }, 'Гіпотеза ' + x.id + ' · ' + ({ open: 'відкрита', supported: 'підтримана', refuted: 'спростована', confirmed: 'підтверджена' })[x.status]), ' ', x.text),
@@ -857,8 +980,13 @@ const PANELS = {
       el('div', { class: 'actions' }, el('button', { class: 'primary', type: 'submit' }, 'Зберегти як нову версію')));
     return form;
   },
+  /** Проблеми, гіпотези й рішення — в одній вкладці, але розділені заголовками. */
+  problems: (card) => el('div', {},
+    el('h3', { class: 'group-h' }, 'Проблеми й вплив'), VIEWS.problemsOnly(card),
+    el('h3', { class: 'group-h' }, 'Гіпотези'), VIEWS.hypothesesOnly(card),
+    el('h3', { class: 'group-h' }, 'Рішення аналітикині'), decisionsBlock(card)),
+
   history: (card) => el('div', {},
-    decisionsBlock(card),
     el('h3', {}, 'Версії'), el('table', {}, el('thead', {}, el('tr', {}, ['№', 'Автор', 'Режим', 'Створено', 'Примітка', 'Статус'].map((h) => el('th', {}, h)))),
       el('tbody', {}, card.versions.map((v) => el('tr', {}, el('td', {}, v.number + (v.is_head ? ' (поточна)' : '')), el('td', {}, CREATED_BY[v.created_by]), el('td', {}, v.mode === 'demo' ? 'ДЕМО' : v.mode),
         el('td', {}, fmt(v.created_at)), el('td', {}, v.note), el('td', {}, (v.kind === 'proposal' ? 'пропозиція на застарілій основі; ' : '') + (v.accepted ? 'прийнята аналітиком' : '')))))),
@@ -905,6 +1033,9 @@ function decisionCard(card, d, host) {
       return el('span', {}, el('button', { class: 'link', onclick: () => showSource(e.source_id, e.quote || undefined) },
         (src && (src.ref || src.title)) || e.source_id), ' ');
     })) : null,
+    (cur.diffs || []).length
+      ? el('div', { class: 'small' }, 'Змінилося: ' + cur.diffs.map((d) => d.object + ' · ' + d.field).join('; '))
+      : null,
     el('details', {}, el('summary', { class: 'small' }, 'Що саме звірено (' + cur.checks.length + ')'),
       el('ul', { class: 'small' }, cur.checks.map((c) => el('li', {},
         (CHECK_MARK[c.status] || '') + ' ' + c.label + ': ' + c.detail)))),
@@ -928,7 +1059,16 @@ function confirmDecisionDialog(card, d, host) {
   openDialog(
     el('h3', {}, 'Рішення: ' + d.subject),
     el('p', { class: 'small' }, el('strong', {}, cur.state_label)),
-    cur.changed.length ? el('div', {}, el('h4', {}, 'Що змінилося'), el('ul', { class: 'small' }, cur.changed.map((x) => el('li', {}, x)))) : null,
+    (cur.diffs || []).length
+      ? el('div', {}, el('h4', {}, 'Що саме змінилося'),
+          el('table', {}, el('thead', {}, el('tr', {}, ['Об’єкт', 'Поле', 'Було', 'Стало'].map((h) => el('th', {}, h)))),
+            el('tbody', {}, cur.diffs.map((d) => el('tr', {},
+              el('td', {}, d.object), el('td', {}, d.field),
+              el('td', { class: 'small muted' }, d.was || '—'),
+              el('td', { class: 'small' }, d.now || '—'))))))
+      : cur.changed.length ? el('div', {}, el('h4', {}, 'Що змінилося'),
+          el('ul', { class: 'small' }, cur.changed.map((x) => el('li', {}, x))),
+          el('p', { class: 'small muted' }, 'Точного порівняння полів тут немає: порівнювати немає з чим.')) : null,
     cur.unknown.length ? el('div', {}, el('h4', {}, 'Чого перевірка не встановила'),
       el('ul', { class: 'small' }, cur.unknown.map((x) => el('li', {}, x))),
       el('p', { class: 'small warnbox' }, 'Це не означає «все гаразд»: названі місця програма перевірити не змогла.')) : null,
@@ -1102,6 +1242,7 @@ function questionView(card, q) {
     q.criticality_note ? el('div', { class: 'small' }, 'Пояснення щодо критичності: ' + q.criticality_note) : null,
     open ? el('div', {}, el('label', { class: 'small', for: 'answer-' + q.id }, 'Текст уточнення'), ans) : null,
     open ? answerBasisBlock(card, q, ans) : null,
+    open ? transitionBlock(card, q) : null,
     open ? el('div', { class: 'actions' },
       el('button', { onclick: () => submitAnswer(card, q, ans) }, 'Закрити питання уточненням'),
       q.critical ? el('button', { onclick: () => critDialog(card, q) }, 'Зробити некритичним…') : null)
@@ -1112,6 +1253,19 @@ function questionView(card, q) {
 // Три ознаки зберігаються окремо: звідки факт, хто правив текст, чим є твердження.
 // Редагування цитати НЕ перетворює відповідь на власний висновок.
 const basisState = new Map();   // question_id → { kind, sourceId, quote }
+
+/**
+ * Відповісти на питання, спираючись на вже відкритий доказ (D97).
+ * Джерело й фрагмент відомі — копіювати цитату вручну не потрібно; змінити їх можна в тій самій формі.
+ */
+function answerFromEvidence(qid, sourceId, quote) {
+  basisState.set(qid, { kind: 'source', sourceId, quote: (quote || '').trim() });
+  goToQuestion(qid);
+  setTimeout(() => {
+    const a = document.getElementById('answer-' + qid);
+    if (a) { if (!a.value) a.value = (quote || '').trim(); a.focus(); }
+  }, 60);
+}
 
 function answerBasisBlock(card, q, ans) {
   const st = basisState.get(q.id) || { kind: 'source', sourceId: '', quote: '' };
@@ -1183,6 +1337,28 @@ function originPick(q, legend) {
     el('div', { class: 'small muted' }, 'Реальні дані моделі не надсилаються (D18).'));
 }
 
+/** Переходи, які стануть визначеними разом із відповіддю. Прихованого обов'язку після відповіді не лишається. */
+function transitionBlock(card, q) {
+  const links = (q.affects_transitions || []).filter((l) => (l.kind || 'direction') === 'direction');
+  const steps = card.head.content.steps;
+  const pending = [];
+  for (const l of links) {
+    const st = steps.find((x) => x.id === l.step_id);
+    if (st && st.next.some((n) => n.condition === l.condition && n.to === 'UNKNOWN')) pending.push(l);
+  }
+  if (!pending.length) return null;
+  const opts = [...steps.map((x) => [x.id, x.id + ' — ' + x.action]), ['END', 'END — процес завершується']];
+  return el('fieldset', { class: 'origin-pick', 'data-block': 'transitions' },
+    el('legend', { class: 'small' }, 'Куди ведуть переходи, що залежали від цього питання'),
+    el('div', { class: 'small muted' }, 'Вони стануть визначеними разом із відповіддю — окремо лагодити крок не доведеться.'),
+    pending.map((l) => el('div', {},
+      el('label', { class: 'small', for: `tr-${q.id}-${l.step_id}-${l.condition}` },
+        `Крок ${l.step_id}` + (l.condition ? ` · умова «${l.condition}»` : ' · єдиний перехід')),
+      el('select', { id: `tr-${q.id}-${l.step_id}-${l.condition}`, 'data-step': l.step_id, 'data-cond': l.condition },
+        el('option', { value: '' }, '— лишити «невідомо» —'),
+        ...opts.map(([v, t]) => el('option', { value: v }, t))))));
+}
+
 async function submitAnswer(card, q, ans) {
   const st = basisState.get(q.id) || { kind: 'source' };
   const picked = document.querySelector(`input[name="origin-${q.id}"]:checked`);
@@ -1200,6 +1376,10 @@ async function submitAnswer(card, q, ans) {
   }
   const body = { base_version_id: card.head.id, question_id: q.id, answer: ans.value, basis };
   if (picked) body.origin = picked.value;
+  const trs = [...document.querySelectorAll(`[data-block="transitions"] select[id^="tr-${q.id}-"]`)]
+    .filter((e) => e.value)
+    .map((e) => ({ step_id: e.dataset.step, condition: e.dataset.cond, to: e.value }));
+  if (trs.length) body.transitions = trs;
   const r = await act(() => api('POST', `/api/cases/${card.case.id}/questions/answer`, body), 'Уточнення додано; створено нову версію');
   if (r) { basisState.delete(q.id); await refresh(); }
 }
@@ -1266,14 +1446,17 @@ function critDialog(card, q) {
     el('div', { class: 'actions' }, el('button', { class: 'primary', onclick: async () => { dlg.close(); const r = await act(() => api('POST', `/api/cases/${card.case.id}/questions/criticality`, { base_version_id: card.head.id, question_id: q.id, critical: false, note: note.value }), 'Критичність змінено (нова версія)'); if (r) await refresh(); } }, 'Зберегти'), el('button', { onclick: () => dlg.close() }, 'Скасувати')));
 }
 
-async function showSource(sourceId, quote) {
+async function showSource(sourceId, quote, answerQid) {
   const r = await act(() => api('GET', `/api/cases/${state.card.case.id}/sources/${sourceId}`));
   if (!r) return;
   const text = r.source.content; const idx = quote ? text.indexOf(quote) : -1;
   const box = el('div', { class: 'src-text' });
   if (idx >= 0) { const m = el('mark', {}, quote); box.append(text.slice(0, idx), m, text.slice(idx + quote.length)); setTimeout(() => m.scrollIntoView({ block: 'center' }), 50); }
   else box.textContent = text;
-  openDialog(el('h2', {}, r.source.title), quote && idx < 0 ? el('p', { style: 'color:var(--danger)' }, '⚠ Фрагмент у джерелі не знайдено.') : null, box, el('div', { class: 'actions' }, el('button', { onclick: () => dlg.close() }, 'Закрити')));
+  openDialog(el('h2', {}, r.source.title), quote && idx < 0 ? el('p', { style: 'color:var(--danger)' }, '⚠ Фрагмент у джерелі не знайдено.') : null, box,
+    el('div', { class: 'actions' },
+      answerQid ? el('button', { class: 'primary', onclick: () => { dlg.close(); answerFromEvidence(answerQid, sourceId, quote); } }, 'Відповісти цим доказом') : null,
+      el('button', { onclick: () => dlg.close() }, 'Закрити')));
 }
 
 // ───────────── запуск ─────────────
@@ -1299,7 +1482,7 @@ async function route() {
 window.addEventListener('hashchange', route);
 route();
 
-PANELS.diagram = (card) => {
+VIEWS.diagram = (card) => {
   const d = state.diagram;
   if (!d) { void loadDiagram(); return el('p', { class: 'muted' }, 'Завантаження стану схеми…'); }
   const review = d.review || {};

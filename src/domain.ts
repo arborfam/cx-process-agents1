@@ -694,6 +694,12 @@ export function answerQuestion(
     baseVersionId: string; questionId: string; answer: string;
     origin?: 'real' | 'synthetic';
     basis: AnswerBasis;
+    /**
+     * Куди ведуть переходи, що були «невідомими» через це питання (D97).
+     * Закриття питання й оновлення пов'язаних кроків — ОДИН пакет: інакше відповідь лишає
+     * людині прихований обов'язок окремо лагодити переходи, а опис тимчасово суперечить сам собі.
+     */
+    transitions?: { step_id: string; condition: string; to: string }[];
   },
 ): VersionRow {
   requireHuman(actor, 'відповідь на питання');
@@ -775,12 +781,39 @@ export function answerQuestion(
     q.status = 'closed';
     q.answer = answer;
     q.closed_by_source_id = src.id;
+
+    // Той самий пакет: переходи, які були «невідомими» саме через це питання.
+    const applied: { step_id: string; condition: string; to: string }[] = [];
+    for (const t of input.transitions ?? []) {
+      const st = c.steps.find((x) => x.id === t.step_id);
+      if (!st) throw new DomainError('NOT_FOUND', `Кроку ${t.step_id} у цій версії немає.`, 404);
+      const link = (q.affects_transitions ?? []).some((l) => l.step_id === t.step_id && l.condition === t.condition);
+      if (!link) {
+        throw new DomainError('VALIDATION',
+          `Перехід «${t.condition || 'без умови'}» кроку ${t.step_id} не прив'язаний до питання ${q.id}: у цьому пакеті його змінювати не можна.`, 400);
+      }
+      const n = st.next.find((x) => x.condition === t.condition && x.to === UNKNOWN);
+      if (!n) {
+        throw new DomainError('VALIDATION',
+          `Перехід «${t.condition || 'без умови'}» кроку ${t.step_id} уже не «невідомий» — оновіть сторінку.`, 409);
+      }
+      const to = t.to.trim();
+      if (to !== 'END' && !c.steps.some((x) => x.id === to)) {
+        throw new DomainError('VALIDATION', `Кроку ${to} у цій версії немає: перехід нікуди не веде.`, 400);
+      }
+      n.to = to;
+      applied.push({ step_id: t.step_id, condition: t.condition, to });
+    }
     const covered = [...(JSON.parse(head.covered_json) as string[]), src.id];
     audit(db, caseId, actor, 'question_answered', {
       question_id: q.id, critical: q.critical, source_id: src.id,
       content_type: contentType, derived_from_source_id: derivedFromSourceId, edited_by: editedBy, origin,
+      transitions: applied,
     });
-    return commitAnalystVersion(db, actor, caseId, head, c, covered, `Закрито питання ${q.id} уточненням`);
+    return commitAnalystVersion(db, actor, caseId, head, c, covered,
+      applied.length
+        ? `Закрито питання ${q.id} уточненням; визначено переходів: ${applied.length}`
+        : `Закрито питання ${q.id} уточненням`);
   });
 }
 
@@ -1754,6 +1787,36 @@ export function returnToResearch(db: DB, actor: Actor, caseId: string, reason: s
 }
 
 /** Погодження прив’язане до конкретної незмінної версії (ID + хеш), автора-людини й часу. */
+/**
+ * Одна фінальна дія погодження для одного користувача (D97).
+ *
+ * Службові переходи «Прийняти робочу версію» й «Передати на погодження» для одного користувача
+ * нічого не вирішують: вони лише просять ту саму людину натиснути ще двічі. Тому вони виконуються
+ * всередині ОДНІЄЇ транзакції разом із погодженням.
+ *
+ * Жодної перевірки не прибрано: `acceptDraft` і `submitForApproval` викликаються як є, зі своїми
+ * умовами, а `approve` далі перевіряє чинність версії, цілісність і відсутність блокерів.
+ * Якщо щось із цього не проходить — транзакція відкочується повністю, станів навпіл не буває.
+ */
+export function approveDirect(
+  db: DB, actor: Actor, caseId: string,
+  input: { versionId: string; checklistConfirmed: boolean; note?: string },
+): ApprovalRow {
+  requireHuman(actor, 'погодження AS-IS');
+  return tx(db, () => {
+    const c = getCase(db, caseId);
+    const head = headVersion(db, caseId);
+    if (head.id !== input.versionId) {
+      throw new DomainError('VERSION_STALE', 'Ви намагаєтеся погодити не поточну версію. Погодження не записано.', 409, { head_version_id: head.id });
+    }
+    if (c.state === 'research') {
+      if (!isAccepted(db, head.id)) acceptDraft(db, actor, caseId, head.id);
+      submitForApproval(db, actor, caseId);
+    }
+    return approve(db, actor, caseId, input);
+  });
+}
+
 export function approve(
   db: DB, actor: Actor, caseId: string,
   input: { versionId: string; checklistConfirmed: boolean; note?: string },
@@ -2148,9 +2211,10 @@ function computeNextAction(state: CaseState, blockers: Blocker[], accepted: bool
     const other = crit.filter((b) => b.code !== 'NOT_ACCEPTED');
     if (other.length) return { key: 'resolve_blockers', enabled: true, label: `Усунути блокери (${other.length})`,
       hint: 'Заповніть відсутні дані або враховуйте нові матеріали та збережіть нову версію.' };
-    if (!accepted) return { key: 'accept', enabled: true, label: 'Прийняти робочу версію',
-      hint: 'Це ще не погодження AS-IS — лише ваша позначка, що чернетка вас влаштовує.' };
-    return { key: 'submit', enabled: true, label: 'Передати на погодження', hint: 'Після цього версію можна буде погодити.' };
+    // Для одного користувача службові переходи «прийняти» й «передати» окремими діями не показуємо:
+    // їх виконує сервер в одній транзакції разом із погодженням (D97). Перевірки ті самі.
+    return { key: 'approve', enabled: true, label: 'Погодити версію',
+      hint: 'Блокерів немає. Погодження прив’язується до цієї версії; зміна після нього потребує нового погодження.' };
   }
   if (state === 'pending_approval') {
     if (crit.length) return { key: 'resolve_blockers', enabled: true, label: `Усунути блокери (${crit.length})`,
